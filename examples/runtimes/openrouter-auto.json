@@ -1,7 +1,7 @@
 {
   "endpoint": "https://openrouter.ai/api/v1",
   "model": "auto",
-  "apiKey": "",
+  "apiKey": "${OPENROUTER_API_KEY}",
   "contextWindow": 200000,
 
   "reasoningField": "reasoning",

@@ -20,25 +20,24 @@ This came up almost by accident in an actual working session building this proje
 
 ## Quick Start
 
-**Prerequisites:** Go and Docker.
+**Prerequisites:** Docker and Docker Compose (and an API key for your favorite provider).
 
-```bash
-./scripts/run_container.sh /path/to/your/runtime.json
-```
+1. **Configure your environment**:
+   ```bash
+   cp .env.example .env
+   # Edit .env and set your OPENROUTER_API_KEY (or GEMINI_API_KEY / ANTHROPIC_API_KEY)
+   ```
 
-That's it — from the repo root, this builds `wackypub`, builds and launches a small Ubuntu container as a daemon, and drops you straight into an interactive REPL talking to `main`, an agent running inside it. (First run needs a real `runtime.json` — see [`examples/runtimes/`](examples/runtimes) for a template to copy and fill in a key. Every run after that just needs `./scripts/run_container.sh`, no argument.)
+2. **Launch the Director**:
+   ```bash
+   docker compose up
+   ```
 
-What makes this worth trying isn't the container - it's how little is actually in it. `main` has two sub-agents (`sub1`, `sub2`) it's allowed to delegate to, and that's the entire environment:
+That's it — this builds the multi-tool suite (`wackypub`, `files-rw`, `wackyproc`, `wackydiscord`), seeds a host-mounted workspace (`./workspace`), and drops you straight into an interactive REPL talking to the **Director** agent.
 
-- **One skill**: the `wackypub-a2a` skill for the main agent - a short, always-loaded primer on how to self-discover the CLI via `--help` and reach its sub-agents. Nothing else is pre-loaded.
-- **A handful of lines of actual instruction** in each agent's `AGENTS.md` - "you manage an ubuntu system with full root access," how to invoke `bash`, and (for `main` only) "don't let your sub-agents cheat." See [`agents/container/`](agents/container) for the exact text - it's short enough to read in full.
-- **Three commands wired up as tools**: `bash`, `sed`, and `wackypub` itself (for reaching sub-agents directly, rather than through a `bash -c "wackypub ..."` detour). `bash` alone would technically be enough - it can reach anything on the container's `PATH` - but linking specific commands in directly is more efficient for a model to call than always routing through a shell.
-- **The built-in scratchpad and skill tools** - the same ones every agent gets for free, nothing container-specific.
+Describe what you want to build (a coding assistant, a Discord bot persona, a multi-agent research swarm), and the Director scaffolds your agents, configures backend runtimes, links tools/skills, and writes an operational entrypoint (`/ws/desired-entrypoint.sh`). When you type `exit` in the REPL, the container automatically hands off execution to your new service.
 
-No file-editing tool, no curated command list, no task-specific scaffolding. Ask `main` to do something real - write a script, look something up, coordinate its sub-agents on a piece of work - and it figures out the rest from `--help` and first principles. When you're done, `./scripts/destroy_container.sh` tears down the container, image, and workspace.
-
-Example prompts (tested on Haiku and Gemma 4 A4B):
-- `can you install sqlite and make a test database. verify you can use queries to create a table. while thats happening, can you have a sub-agent write and run a go script to compute the first 20 prime numbers, and have the other sub-agent pull the most up-to-date wikipedia article for dogs and give me the word count of the article plus 5 interesting facts.`
+If your service ever crashes or errors, the container's bootloader automatically falls back to the Director REPL for interactive inspection and recovery. And because `./workspace` is a standard host bind mount, you can inspect, edit, or reset files directly from your host at any time.
 
 ---
 

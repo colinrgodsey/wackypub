@@ -1,11 +1,13 @@
 # Example `runtime.json` configs
 
 Safe templates for the model backends this project has actually been tested
-against - no real API keys (every `apiKey` is an empty string placeholder).
-Copy one, fill in a real key, and either point `<agent_dir>/runtime.json`
-directly at it or symlink it in (see `.agents/LOCAL_TESTING.md` for the
-symlink-per-backend pattern used for switching backends without duplicating
-an agent's config).
+against - preconfigured with environment variable placeholders (such as
+`"${OPENROUTER_API_KEY}"`, `"${GEMINI_API_KEY}"`, `"${ANTHROPIC_API_KEY}"`).
+WackyPub automatically expands environment variables in `runtime.json` from the
+workspace `.env` or process environment. Copy one, configure your `.env` or
+environment variables, and either point `<agent_dir>/runtime.json` directly at it
+or symlink it in (see `.agents/LOCAL_TESTING.md` for the symlink-per-backend
+pattern used for switching backends without duplicating an agent's config).
 
 - **`openrouter-auto.json`** - OpenRouter's `"auto"` model routing, which
   picks a backend per-request. `supportsReasoningDetails` is deliberately

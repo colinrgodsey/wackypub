@@ -1,0 +1,10 @@
+.git
+.gitignore
+.gitmodules
+bin/
+testws/
+test_agents/
+.agents/
+.env
+*.log
+gemmy.md

@@ -1,7 +1,7 @@
 {
   "provider": "anthropic",
   "model": "claude-sonnet-4-6",
-  "apiKey": "",
+  "apiKey": "${ANTHROPIC_API_KEY}",
   "contextWindow": 200000,
 
   "anthropicThinkingMode": "adaptive",

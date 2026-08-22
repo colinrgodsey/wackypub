@@ -561,7 +561,9 @@ A second swarm run (report deleted per the invalidation rule once D26 changed th
 
 ## D25: `search_scratchpad` - a fifth built-in scratchpad tool, search as an index into pagination, not a replacement for it
 
-Workshopped, not yet implemented. A large scratchpad entry (a big file dump, a long command output) is currently only navigable by paginating blind through `get_scratchpad`'s `skip_lines`/`num_lines` - fine once you know roughly where the interesting part is, tedious to locate it in the first place. `search_scratchpad` closes that gap as a fourth-ish built-in alongside `create_scratchpad`/`get_scratchpad`/`list_scratchpads`.
+Implemented in `pkg/agent/scratchpad.go` (`SearchScratchpad`), `cmd/agent.go` (`scratchpadSearchCmd`), `pkg/agent/sdk.go` (`AgentSDK.SearchScratchpad`).
+
+A large scratchpad entry (a big file dump, a long command output) is currently only navigable by paginating blind through `get_scratchpad`'s `skip_lines`/`num_lines` - fine once you know roughly where the interesting part is, tedious to locate it in the first place. `search_scratchpad` closes that gap as a fourth-ish built-in alongside `create_scratchpad`/`get_scratchpad`/`list_scratchpads`.
 
 **Signature**: `search_scratchpad(id, query, case_sensitive=true, regex=false, max_results=50)`.
 - `id` required - scoped to one entry, not a search-everything-live mode. A "search across all live entries" tool would be a different feature (more like "which entry has X") - not ruled out for later, just not conflated with this one, which matches the concrete use case (an agent already holding a big entry, looking for where in it something is).
@@ -593,7 +595,7 @@ Reviewed the first-pass D24 fix before spending a swarm run verifying it, and fo
 
 ## D27: `wackypub agent <id> scratchpad {create,read,list,search}` - CLI-level scratchpad access
 
-Workshopped, not yet implemented. Closes an already-logged gap (the former "Future Scratchpad management" TODO): scratchpad slots have only ever been reachable from inside a live agent turn via the built-in tools (`create_scratchpad`/`get_scratchpad`/`list_scratchpads`/`search_scratchpad`, D18/D25) - no way for a human operator, external tooling, or another agent driving `wackypub` from the CLI to read or write one directly.
+Implemented in `cmd/agent.go` (`scratchpadCmd`), `pkg/agent/sdk.go`, `pkg/agent/scratchpad.go`. Closes an already-logged gap (the former "Future Scratchpad management" TODO): scratchpad slots have only ever been reachable from inside a live agent turn via the built-in tools (`create_scratchpad`/`get_scratchpad`/`list_scratchpads`/`search_scratchpad`, D18/D25) - no way for a human operator, external tooling, or another agent driving `wackypub` from the CLI to read or write one directly.
 
 **Surface** (mirrors the four in-agent tools 1:1):
 ```
@@ -1291,7 +1293,7 @@ Implemented in `tools/wackydiscord/bot/sync.go`, `tools/wackydiscord/bot/handler
 
 ## D65: Self-driving "director" bootstrap container
 
-Workshopped, not yet implemented.
+Implemented in `Dockerfile`, `docker-entrypoint.sh`, `docker-compose.yml`, `agents/director/AGENTS.md`, `examples/runtimes/`.
 
 **The problem**: The existing `Dockerfile` at the repo root is deliberately minimal - it copies a pre-built `wackypub` binary onto Ubuntu with a few common tool runtimes (python3, golang-go, nodejs, npm) and drops straight into `bash`. It has no workspace, no bundled skills, nothing agent-shaped at all - a human has to build a workspace by hand from scratch every time, following `skills/wackypub-ws/SKILL.md` themselves rather than an agent doing it for them.
 
@@ -1307,5 +1309,39 @@ Workshopped, not yet implemented.
 8. **Strong "don't brick yourself" directives required in the director's `AGENTS.md`** - the whole failsafe depends on the director not writing a script that both exits 0 *and* doesn't actually do what was intended (a script that's "successful" but wrong wouldn't trigger the fallback at all, unlike a script that fails outright).
 
 **Why**: Turns `skills/wackypub-ws/SKILL.md`'s manual, human-driven workspace bootstrapping into something an agent can do *for* a new user interactively, without inventing new wackypub-core mechanisms - everything here is either an existing convention applied to a new context (skills, `toolsets/`, env-var expansion) or a container/shell-level concern (bind mount, entrypoint script) that doesn't touch `wackypub` itself at all.
+
+## D66: One master container - retire the `main`/`sub1`/`sub2` demo, streamline the quick start, scoped `sudo` for the director
+
+Implemented in `Dockerfile`, `agents/director/AGENTS.md`, `README.md`.
+
+**The problem, found during D65 review**: the repo already had a second, separate container quick start - `scripts/run_container.sh`/`init_container_env.sh`/`destroy_container.sh` plus `agents/container/` (`MAIN.md`/`SUB.md`), a minimal "give an agent root and see what happens" demo (a `main` agent delegating to `sub1`/`sub2`). It builds from the same root `Dockerfile` D65 rewrote. Confirmed live: this is now broken - `init_container_env.sh` hardcodes `ln -sf /bin/wackypub main/tools/wackypub`, but D65's multi-stage build installs binaries to `/usr/local/bin/`, not `/bin/` - `/bin/wackypub` doesn't exist in the image at all anymore, so `main`'s ability to reach `wackypub` as a tool (needed to delegate to `sub1`/`sub2`, the entire point of the demo) is a dangling symlink. Root cause: the root `Dockerfile`'s purpose fundamentally changed under D65 (single Ubuntu+binary+bash-entrypoint demo -> multi-stage build compiling the whole suite, non-root user, a director-specific template workspace, an entrypoint that defaults to launching `director`), and both flows now collide on the same file.
+
+**Decision: don't maintain two container flows - retire the old demo entirely** rather than patching it to coexist. Remove `scripts/run_container.sh`, `scripts/init_container_env.sh`, `scripts/destroy_container.sh`, `agents/container/MAIN.md`, `agents/container/SUB.md`. The demo's one distinguishing feature - an agent with bash and nothing else set up - isn't actually lost, it's reachable by telling the director that directly ("just give me root, don't set anything else up") instead of via a separate scripted path. One Dockerfile, one `docker-compose.yml`, one story.
+
+**README Quick Start replaced.** The current two-part Quick Start (`run_container.sh` demo + "Bring Your Own Agent") becomes: `docker compose up`, then describe what you want to build to the director in the attached REPL - it sets up the workspace and hands off. "Quick Start: Bring Your Own Agent" (the non-Docker CLI-install path for an existing coding agent) is unrelated and stays as-is.
+
+**Director `AGENTS.md` needs a posture shift to actually deliver "describe it, it goes."** As currently written it reads as an open-ended interactive wizard - ask what they want, guide them through configuring runtimes, ask about API keys, a lot of back-and-forth. For the new quick start framing to hold, the director needs to lean toward reasonable default choices and moving to execution quickly rather than a long Q&A: gather the goal, pick sensible defaults without belaboring it, build it, then write `/ws/desired-entrypoint.sh` and tell the user to exit to launch it - treated as the natural conclusion of the setup conversation, not a separate feature buried at the end of the instructions. The underlying exit-to-relaunch handoff mechanism (D65.7) is unchanged - this is about the director's conversational posture, not the technical mechanism.
+
+**Scoped `sudo` for the director, not blanket root.** D65 already fixed the actual danger (a root container process has unrestricted access to whatever host path is bind-mounted, since there's no UID translation without `userns-remap`) by running as non-root. That risk is specifically about the bind-mounted path (`/ws`), not root-ness in the abstract - so re-granting narrowly-scoped `sudo` for system package installation doesn't reopen it, as long as the grant can't reach `/ws`. Add to `/etc/sudoers`:
+```
+wackypub ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt
+```
+Not a blanket `NOPASSWD: ALL` - a general root shell (via unrestricted `sudo`) could still `chown`/`rm`/otherwise touch the bind-mounted `/ws` and reintroduce exactly the host-file-ownership problem D65 fixed, and there's no way to guarantee an LLM-driven bash session never does that beyond an `AGENTS.md` request not to - an OS-level restriction is the actual guardrail, not a prompt instruction. Other package managers already on the image (`npm`, `pip`, `go install`) don't need root for normal per-user installs, so the sudoers scope stays limited to `apt-get`/`apt`. One concrete gotcha to put directly in the director's `AGENTS.md`: the Dockerfile's build step runs `apt-get install ... && rm -rf /var/lib/apt/lists/*` to keep the image lean, so the package index is empty by the time the director runs - its first `sudo apt-get install <x>` will fail with "unable to locate package" unless it runs `sudo apt-get update` first.
+
+**Why**: Two container flows sharing one Dockerfile is what caused the D65 regression in the first place and will keep causing friction as either evolves - collapsing to one, better-matches "our quick start was kind of random anyway." The director's "ask a lot, then maybe get to work" posture undersells what D65 actually built; a decisive "describe it, it goes" framing is a better match for both the feature and the new single quick start. Scoped `sudo` gives the director a real, common setup need (installing system tools) without re-opening the exact host-write risk D65's non-root fix just closed.
+
+## D67: `docs/SWARM_TESTING.md` reconciled with D66's single container - privilege level becomes an explicit test parameter ("access bands")
+
+Implemented in `docs/SWARM_TESTING.md`.
+
+**The problem, found during D66 review**: `docs/SWARM_TESTING.md` (the swarm-based security-testing methodology behind `files-rw`'s pen-test reports and similar) references the now-deleted `scripts/run_container.sh`/`init_container_env.sh`/`destroy_container.sh` and the `main`/`sub1`/`sub2` pattern as its documented setup mechanism - all removed by D66. It also states outright that "the container runs as root, so anything the swarm creates in the bind-mounted host workspace... ends up root-owned on the host," describing the old container's root-by-default behavior as an accepted, load-bearing property, not just an incidental annoyance - now stale, since D65 made the container non-root by default.
+
+**Resolved: swarm testing uses the same single director-based container, no separate Dockerfile.** Host protection against a swarm's fixture-building/probing is a property of the Docker `USER`/bind-mount permission boundary, not of whether the in-container user happens to be root - a non-default `USER` doesn't change what's reachable on the host side of the mount either way. Swarm workers "probably need to install tools sometimes" too, same as the director - covered by the same scoped `sudo` (`apt-get`/`apt`) D66 already added, or a broader grant for a specific test run (below).
+
+**New methodological framing: privilege level is itself an explicit test parameter, not a fixed environment property.** D65/D66's own process directly demonstrated that available access changes the reachable attack surface in ways that are easy to miss (root-in-container + bind-mount = host-level root; non-root + scoped `sudo` = a materially different, much narrower surface). Rather than picking one fixed privilege tier for swarm testing, `SWARM_TESTING.md` should document running the same swarm methodology at different **access bands** and treating divergent findings across bands as signal, not noise. Mechanically, this needs no new infrastructure: `USER` is overridable per-run against the same image (`docker compose run --user root wackypub` for a root-band run, the default `wackypub` user for the normal band, etc.), so varying the band is just a run-time flag, not a second Dockerfile - consistent with D66's "one master container."
+
+**Concrete doc fix**: replace the dead script references with the `docker compose up`/root-`Dockerfile` setup; replace the stale "container runs as root" passage with guidance on choosing (and documenting) which access band a given swarm run is testing, and how to invoke each band (default non-root+scoped-sudo, and an explicit root override for when root-in-container is the thing under test).
+
+**Why**: Keeps D66's "one master container" intact rather than reopening it for a special case, and turns a doc-staleness bug into a genuine methodology improvement this project already has direct, first-hand evidence for - access level materially changes what's findable, so testing across bands finds more than testing at just one.
 
 
