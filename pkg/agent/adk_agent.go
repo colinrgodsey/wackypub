@@ -101,12 +101,36 @@ func getGeminiThinkingConfig(cfg *RuntimeConfig) (*genai.ThinkingConfig, error) 
 	return tc, nil
 }
 
-// BuildADKAgentWithConfig constructs a Google ADK LLMAgent for an agent directory, applying RuntimeConfig settings.
-func BuildADKAgentWithConfig(agentID string, renderedPrompt string, maxToolTurns int, runtimeCfg *RuntimeConfig, llmModel model.LLM, tools ...tool.Tool) (agent.Agent, error) {
+// TurnUsageTracker tracks real provider token usage and model call counts across model calls within an agent turn (D68).
+type TurnUsageTracker struct {
+	ModelCalls           int
+	LastPromptTokens     int32
+	LastCandidatesTokens int32
+	LastTotalTokens      int32
+	LastUsageMetadata    *genai.GenerateContentResponseUsageMetadata
+}
+
+// Reset clears turn usage and call count before starting a new turn or compaction pass.
+func (t *TurnUsageTracker) Reset() {
+	if t == nil {
+		return
+	}
+	t.ModelCalls = 0
+	t.LastPromptTokens = 0
+	t.LastCandidatesTokens = 0
+	t.LastTotalTokens = 0
+	t.LastUsageMetadata = nil
+}
+
+// BuildADKAgentWithConfigAndTracker constructs a Google ADK LLMAgent for an agent directory, applying RuntimeConfig settings and tracking turn usage.
+func BuildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, maxToolTurns int, runtimeCfg *RuntimeConfig, llmModel model.LLM, agentDir string, tracker *TurnUsageTracker, tools ...tool.Tool) (agent.Agent, error) {
 	if maxToolTurns <= 0 {
 		maxToolTurns = DefaultMaxToolTurns
 	}
-	var modelCalls int
+
+	if tracker == nil {
+		tracker = &TurnUsageTracker{}
+	}
 
 	thinkingConfig, err := getGeminiThinkingConfig(runtimeCfg)
 	if err != nil {
@@ -119,9 +143,23 @@ func BuildADKAgentWithConfig(agentID string, renderedPrompt string, maxToolTurns
 		Instruction: renderedPrompt,
 		Model:       llmModel,
 		Tools:       tools,
+		AfterModelCallbacks: []llmagent.AfterModelCallback{
+			func(ctx agent.Context, llmResponse *model.LLMResponse, llmResponseError error) (*model.LLMResponse, error) {
+				if llmResponse != nil && llmResponse.UsageMetadata != nil {
+					tracker.LastPromptTokens = llmResponse.UsageMetadata.PromptTokenCount
+					tracker.LastCandidatesTokens = llmResponse.UsageMetadata.CandidatesTokenCount
+					tracker.LastTotalTokens = llmResponse.UsageMetadata.TotalTokenCount
+					if tracker.LastTotalTokens == 0 {
+						tracker.LastTotalTokens = llmResponse.UsageMetadata.PromptTokenCount + llmResponse.UsageMetadata.CandidatesTokenCount
+					}
+					tracker.LastUsageMetadata = llmResponse.UsageMetadata
+				}
+				return nil, nil
+			},
+		},
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			func(ctx agent.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
-				modelCalls++
+				tracker.ModelCalls++
 				if thinkingConfig != nil {
 					if req.Config == nil {
 						req.Config = &genai.GenerateContentConfig{}
@@ -143,18 +181,34 @@ func BuildADKAgentWithConfig(agentID string, renderedPrompt string, maxToolTurns
 					}, nil
 				}
 
-				// Mid-turn context budget check (D63)
-				// If accumulated tool context reaches or exceeds contextWindow on subsequent tool turns (modelCalls > 1),
+				// Mid-turn context budget check (D63, D68)
+				// If accumulated tool context reaches or exceeds contextWindow threshold on subsequent tool turns (ModelCalls > 1),
 				// short-circuit early with a synthetic response so the next top-level turn gets a chance to trigger compaction.
-				if modelCalls > 1 && runtimeCfg != nil && runtimeCfg.ContextWindow > 0 {
-					estTokens := EstimateTokens(req.Contents, runtimeCfg.PreserveThinking)
-					if estTokens >= runtimeCfg.ContextWindow {
-						fmt.Fprintf(os.Stderr, "Warning: agent %q accumulated ~%d tokens in mid-turn tool context, reaching its context window limit (%d) - stopping early for compaction.\n", agentID, estTokens, runtimeCfg.ContextWindow)
+				if tracker.ModelCalls > 1 && runtimeCfg != nil && runtimeCfg.ContextWindow > 0 {
+					overheadPct := DefaultCompactionOverheadPct
+					if agentDir != "" {
+						if compactCfg, err := LoadCompactConfig(agentDir); err == nil && compactCfg != nil {
+							if compactCfg.CompactOverheadPct >= 0 && compactCfg.CompactOverheadPct < 100 {
+								overheadPct = compactCfg.CompactOverheadPct
+							}
+						}
+					}
+					threshold := int(float64(runtimeCfg.ContextWindow) * (1.0 - (overheadPct / 100.0)))
+
+					var tokens int
+					if tracker.LastPromptTokens > 0 {
+						tokens = int(tracker.LastPromptTokens)
+					} else {
+						tokens = EstimateTokens(req.Contents, runtimeCfg.PreserveThinking)
+					}
+
+					if tokens >= threshold {
+						fmt.Fprintf(os.Stderr, "Warning: agent %q accumulated ~%d tokens in mid-turn tool context, reaching compaction threshold (%d / %d contextWindow) - stopping early for compaction.\n", agentID, tokens, threshold, runtimeCfg.ContextWindow)
 						return &model.LLMResponse{
 							Content: &genai.Content{
 								Role: "model",
 								Parts: []*genai.Part{
-									{Text: fmt.Sprintf("[Accumulated tool context reached ~%d tokens (exceeding %d contextWindow budget) - stopping turn early to allow session compaction. Send another message (e.g. \"continue\") to proceed.]", estTokens, runtimeCfg.ContextWindow)},
+									{Text: fmt.Sprintf("[Accumulated tool context reached ~%d tokens (exceeding %d budget threshold for %d contextWindow) - stopping turn early to allow session compaction. Send another message (e.g. \"continue\") to proceed.]", tokens, threshold, runtimeCfg.ContextWindow)},
 								},
 							},
 						}, nil
@@ -165,7 +219,7 @@ func BuildADKAgentWithConfig(agentID string, renderedPrompt string, maxToolTurns
 				// Stop short rather than error: the caller (human or controlling agent) gets a
 				// clear, successful turn back with a hint to send another message to continue,
 				// instead of losing whatever the tool loop already accomplished.
-				if modelCalls > maxToolTurns+1 {
+				if tracker.ModelCalls > maxToolTurns+1 {
 					fmt.Fprintf(os.Stderr, "Warning: agent %q reached the maximum tool-call turn limit (%d) for this generation - stopping early. Send another message (e.g. \"continue\") to let it keep going.\n", agentID, maxToolTurns)
 					return &model.LLMResponse{
 						Content: &genai.Content{
@@ -187,6 +241,11 @@ func BuildADKAgentWithConfig(agentID string, renderedPrompt string, maxToolTurns
 	}
 
 	return ag, nil
+}
+
+// BuildADKAgentWithConfig constructs a Google ADK LLMAgent for an agent directory, applying RuntimeConfig settings.
+func BuildADKAgentWithConfig(agentID string, renderedPrompt string, maxToolTurns int, runtimeCfg *RuntimeConfig, llmModel model.LLM, tools ...tool.Tool) (agent.Agent, error) {
+	return BuildADKAgentWithConfigAndTracker(agentID, renderedPrompt, maxToolTurns, runtimeCfg, llmModel, "", nil, tools...)
 }
 
 // BuildADKAgent constructs a Google ADK LLMAgent for an agent directory.

@@ -1,6 +1,7 @@
 ---
 append-only: true
 compact-pct: 50
+compact-overhead-pct: 20
 compaction-notice: "Some turns from earlier in this session were just archived into persistent memory above during compaction. If what follows references something not fully detailed there, it's no longer directly visible here - consider using memory or search tools to recover it rather than assuming it never happened."
 description: "This is an append-only compaction that amends MEMORY.md, which is always injected into <PERSISTENT_MEMORY> as the first user turn."
 note: "This is the default compaction prompt and process used if one is not defined. compaction-notice is injected as a synthetic turn right after the surviving history's first turn, once per compaction - set to \"\" to disable it."

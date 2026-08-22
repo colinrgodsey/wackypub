@@ -329,19 +329,23 @@ Compaction prevents conversation history from exceeding LLM context boundaries w
 2. **Session Turns**: All turns from `session.jsonl` (`user` / `model`).
 
 ### Compaction Session Context Layout
-When `estimatedTokens >= contextWindow`:
+Compaction is triggered when session token count reaches `(100 - compact-overhead-pct)%` of `contextWindow` (default 20% overhead margin, configurable in `COMPACT.md`):
+- **Pre-turn**: Evaluates `EstimateTokens` over `session.jsonl` turns before generation begins.
+- **Mid-turn**: Evaluates real provider `PromptTokenCount` before subsequent tool turns (`modelCalls > 1`) and short-circuits early if the threshold is exceeded.
+- **Post-turn**: Evaluates the turn's final `PromptTokenCount` and triggers compaction immediately before returning.
+
+When compaction runs:
 1. **User Turn 1**: Same combined system-prompt + `<PERSISTENT_MEMORY>` text as normal generation *(identical prefix, for prompt caching)*.
-2. **Archived Turns**: First X% of turns from `session.jsonl` (`compactTurns`), then extended forward if needed until the boundary lands right after a `model` turn — so the surviving session (`remainingTurns`) always starts fresh on a `user` turn, never a dangling assistant response whose prompting user turn just got archived.
-3. **Compaction Directive (User Turn)**: the exact wording lives in `CompactionDirectivePrompt` (`pkg/agent/compaction.go`) — read it there rather than here, since it's tuned periodically and a copy in this doc would drift out of sync. Broadly: instructs the model to generate a concise, chronological markdown ADDENDUM capturing new developments from the archived turns (without repeating what `<PERSISTENT_MEMORY>` already has), and explicitly defers to any additional memory-focus guidance the agent's own `AGENTS.md` provides (e.g. a `## Memory Focus` section — see `test_agents/bob/AGENTS.md` for an example).
+2. **Archived Turns**: Oldest turns from `session.jsonl` (determined by `compact-pct`, default 50% token-weighted), extended forward until the boundary lands right after a `model` turn — so the surviving session (`remainingTurns`) always starts fresh on a `user` turn.
+3. **Compaction Directive (User Turn)**: Instructs the model to generate a concise, chronological markdown ADDENDUM capturing new developments from the archived turns (without repeating what `<PERSISTENT_MEMORY>` already has).
 
 ### Memory Update & Session Pruning:
 1. The LLM generates a bulleted markdown **ADDENDUM** (extracted via `ContentText`, which excludes `Thought`-marked parts — reasoning never leaks into `MEMORY.md`).
-2. The addendum is **appended directly** to `<agent_id>/MEMORY.md`.
+2. The addendum is appended to `<agent_id>/MEMORY.md` (or replaces it if `append-only: false`).
 3. The archived turns (`compactTurns`) are removed from `session.jsonl`, keeping only `remainingTurns`.
 
-### Token Estimation
-
-`EstimateTokens` uses a `~4 chars/token` heuristic over turn text. Whether `Thought`-marked reasoning text counts toward that estimate depends on `runtime.json`'s `preserveThinking` (see [§3](#runtimejson)): if the backend actually resends and bills for reasoning on every turn, thinking should count against the budget; if the backend drops or ignores replayed reasoning, it shouldn't.
+### Token Counting & Usage Tracking
+WackyPub tracks real provider usage stats (`PromptTokenCount`) across generation turns and uses `EstimateTokens` (~4 chars/token heuristic, with `preserveThinking` awareness) when estimating offline turn history.
 
 ---
 
@@ -450,7 +454,7 @@ wackypub agent <agent_id> render-prompt
 ```bash
 wackypub agent <agent_id> compact
 ```
-- Manually evaluates and performs session compaction if token threshold is met.
+- Unconditionally performs session compaction on the agent's session history (summarizes oldest turns into MEMORY.md and prunes session.jsonl).
 
 ### Scratchpad Management (`scratchpad`)
 ```bash

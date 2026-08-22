@@ -599,6 +599,7 @@ type FolderAgent struct {
 	MaxToolTurns          int
 	CommandTimeoutSeconds int
 	A2AMeta               *A2AMetadata
+	UsageTracker          *TurnUsageTracker
 }
 
 // LoadFolderAgent loads and initializes an agent from <wsDir>/<agentID>.
@@ -684,8 +685,9 @@ func LoadFolderAgentWithA2A(wsDir string, agentID string, a2aMeta *A2AMetadata, 
 		maxToolTurns = DefaultMaxToolTurns
 	}
 
-	// 6. Construct ADK llmagent with agentID, expanded prompt instruction, maxToolTurns cap, runtimeCfg, model, and tools
-	ag, err := BuildADKAgentWithConfig(agentID, expandedPrompt, maxToolTurns, runtimeCfg, llmModel, toolsList...)
+	// 6. Construct ADK llmagent with agentID, expanded prompt instruction, maxToolTurns cap, runtimeCfg, model, tracker, and tools
+	tracker := &TurnUsageTracker{}
+	ag, err := BuildADKAgentWithConfigAndTracker(agentID, expandedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, toolsList...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build ADK agent for folder agent %s: %w", agentID, err)
 	}
@@ -702,6 +704,7 @@ func LoadFolderAgentWithA2A(wsDir string, agentID string, a2aMeta *A2AMetadata, 
 		MaxToolTurns:          maxToolTurns,
 		CommandTimeoutSeconds: resolvedTimeout,
 		A2AMeta:               a2aMeta,
+		UsageTracker:          tracker,
 	}, nil
 }
 
@@ -722,12 +725,17 @@ func (fa *FolderAgent) GenerateTurn(ctx context.Context) (string, error) {
 	}
 
 	// 1. Check for context window compaction trigger before generating - never
-	// forced here, only wackypub agent compact --force / AgentSDK.CompactSession
-	// can force (D44).
+	// forced here, only wackypub agent compact / AgentSDK.CompactSession
+	// can force (D44, D68).
 	_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, false)
 	if err != nil {
 		// Log compaction warning, but continue execution if possible
 		fmt.Fprintf(os.Stderr, "Warning: session compaction error: %v\n", err)
+	}
+
+	// Reset usage tracker for this generation turn
+	if fa.UsageTracker != nil {
+		fa.UsageTracker.Reset()
 	}
 
 	wsDir := filepath.Dir(fa.AgentDir)
@@ -804,6 +812,42 @@ func (fa *FolderAgent) GenerateTurn(ctx context.Context) (string, error) {
 			}
 			_ = AppendSessionContent(fa.AgentDir, turn)
 			_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image)")
+		}
+	}
+
+	// Post-turn compaction check using real provider usage data (D68.1)
+	if fa.RuntimeConfig != nil && fa.RuntimeConfig.ContextWindow > 0 {
+		compactCfg, err := LoadCompactConfig(fa.AgentDir)
+		overheadPct := DefaultCompactionOverheadPct
+		if err == nil && compactCfg != nil {
+			if compactCfg.CompactOverheadPct >= 0 && compactCfg.CompactOverheadPct < 100 {
+				overheadPct = compactCfg.CompactOverheadPct
+			}
+		}
+		threshold := int(float64(fa.RuntimeConfig.ContextWindow) * (1.0 - (overheadPct / 100.0)))
+
+		var usedTokens int
+		if fa.UsageTracker != nil && (fa.UsageTracker.LastTotalTokens > 0 || fa.UsageTracker.LastPromptTokens > 0) {
+			if fa.UsageTracker.LastTotalTokens > 0 {
+				usedTokens = int(fa.UsageTracker.LastTotalTokens)
+			} else {
+				usedTokens = int(fa.UsageTracker.LastPromptTokens)
+			}
+		} else {
+			if curTurns, err := ReadSessionTurns(fa.AgentDir); err == nil {
+				usedTokens = EstimateTokens(curTurns, fa.RuntimeConfig.PreserveThinking)
+			}
+		}
+
+		if usedTokens >= threshold {
+			// Reset tracker so compaction pass starts with clean call count and state
+			if fa.UsageTracker != nil {
+				fa.UsageTracker.Reset()
+			}
+			_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, true)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: post-turn session compaction error: %v\n", err)
+			}
 		}
 	}
 

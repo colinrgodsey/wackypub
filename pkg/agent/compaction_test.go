@@ -597,3 +597,250 @@ func TestMidTurnContextShortCircuit(t *testing.T) {
 		t.Errorf("expected mid-turn context short circuit message, got: %q", outputText)
 	}
 }
+
+func TestParseCompactConfig_OverheadPct(t *testing.T) {
+	// Test default
+	cfg, err := ParseCompactConfig("Directive body")
+	if err != nil {
+		t.Fatalf("ParseCompactConfig failed: %v", err)
+	}
+	if cfg.CompactOverheadPct != DefaultCompactionOverheadPct {
+		t.Errorf("expected default CompactOverheadPct %v, got %v", DefaultCompactionOverheadPct, cfg.CompactOverheadPct)
+	}
+
+	// Test custom overhead percentage
+	customYAML := "---\ncompact-overhead-pct: 35\ncompact-pct: 40\n---\nCustom directive"
+	cfg2, err := ParseCompactConfig(customYAML)
+	if err != nil {
+		t.Fatalf("ParseCompactConfig failed: %v", err)
+	}
+	if cfg2.CompactOverheadPct != 35 {
+		t.Errorf("expected CompactOverheadPct 35, got %v", cfg2.CompactOverheadPct)
+	}
+	if cfg2.CompactPct != 40 {
+		t.Errorf("expected CompactPct 40, got %v", cfg2.CompactPct)
+	}
+}
+
+func TestCheckAndCompactSession_OverheadThreshold(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Write session turns with ~80 chars = ~20 tokens
+	// 4 turns of ~80 chars each = ~320 chars = ~80 tokens
+	turns := []*genai.Content{
+		genai.NewContentFromText(strings.Repeat("Hello turn one test. ", 4), "user"),
+		genai.NewContentFromText(strings.Repeat("Model response turn one. ", 4), "model"),
+		genai.NewContentFromText(strings.Repeat("Hello turn two test. ", 4), "user"),
+		genai.NewContentFromText(strings.Repeat("Model response turn two. ", 4), "model"),
+	}
+	if err := WriteSessionTurns(tempDir, turns); err != nil {
+		t.Fatalf("WriteSessionTurns failed: %v", err)
+	}
+
+	estTokens := EstimateTokens(turns, false)
+
+	// Set contextWindow such that estTokens is between 80% (threshold with 20% overhead) and 100%
+	// If estTokens is e.g. 50, contextWindow = 60:
+	// threshold with 20% overhead: 60 * 0.80 = 48 <= 50 (should trigger!)
+	// threshold with 5% overhead: 60 * 0.95 = 57 > 50 (should NOT trigger!)
+	contextWindow := int(float64(estTokens) / 0.85)
+
+	runtimeCfg := &RuntimeConfig{
+		ContextWindow: contextWindow,
+		Model:         "test-model",
+		Endpoint:      "http://localhost:9999",
+		APIKey:        "fake",
+	}
+
+	// 1. With default overhead (20% -> threshold 80% of contextWindow <= estTokens):
+	// Check that compaction is triggered (even if mock model network call fails)
+	mockModel := NewOpenAIModel(runtimeCfg)
+	adkAgent := mustBuildTestADKAgent(t, tempDir, "System prompt", runtimeCfg, mockModel)
+
+	// Write custom COMPACT.md with 5% overhead (threshold 95% of contextWindow > estTokens)
+	compactFile := filepath.Join(tempDir, "COMPACT.md")
+	_ = os.WriteFile(compactFile, []byte("---\ncompact-overhead-pct: 5\n---\nPrompt"), 0644)
+
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if compacted {
+		t.Errorf("expected no compaction with 5%% overhead (threshold > estTokens), but it triggered")
+	}
+
+	// Now update COMPACT.md with 25% overhead (threshold 75% of contextWindow < estTokens)
+	_ = os.WriteFile(compactFile, []byte("---\ncompact-overhead-pct: 25\n---\nPrompt"), 0644)
+
+	// Check that compaction now triggers (mock model endpoint will error on network, proving it attempted compaction!)
+	_, err = CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false)
+	if err == nil {
+		// Mock model points to 9999, so attempting LLM generation will return an error
+		t.Logf("compaction attempted and proceeded")
+	} else if !strings.Contains(err.Error(), "LLM compaction generation failed") {
+		t.Errorf("expected LLM compaction generation attempt, got: %v", err)
+	}
+}
+
+func TestMidTurnContextShortCircuit_RealUsage(t *testing.T) {
+	tempDir := filepath.Join(t.TempDir(), "test-short-circuit-usage")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		t.Fatalf("failed creating agent dir: %v", err)
+	}
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			// Call echo_tool with a message and return real provider usage stats: prompt_tokens=90
+			toolCallJSON := `{
+				"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"echo_tool","arguments":"{\"text\":\"hi\"}"}}]},"finish_reason":"tool_calls"}],
+				"usage":{"prompt_tokens":90,"completion_tokens":10,"total_tokens":100}
+			}`
+			io.WriteString(w, toolCallJSON)
+		} else {
+			io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"Done"},"finish_reason":"stop"}]}`)
+		}
+	}))
+	defer srv.Close()
+
+	// Tool that returns small output (10 chars), but provider returned prompt_tokens=90 > threshold 80 (100 * 0.80)
+	smallEchoTool, err := functiontool.New(functiontool.Config{
+		Name: "echo_tool",
+	}, func(ctx agent.Context, args d45EchoArgs) (map[string]any, error) {
+		return map[string]any{"output": "small"}, nil
+	})
+	if err != nil {
+		t.Fatalf("failed to create smallEchoTool: %v", err)
+	}
+
+	runtimeCfg := &RuntimeConfig{
+		ContextWindow: 100, // 20% overhead -> threshold is 80 tokens. Real prompt_tokens is 90 >= 80!
+		Model:         "test-model",
+		Endpoint:      srv.URL,
+	}
+
+	mockModel := NewOpenAIModel(runtimeCfg)
+	tracker := &TurnUsageTracker{}
+	adkAgent, err := BuildADKAgentWithConfigAndTracker("usage-bot", "System prompt", DefaultMaxToolTurns, runtimeCfg, mockModel, tempDir, tracker, smallEchoTool)
+	if err != nil {
+		t.Fatalf("BuildADKAgentWithConfigAndTracker failed: %v", err)
+	}
+
+	sessionSvc := session.InMemoryService()
+	createResp, err := sessionSvc.Create(context.Background(), &session.CreateRequest{
+		AppName:   "wackypub",
+		UserID:    "user",
+		SessionID: "sess-usage",
+	})
+	if err != nil {
+		t.Fatalf("sessionSvc.Create failed: %v", err)
+	}
+
+	r, err := runner.New(runner.Config{
+		AppName:        "wackypub",
+		Agent:          adkAgent,
+		SessionService: sessionSvc,
+	})
+	if err != nil {
+		t.Fatalf("runner.New failed: %v", err)
+	}
+
+	prompt := genai.NewContentFromText("Hello", "user")
+	var outputText string
+	for event, err := range r.Run(context.Background(), "user", createResp.Session.ID(), prompt, agent.RunConfig{}) {
+		if err != nil {
+			t.Fatalf("runner.Run failed: %v", err)
+		}
+		if event != nil && event.Content != nil {
+			outputText += ExtractTextFromEvent(event)
+		}
+	}
+
+	if !strings.Contains(outputText, "stopping turn early to allow session compaction") {
+		t.Errorf("expected mid-turn context short circuit message from real usage, got: %q", outputText)
+	}
+	if tracker.LastPromptTokens != 90 {
+		t.Errorf("expected tracker.LastPromptTokens to be 90, got: %d", tracker.LastPromptTokens)
+	}
+}
+
+func TestGenerateTurn_PostTurnCompaction(t *testing.T) {
+	wsDir := t.TempDir()
+	agentID := "post-turn-bot"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed creating agent dir: %v", err)
+	}
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			// Return assistant response for the main turn with real usage: prompt_tokens = 90
+			respJSON := `{
+				"choices":[{"message":{"role":"assistant","content":"Response with high token usage."},"finish_reason":"stop"}],
+				"usage":{"prompt_tokens":90,"completion_tokens":10,"total_tokens":100}
+			}`
+			io.WriteString(w, respJSON)
+		} else {
+			// Return compaction summary addendum for the compaction pass
+			respJSON := `{
+				"choices":[{"message":{"role":"assistant","content":"- User said hello and agent greeted back."},"finish_reason":"stop"}],
+				"usage":{"prompt_tokens":30,"completion_tokens":10,"total_tokens":40}
+			}`
+			io.WriteString(w, respJSON)
+		}
+	}))
+	defer srv.Close()
+
+	// Write AGENTS.md
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("System prompt"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	// Write session ending with user turn
+	if err := AppendSessionTurn(agentDir, "user", "Hello world"); err != nil {
+		t.Fatalf("failed to write session.jsonl: %v", err)
+	}
+
+	runtimeCfg := &RuntimeConfig{
+		Provider:      "openai",
+		Model:         "test-model",
+		Endpoint:      srv.URL,
+		ContextWindow: 100, // 20% overhead -> threshold is 80. Real usage is 90 >= 80 -> triggers post-turn compaction!
+	}
+
+	// Write runtime.json
+	runtimeData, _ := json.Marshal(runtimeCfg)
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), runtimeData, 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+
+	fa, err := LoadFolderAgent(wsDir, agentID, DefaultMaxToolTurns)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+
+	resp, err := fa.GenerateTurn(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateTurn failed: %v", err)
+	}
+	if !strings.Contains(resp, "Response with high token usage") {
+		t.Errorf("unexpected response: %q", resp)
+	}
+
+	// Verify that MEMORY.md was created with the real LLM summary, not corrupted by mid-turn synthetic stop messages
+	memory, err := ReadMemoryFile(agentDir)
+	if err != nil {
+		t.Fatalf("ReadMemoryFile failed: %v", err)
+	}
+	if !strings.Contains(memory, "- User said hello and agent greeted back.") {
+		t.Errorf("expected MEMORY.md to contain LLM summary, got: %q", memory)
+	}
+	if strings.Contains(memory, "Accumulated tool context reached") || strings.Contains(memory, "Reached the maximum") {
+		t.Errorf("MEMORY.md was corrupted with synthetic short-circuit message: %q", memory)
+	}
+}

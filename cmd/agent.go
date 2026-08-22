@@ -372,24 +372,17 @@ Read-only: does not modify anything.`,
 	},
 }
 
-var forceCompact bool
-
 // wackypub agent <agent_id> compact OR wackypub agent compact <agent_id>
 var agentCompactCmd = &cobra.Command{
 	Use:   "compact [agent_id]",
-	Short: "Manually evaluate and, if needed, perform session compaction",
-	Long: `Evaluates whether the agent's session exceeds the contextWindow token threshold configured
-in runtime.json and, if so, performs the same compaction that "generate"/"prompt" would trigger
-automatically: summarizes the oldest turns (default 50%, or compact-pct in COMPACT.md) into MEMORY.md and removes them
-from session.jsonl. If the session is under the threshold, or contextWindow is 0/unset, this is
-a no-op - it never errors just because compaction wasn't needed.
+	Short: "Perform session compaction on an agent's history",
+	Long: `Performs session compaction on <ws_dir>/<agent_id>/session.jsonl:
+summarizes the oldest turns (default 50%, or compact-pct in COMPACT.md) into MEMORY.md and removes them
+from session.jsonl. Explicitly invoking this command always performs compaction regardless of current
+token count against contextWindow. On a genuinely empty session, this is a clean no-op.
 
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
-
-Pass --force to skip the contextWindow/threshold check and compact regardless - useful for testing
-a custom COMPACT.md without needing to actually grow a session past the real threshold first. Still
-a no-op on a genuinely empty session even with --force.
 
 Prints whether compaction actually ran. Acquires the session lock for the duration of the
 operation.`,
@@ -410,7 +403,7 @@ operation.`,
 		}
 
 		ctx := context.Background()
-		compacted, err := sdk.CompactSession(ctx, agentID, forceCompact)
+		compacted, err := sdk.CompactSession(ctx, agentID, true)
 		if err != nil {
 			return err
 		}
@@ -418,7 +411,7 @@ operation.`,
 		if compacted {
 			fmt.Printf("Compacted agent %q session (%s/session.jsonl); MEMORY.md updated.\n", agentID, sdk.AgentDir(agentID))
 		} else {
-			fmt.Printf("No compaction needed for agent %q (session is under the contextWindow threshold, or contextWindow is unset).\n", agentID)
+			fmt.Printf("No compaction performed for agent %q (session is empty).\n", agentID)
 		}
 		return nil
 	},
@@ -868,8 +861,6 @@ func init() {
 	scratchpadSearchCmd.Flags().BoolVar(&scratchpadRegex, "regex", false, "Treat query as a regular expression pattern")
 	scratchpadSearchCmd.Flags().BoolVar(&scratchpadCaseInsensitive, "case-insensitive", false, "Perform case-insensitive search (default: false)")
 	scratchpadSearchCmd.Flags().IntVar(&scratchpadMaxResults, "max-results", 50, "Maximum number of matching lines to return")
-
-	agentCompactCmd.Flags().BoolVar(&forceCompact, "force", false, "Skip the contextWindow threshold check and compact regardless")
 
 	scratchpadCmd.AddCommand(scratchpadCreateCmd)
 	scratchpadCmd.AddCommand(scratchpadReadCmd)

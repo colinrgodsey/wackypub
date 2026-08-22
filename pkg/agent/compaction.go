@@ -16,6 +16,7 @@ import (
 )
 
 const DefaultCompactionPct = 50.0
+const DefaultCompactionOverheadPct = 20.0
 
 // DefaultCompactMD holds examples/COMPACT.md's content, in the same
 // append-only/compact-pct frontmatter + body shape a real <agentDir>/COMPACT.md
@@ -32,16 +33,18 @@ const DefaultCompactionPct = 50.0
 var DefaultCompactMD string
 
 type CompactFrontmatter struct {
-	AppendOnly       *bool    `yaml:"append-only"`
-	CompactPct       *float64 `yaml:"compact-pct"`
-	CompactionNotice *string  `yaml:"compaction-notice"`
+	AppendOnly         *bool    `yaml:"append-only"`
+	CompactPct         *float64 `yaml:"compact-pct"`
+	CompactOverheadPct *float64 `yaml:"compact-overhead-pct"`
+	CompactionNotice   *string  `yaml:"compaction-notice"`
 }
 
 type CompactConfig struct {
-	AppendOnly       bool
-	CompactPct       float64
-	CompactionNotice string
-	Prompt           string
+	AppendOnly         bool
+	CompactPct         float64
+	CompactOverheadPct float64
+	CompactionNotice   string
+	Prompt             string
 }
 
 // defaultCompactionNotice is CompactConfig.CompactionNotice's fallback when a
@@ -58,9 +61,10 @@ const defaultCompactionNotice = "Some turns from earlier in this session were ju
 // defaults before calling if that matters, the way LoadCompactConfig does.
 func ParseCompactConfig(content string) (*CompactConfig, error) {
 	cfg := &CompactConfig{
-		AppendOnly:       true,
-		CompactPct:       DefaultCompactionPct,
-		CompactionNotice: defaultCompactionNotice,
+		AppendOnly:         true,
+		CompactPct:         DefaultCompactionPct,
+		CompactOverheadPct: DefaultCompactionOverheadPct,
+		CompactionNotice:   defaultCompactionNotice,
 	}
 
 	body := strings.TrimSpace(content)
@@ -85,6 +89,13 @@ func ParseCompactConfig(content string) (*CompactConfig, error) {
 		pct := *fm.CompactPct
 		if pct > 0 && pct <= 100 {
 			cfg.CompactPct = pct
+		}
+	}
+
+	if fm.CompactOverheadPct != nil {
+		overhead := *fm.CompactOverheadPct
+		if overhead >= 0 && overhead < 100 {
+			cfg.CompactOverheadPct = overhead
 		}
 	}
 
@@ -172,19 +183,24 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		return false, nil
 	}
 
-	if !force {
-		if runtimeCfg.ContextWindow <= 0 {
-			return false, nil
-		}
-		estimatedTokens := EstimateTokens(turns, runtimeCfg.PreserveThinking)
-		if estimatedTokens < runtimeCfg.ContextWindow {
-			return false, nil
-		}
-	}
-
 	compactCfg, err := LoadCompactConfig(agentDir)
 	if err != nil {
 		return false, err
+	}
+
+	if !force {
+		if runtimeCfg == nil || runtimeCfg.ContextWindow <= 0 {
+			return false, nil
+		}
+		overheadPct := compactCfg.CompactOverheadPct
+		if overheadPct < 0 || overheadPct >= 100 {
+			overheadPct = DefaultCompactionOverheadPct
+		}
+		threshold := int(float64(runtimeCfg.ContextWindow) * (1.0 - (overheadPct / 100.0)))
+		estimatedTokens := EstimateTokens(turns, runtimeCfg.PreserveThinking)
+		if estimatedTokens < threshold {
+			return false, nil
+		}
 	}
 
 	// Calculate turns to compact based on compactCfg.CompactPct (D38/D63).
