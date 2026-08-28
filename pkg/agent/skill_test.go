@@ -191,12 +191,12 @@ Step 1: Check logs.
 		t.Fatalf("BuildFolderAgentTools failed: %v", err)
 	}
 
-	// 7 tools: create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, run_command, load_skill
-	if len(toolMap) != 7 {
-		t.Errorf("expected 7 tools, got %d", len(toolMap))
+	// 10 tools: create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, run_command, load_skill, load_skill_extra, list_skill_extra, run_skill_script
+	if len(toolMap) != 10 {
+		t.Errorf("expected 10 tools, got %d", len(toolMap))
 	}
-	if len(decls) != 7 {
-		t.Errorf("expected 7 decls, got %d", len(decls))
+	if len(decls) != 10 {
+		t.Errorf("expected 10 decls, got %d", len(decls))
 	}
 
 	loadSkillTool, ok := toolMap["load_skill"]
@@ -320,5 +320,250 @@ Body B
 	}
 	if !strings.Contains(shadowed[0], "skill \"my-skill\"") || !strings.Contains(shadowed[0], "is shadowed by") {
 		t.Errorf("unexpected shadowed warning message: %s", shadowed[0])
+	}
+}
+
+type funcCallTestModel struct {
+	toolName string
+	toolArgs map[string]any
+	calls    int
+}
+
+func (m *funcCallTestModel) Name() string { return "func-call-test-model" }
+
+func (m *funcCallTestModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		m.calls++
+		var res *model.LLMResponse
+		if m.calls == 1 {
+			res = &model.LLMResponse{
+				Content: &genai.Content{
+					Role: "model",
+					Parts: []*genai.Part{
+						{
+							FunctionCall: &genai.FunctionCall{
+								Name: m.toolName,
+								Args: m.toolArgs,
+							},
+						},
+					},
+				},
+			}
+		} else {
+			res = &model.LLMResponse{
+				Content: &genai.Content{
+					Role: "model",
+					Parts: []*genai.Part{
+						{Text: "Task completed successfully."},
+					},
+				},
+			}
+		}
+		yield(res, nil)
+	}
+}
+
+func TestSkillExtraAndScriptTools(t *testing.T) {
+	wsDir := t.TempDir()
+	agentDir := filepath.Join(wsDir, "doc_bot")
+	skillsDir := filepath.Join(agentDir, "skills", "doc-gen")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		t.Fatalf("failed to create skill dir: %v", err)
+	}
+
+	skillContent := `---
+name: doc-gen
+description: Documentation generator skill
+always_load: true
+---
+Use load_skill_extra and run_skill_script for extras.
+`
+	if err := os.WriteFile(filepath.Join(skillsDir, "SKILL.md"), []byte(skillContent), 0644); err != nil {
+		t.Fatalf("failed writing SKILL.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("Prompt DocBot"), 0644); err != nil {
+		t.Fatalf("failed writing AGENTS.md: %v", err)
+	}
+
+	refDir := filepath.Join(skillsDir, "reference")
+	if err := os.MkdirAll(refDir, 0755); err != nil {
+		t.Fatalf("failed creating ref dir: %v", err)
+	}
+	refText := `{"schema_version": "1.0.0"}`
+	if err := os.WriteFile(filepath.Join(refDir, "schema.json"), []byte(refText), 0644); err != nil {
+		t.Fatalf("failed writing schema.json: %v", err)
+	}
+
+	imgDir := filepath.Join(skillsDir, "images")
+	if err := os.MkdirAll(imgDir, 0755); err != nil {
+		t.Fatalf("failed creating img dir: %v", err)
+	}
+	pngHeader := createTestImage(400, 300, false)
+	if err := os.WriteFile(filepath.Join(imgDir, "diag.png"), pngHeader, 0644); err != nil {
+		t.Fatalf("failed writing diag.png: %v", err)
+	}
+
+	scriptsDir := filepath.Join(skillsDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
+		t.Fatalf("failed creating scripts dir: %v", err)
+	}
+	scriptContent := "#!/bin/sh\necho \"ARG1: $1\"\nif [ -n \"$2\" ]; then echo \"ARG2: $2\"; fi\n"
+	scriptPath := filepath.Join(scriptsDir, "test.sh")
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed writing test.sh: %v", err)
+	}
+
+	nonExecPath := filepath.Join(scriptsDir, "non_exec.sh")
+	if err := os.WriteFile(nonExecPath, []byte(scriptContent), 0644); err != nil {
+		t.Fatalf("failed writing non_exec.sh: %v", err)
+	}
+
+	// runtime.json with maxImageDimension = 400
+	runtimeJSON := `{"model":"test-model","endpoint":"http://localhost:1234/v1","maxImageDimension":400}`
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(runtimeJSON), 0644); err != nil {
+		t.Fatalf("failed writing runtime.json: %v", err)
+	}
+
+	// 1. Test ListSkillExtraFiles helper
+	extraFiles, err := ListSkillExtraFiles(skillsDir)
+	if err != nil {
+		t.Fatalf("ListSkillExtraFiles failed: %v", err)
+	}
+	if len(extraFiles) != 4 {
+		t.Errorf("expected 4 extra files, got %d: %v", len(extraFiles), extraFiles)
+	}
+
+	// 2. Test ResolveSkillRelativePath bounds checking
+	resolved, err := ResolveSkillRelativePath(skillsDir, "reference/schema.json")
+	if err != nil {
+		t.Fatalf("ResolveSkillRelativePath failed: %v", err)
+	}
+	if !strings.HasSuffix(resolved, "reference/schema.json") {
+		t.Errorf("unexpected resolved path: %s", resolved)
+	}
+
+	_, err = ResolveSkillRelativePath(skillsDir, "../../../etc/passwd")
+	if err == nil {
+		t.Errorf("expected path traversal to fail, got nil")
+	}
+
+	// 3. Test load_skill_extra (text) via GenerateTurn
+	faText, err := LoadFolderAgent(wsDir, "doc_bot", 10)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+	faText.Model = &funcCallTestModel{
+		toolName: "load_skill_extra",
+		toolArgs: map[string]any{
+			"skill_name":    "doc-gen",
+			"relative_path": "reference/schema.json",
+		},
+	}
+	toolsMap, _, err := BuildFolderAgentTools(agentDir)
+	if err != nil {
+		t.Fatalf("BuildFolderAgentTools failed: %v", err)
+	}
+	var toolsList []tool.Tool
+	for _, tl := range toolsMap {
+		toolsList = append(toolsList, tl)
+	}
+	faText.ADKAgent, err = BuildADKAgentWithConfigAndTracker("doc_bot", faText.SystemPrompt, 10, faText.RuntimeConfig, faText.Model, agentDir, faText.UsageTracker, toolsList...)
+	if err != nil {
+		t.Fatalf("BuildADKAgentWithConfigAndTracker failed: %v", err)
+	}
+
+	_ = AppendSessionContent(agentDir, genai.NewContentFromText("load schema", "user"))
+	_, _ = faText.GenerateTurn(context.Background())
+
+	turns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed: %v", err)
+	}
+	foundSchema := false
+	for _, t := range turns {
+		if t.Role == "user" {
+			for _, p := range t.Parts {
+				if p.FunctionResponse != nil && p.FunctionResponse.Name == "load_skill_extra" {
+					respJSON, _ := json.Marshal(p.FunctionResponse.Response)
+					if strings.Contains(string(respJSON), "schema_version") {
+						foundSchema = true
+					}
+				}
+			}
+		}
+	}
+	if !foundSchema {
+		t.Errorf("expected FunctionResponse to contain schema_version in session")
+	}
+
+	// 4. Test run_skill_script via GenerateTurn
+	faScript, err := LoadFolderAgent(wsDir, "doc_bot", 10)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+	faScript.Model = &funcCallTestModel{
+		toolName: "run_skill_script",
+		toolArgs: map[string]any{
+			"skill_name":    "doc-gen",
+			"relative_path": "scripts/test.sh",
+			"args":          []string{"foo", "bar"},
+		},
+	}
+	faScript.ADKAgent, err = BuildADKAgentWithConfigAndTracker("doc_bot", faScript.SystemPrompt, 10, faScript.RuntimeConfig, faScript.Model, agentDir, faScript.UsageTracker, toolsList...)
+	if err != nil {
+		t.Fatalf("BuildADKAgentWithConfigAndTracker failed: %v", err)
+	}
+
+	_ = AppendSessionContent(agentDir, genai.NewContentFromText("run script", "user"))
+	_, _ = faScript.GenerateTurn(context.Background())
+
+	turns, _ = ReadSessionTurns(agentDir)
+	foundScriptOut := false
+	for _, t := range turns {
+		if t.Role == "user" {
+			for _, p := range t.Parts {
+				if p.FunctionResponse != nil && p.FunctionResponse.Name == "run_skill_script" {
+					respJSON, _ := json.Marshal(p.FunctionResponse.Response)
+					if strings.Contains(string(respJSON), "ARG1: foo") && strings.Contains(string(respJSON), "ARG2: bar") {
+						foundScriptOut = true
+					}
+				}
+			}
+		}
+	}
+	if !foundScriptOut {
+		t.Errorf("expected FunctionResponse to contain ARG1: foo and ARG2: bar in session")
+	}
+
+	// 5. Test load_skill_extra with binary image queues deferred image turn
+	faImg, err := LoadFolderAgent(wsDir, "doc_bot", 10)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+	faImg.Model = &funcCallTestModel{
+		toolName: "load_skill_extra",
+		toolArgs: map[string]any{
+			"skill_name":    "doc-gen",
+			"relative_path": "images/diag.png",
+		},
+	}
+	faImg.ADKAgent, err = BuildADKAgentWithConfigAndTracker("doc_bot", faImg.SystemPrompt, 10, faImg.RuntimeConfig, faImg.Model, agentDir, faImg.UsageTracker, toolsList...)
+	if err != nil {
+		t.Fatalf("BuildADKAgentWithConfigAndTracker failed: %v", err)
+	}
+
+	_ = AppendSessionContent(agentDir, genai.NewContentFromText("load image", "user"))
+	respText, err := faImg.GenerateTurn(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateTurn failed: %v", err)
+	}
+	if !strings.Contains(respText, "queued") {
+		t.Errorf("expected response text to mention queued image, got: %s", respText)
+	}
+
+	turns, _ = ReadSessionTurns(agentDir)
+	lastTurn := turns[len(turns)-1]
+	if lastTurn.Role != "user" || len(lastTurn.Parts) != 2 || lastTurn.Parts[1].InlineData == nil {
+		t.Errorf("expected deferred image user turn at end of session, got: %+v", lastTurn)
 	}
 }

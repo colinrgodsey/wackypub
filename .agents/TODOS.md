@@ -53,15 +53,6 @@ factoring compaction behind some kind of strategy interface/config knob
 instead of the one fixed implementation, once a second real use case for
 a different strategy actually shows up.
 
-## `load_skill_extra` for skill reference files
-
-Real-world skill folders often ship extra reference files alongside
-`SKILL.md`, referenced from the skill body via relative paths (images,
-longer reference docs, example data). Eventually want a companion tool -
-`load_skill_extra(skill_name, relative_path)` - so an agent can pull one
-of those in on demand rather than the skills system only ever exposing
-`SKILL.md`'s own body.
-
 ## No total budget on cross-agent call depth, only cycle prevention
 
 `WACKYPUB_CALL_CHAIN` (D16) stops an agent from being re-entered mid-chain

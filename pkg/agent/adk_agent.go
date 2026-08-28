@@ -282,7 +282,7 @@ func hasDeferredScratchpadResponse(contents []*genai.Content) (bool, []string) {
 	var deferredIDs []string
 	hasDeferred := false
 	for _, p := range last.Parts {
-		if p != nil && p.FunctionResponse != nil && p.FunctionResponse.Name == "get_scratchpad" {
+		if p != nil && p.FunctionResponse != nil && (p.FunctionResponse.Name == "get_scratchpad" || p.FunctionResponse.Name == "load_skill_extra") {
 			respMap := p.FunctionResponse.Response
 			if respMap != nil {
 				if def, ok := respMap["deferred"].(bool); ok && def {

@@ -142,12 +142,12 @@ func TestBuildFolderAgentTools(t *testing.T) {
 		t.Fatalf("BuildFolderAgentTools failed: %v", err)
 	}
 
-	// Should contain create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, run_command, load_skill (7 tools)
-	if len(toolMap) != 7 {
-		t.Errorf("expected 7 tools, got %d", len(toolMap))
+	// Should contain create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, run_command, load_skill, load_skill_extra, list_skill_extra, run_skill_script (10 tools)
+	if len(toolMap) != 10 {
+		t.Errorf("expected 10 tools, got %d", len(toolMap))
 	}
-	if len(decls) != 7 {
-		t.Errorf("expected 7 decls, got %d", len(decls))
+	if len(decls) != 10 {
+		t.Errorf("expected 10 decls, got %d", len(decls))
 	}
 	if _, ok := toolMap["create_scratchpad"]; !ok {
 		t.Errorf("missing create_scratchpad in toolMap")
@@ -311,12 +311,12 @@ func TestRunCommandToolValidationAndExecution(t *testing.T) {
 		t.Fatalf("BuildFolderAgentTools failed: %v", err)
 	}
 
-	// 7 tools in toolMap: create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, run_command, load_skill
-	if len(toolMap) != 7 {
-		t.Fatalf("expected 7 tools in toolMap, got %d", len(toolMap))
+	// 10 tools in toolMap: create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, run_command, load_skill, load_skill_extra, list_skill_extra, run_skill_script
+	if len(toolMap) != 10 {
+		t.Fatalf("expected 10 tools in toolMap, got %d", len(toolMap))
 	}
-	if len(decls) != 7 {
-		t.Fatalf("expected 7 decls, got %d", len(decls))
+	if len(decls) != 10 {
+		t.Fatalf("expected 10 decls, got %d", len(decls))
 	}
 
 	runCmdTool, ok := toolMap["run_command"]
@@ -649,8 +649,11 @@ func TestDeterministicToolOrderingD57(t *testing.T) {
 		"delete_scratchpad",
 		"get_scratchpad",
 		"list_scratchpads",
+		"list_skill_extra",
 		"load_skill",
+		"load_skill_extra",
 		"run_command",
+		"run_skill_script",
 		"search_scratchpad",
 	}
 
