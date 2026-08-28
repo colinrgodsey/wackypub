@@ -191,13 +191,19 @@ Acquires the session lock for the duration of the operation.`,
 		}
 
 		ctx := context.Background()
-		respText, err := sdk.GenerateTurn(ctx, agentID)
-		if err != nil {
-			return err
+		first := true
+		for chunk, err := range sdk.GenerateTurnStream(ctx, agentID) {
+			if err != nil {
+				return err
+			}
+			if chunk != "" {
+				if !first {
+					fmt.Println()
+				}
+				fmt.Println(chunk)
+				first = false
+			}
 		}
-
-		// Print generated assistant response turn to stdout
-		fmt.Println(respText)
 		return nil
 	},
 }
@@ -472,12 +478,19 @@ what's printed, though it is still persisted to session.jsonl).`,
 		}
 
 		ctx := context.Background()
-		respText, err := sdk.AddAndGenerateTurn(ctx, agentID, userMsg)
-		if err != nil {
-			return err
+		first := true
+		for chunk, err := range sdk.AddAndGenerateTurnStream(ctx, agentID, userMsg) {
+			if err != nil {
+				return err
+			}
+			if chunk != "" {
+				if !first {
+					fmt.Println()
+				}
+				fmt.Println(chunk)
+				first = false
+			}
 		}
-
-		fmt.Println(respText)
 		return nil
 	},
 }
@@ -536,12 +549,20 @@ real terminal, not something an agent should invoke on itself via run_command.`,
 				break
 			}
 
-			respText, err := sdk.AddAndGenerateTurn(ctx, agentID, line)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				continue
+			first := true
+			for chunk, err := range sdk.AddAndGenerateTurnStream(ctx, agentID, line) {
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					break
+				}
+				if chunk != "" {
+					if !first {
+						fmt.Println()
+					}
+					fmt.Println(chunk)
+					first = false
+				}
 			}
-			fmt.Println(respText)
 			fmt.Println()
 		}
 		return nil

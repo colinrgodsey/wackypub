@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"google.golang.org/genai"
 )
@@ -127,80 +129,134 @@ func (s *AgentSDK) AddMedia(agentID string, reader io.Reader) (*genai.Content, e
 	return content, nil
 }
 
+// GenerateTurnStream loads the folder agent and generates the assistant turn yielding text chunks as they arrive.
+// Holds the session lock for the entire duration of the stream.
+func (s *AgentSDK) GenerateTurnStream(ctx context.Context, agentID string) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		if agentID == "" {
+			yield("", fmt.Errorf("agentID cannot be empty"))
+			return
+		}
+
+		a2aMeta, err := ValidateAgentTarget(agentID)
+		if err != nil {
+			yield("", err)
+			return
+		}
+
+		agentDir := s.AgentDir(agentID)
+		lock, err := AcquireSessionLock(agentDir)
+		if err != nil {
+			yield("", fmt.Errorf("failed to acquire session lock: %w", err))
+			return
+		}
+		defer lock.Release()
+
+		fa, err := LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
+		if err != nil {
+			yield("", fmt.Errorf("failed to load agent %q: %w", agentID, err))
+			return
+		}
+
+		for chunk, err := range fa.GenerateTurnStream(ctx) {
+			if !yield(chunk, err) {
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
+}
+
 // GenerateTurn loads the folder agent, checks for compaction, generates the next assistant turn,
-// prints to output if configured, and appends the assistant turn to session.jsonl.
+// and returns the full assistant text joined across chunks with \n\n.
 func (s *AgentSDK) GenerateTurn(ctx context.Context, agentID string) (string, error) {
-	if agentID == "" {
-		return "", fmt.Errorf("agentID cannot be empty")
+	var chunks []string
+	for chunk, err := range s.GenerateTurnStream(ctx, agentID) {
+		if err != nil {
+			return "", err
+		}
+		if chunk != "" {
+			chunks = append(chunks, chunk)
+		}
 	}
-
-	a2aMeta, err := ValidateAgentTarget(agentID)
-	if err != nil {
-		return "", err
+	if len(chunks) == 0 {
+		return "", fmt.Errorf("received empty response from agent")
 	}
+	return strings.Join(chunks, "\n\n"), nil
+}
 
-	agentDir := s.AgentDir(agentID)
-	lock, err := AcquireSessionLock(agentDir)
-	if err != nil {
-		return "", fmt.Errorf("failed to acquire session lock: %w", err)
+// AddAndGenerateTurnStream atomically appends a user message and yields assistant response chunks as they arrive under a single lock.
+func (s *AgentSDK) AddAndGenerateTurnStream(ctx context.Context, agentID string, userMessage string) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		if agentID == "" {
+			yield("", fmt.Errorf("agentID cannot be empty"))
+			return
+		}
+		if userMessage == "" {
+			yield("", fmt.Errorf("userMessage cannot be empty"))
+			return
+		}
+
+		a2aMeta, err := ValidateAgentTarget(agentID)
+		if err != nil {
+			yield("", err)
+			return
+		}
+
+		agentDir := s.AgentDir(agentID)
+		if err := os.MkdirAll(agentDir, 0755); err != nil {
+			yield("", fmt.Errorf("failed to create agent directory %s: %w", agentDir, err))
+			return
+		}
+
+		lock, err := AcquireSessionLock(agentDir)
+		if err != nil {
+			yield("", fmt.Errorf("failed to acquire session lock: %w", err))
+			return
+		}
+		defer lock.Release()
+
+		// 1. Append User Turn
+		if err := AppendSessionTurn(agentDir, "user", userMessage); err != nil {
+			yield("", fmt.Errorf("failed to append user turn: %w", err))
+			return
+		}
+
+		// 2. Load Folder Agent & Stream Assistant Turn
+		fa, err := LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
+		if err != nil {
+			yield("", fmt.Errorf("failed to load agent %q: %w", agentID, err))
+			return
+		}
+
+		for chunk, err := range fa.GenerateTurnStream(ctx) {
+			if !yield(chunk, err) {
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
 	}
-	defer lock.Release()
-
-	fa, err := LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
-	if err != nil {
-		return "", fmt.Errorf("failed to load agent %q: %w", agentID, err)
-	}
-
-	resp, err := fa.GenerateTurn(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed during turn generation for agent %q: %w", agentID, err)
-	}
-
-	return resp, nil
 }
 
 // AddAndGenerateTurn atomically appends a user message and generates the assistant response under a single lock.
 func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, agentID string, userMessage string) (string, error) {
-	if agentID == "" {
-		return "", fmt.Errorf("agentID cannot be empty")
+	var chunks []string
+	for chunk, err := range s.AddAndGenerateTurnStream(ctx, agentID, userMessage) {
+		if err != nil {
+			return "", err
+		}
+		if chunk != "" {
+			chunks = append(chunks, chunk)
+		}
 	}
-	if userMessage == "" {
-		return "", fmt.Errorf("userMessage cannot be empty")
+	if len(chunks) == 0 {
+		return "", fmt.Errorf("received empty response from agent")
 	}
-
-	a2aMeta, err := ValidateAgentTarget(agentID)
-	if err != nil {
-		return "", err
-	}
-
-	agentDir := s.AgentDir(agentID)
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create agent directory %s: %w", agentDir, err)
-	}
-
-	lock, err := AcquireSessionLock(agentDir)
-	if err != nil {
-		return "", fmt.Errorf("failed to acquire session lock: %w", err)
-	}
-	defer lock.Release()
-
-	// 1. Append User Turn
-	if err := AppendSessionTurn(agentDir, "user", userMessage); err != nil {
-		return "", fmt.Errorf("failed to append user turn: %w", err)
-	}
-
-	// 2. Load Folder Agent & Generate Assistant Turn
-	fa, err := LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
-	if err != nil {
-		return "", fmt.Errorf("failed to load agent %q: %w", agentID, err)
-	}
-
-	resp, err := fa.GenerateTurn(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed during turn generation for agent %q: %w", agentID, err)
-	}
-
-	return resp, nil
+	return strings.Join(chunks, "\n\n"), nil
 }
 
 // GetAgent loads and returns the FolderAgent object for low-level ADK runner interactions.

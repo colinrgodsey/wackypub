@@ -1,6 +1,11 @@
 package agent
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -84,5 +89,147 @@ func TestSDKReadMemory(t *testing.T) {
 	}
 	if memory != "Fact: Wizard knows fireball." {
 		t.Errorf("memory content mismatch: %s", memory)
+	}
+}
+
+func TestStreamingAndMultiPartTextPreservation(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			// Model outputs text narration ("Let me check that for you.") AND calls a tool (create_scratchpad)
+			io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"Let me check that for you.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"create_scratchpad","arguments":"{\"text\":\"note\"}"}}]},"finish_reason":"tool_calls"}]}`)
+		} else {
+			// Model gives final answer
+			io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"The result is 42."},"finish_reason":"stop"}]}`)
+		}
+	}))
+	defer srv.Close()
+
+	tempDir := t.TempDir()
+	sdk := NewSDK(tempDir)
+
+	agentID := "oracle"
+	agentDir := sdk.AgentDir(agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("You are the Oracle."), 0644); err != nil {
+		t.Fatalf("failed writing AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte("oracle\n"), 0644); err != nil {
+		t.Fatalf("failed to write allowed agents: %v", err)
+	}
+	runtimeJSON := fmt.Sprintf(`{"model":"test-model","endpoint":%q}`, srv.URL)
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(runtimeJSON), 0644); err != nil {
+		t.Fatalf("failed writing runtime.json: %v", err)
+	}
+
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	if err := os.Chdir(agentDir); err != nil {
+		t.Fatalf("failed to chdir to agentDir: %v", err)
+	}
+	defer os.Chdir(origCwd)
+
+	ctx := context.Background()
+
+	// 1. Test AddAndGenerateTurnStream yields both chunks in real time
+	var chunks []string
+	for chunk, err := range sdk.AddAndGenerateTurnStream(ctx, agentID, "What is the answer?") {
+		if err != nil {
+			t.Fatalf("AddAndGenerateTurnStream failed: %v", err)
+		}
+		if chunk != "" {
+			chunks = append(chunks, chunk)
+		}
+	}
+
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 yielded chunks (narration + final answer), got %d: %+v", len(chunks), chunks)
+	}
+	if chunks[0] != "Let me check that for you." {
+		t.Errorf("chunk 0 mismatch: %q", chunks[0])
+	}
+	if chunks[1] != "The result is 42." {
+		t.Errorf("chunk 1 mismatch: %q", chunks[1])
+	}
+
+	// 2. Test AddAndGenerateTurn collects and joins both chunks with \n\n without dropping narration (D69 fix)
+	callCount = 0 // Reset server calls for next turn
+	fullResp, err := sdk.AddAndGenerateTurn(ctx, agentID, "Ask again")
+	if err != nil {
+		t.Fatalf("AddAndGenerateTurn failed: %v", err)
+	}
+	expectedFull := "Let me check that for you.\n\nThe result is 42."
+	if fullResp != expectedFull {
+		t.Errorf("expected joined response %q, got %q (narration dropped!)", expectedFull, fullResp)
+	}
+}
+
+func TestStreamingEarlyBreakReleasesLock(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"Chunk 1","tool_calls":[{"id":"c1","type":"function","function":{"name":"create_scratchpad","arguments":"{\"text\":\"x\"}"}}]},"finish_reason":"tool_calls"}]}`)
+		} else {
+			io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"Chunk 2"},"finish_reason":"stop"}]}`)
+		}
+	}))
+	defer srv.Close()
+
+	tempDir := t.TempDir()
+	sdk := NewSDK(tempDir)
+
+	agentID := "streamer"
+	agentDir := sdk.AgentDir(agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("Streamer agent"), 0644); err != nil {
+		t.Fatalf("failed writing AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte("streamer\n"), 0644); err != nil {
+		t.Fatalf("failed to write allowed agents: %v", err)
+	}
+	runtimeJSON := fmt.Sprintf(`{"model":"test-model","endpoint":%q}`, srv.URL)
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(runtimeJSON), 0644); err != nil {
+		t.Fatalf("failed writing runtime.json: %v", err)
+	}
+
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	if err := os.Chdir(agentDir); err != nil {
+		t.Fatalf("failed to chdir to agentDir: %v", err)
+	}
+	defer os.Chdir(origCwd)
+
+	ctx := context.Background()
+
+	// Break early after first chunk
+	for chunk, err := range sdk.AddAndGenerateTurnStream(ctx, agentID, "Hello") {
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if chunk == "Chunk 1" {
+			break // Early break
+		}
+	}
+
+	// Verify session lock was released cleanly: a subsequent call must acquire lock without blocking/failing
+	callCount = 1 // Next call returns Chunk 2
+	resp, err := sdk.AddAndGenerateTurn(ctx, agentID, "Follow up")
+	if err != nil {
+		t.Fatalf("subsequent call failed (lock held?): %v", err)
+	}
+	if resp != "Chunk 2" {
+		t.Errorf("expected 'Chunk 2', got %q", resp)
 	}
 }

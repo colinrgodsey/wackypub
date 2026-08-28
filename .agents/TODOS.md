@@ -53,70 +53,6 @@ factoring compaction behind some kind of strategy interface/config knob
 instead of the one fixed implementation, once a second real use case for
 a different strategy actually shows up.
 
-## Compaction bypasses the runner pipeline - almost certainly breaks prompt-cache prefix reuse in practice (Resolved: D45)
-
-Fixed - see D45 in DECISIONS.md. `CheckAndCompactSession` now seeds a
-disposable `session.InMemoryService()` with the same turn shape
-`FileSessionService.Get` builds for a real turn, then runs one real
-`runner.Run` call through the agent's own `fa.ADKAgent`. Verified live: the
-wire request for a forced compaction call and a normal `generate` call have
-byte-identical `messages[0]` (system role) and `messages[1]`, and identical
-`tools` arrays. `TestCheckAndCompactSession_WirePayloadMatchesRealTurnShape`
-(`pkg/agent/compaction_test.go`) is the httptest-based wire-payload test this
-TODO asked for.
-
-Original text preserved below for context.
-
-`TestCompactionPrefixPreservation` (`pkg/agent/compaction_test.go`) is
-misleadingly named - it only checks that `MEMORY.md` still exists after a
-compaction call that fails against a fake HTTP endpoint, not that the
-request prefix is actually preserved. Traced through the real code path
-(not just untested, actually confirmed wrong): `CheckAndCompactSession`
-(`pkg/agent/compaction.go`) calls `llmModel.GenerateContent` directly with
-a hand-built `&model.LLMRequest{Model: ..., Contents: contents}` - it
-never goes through `runner.Runner`/the agent's `llmagent` (D19), the same
-pipeline every normal `GenerateTurn` call uses. Two concrete consequences:
-
-1. **No `Tools` on the compaction request at all.** Normal generation
-   always includes the agent's real tool declarations (`create_scratchpad`,
-   `run_command`, etc. - every agent has at least the built-ins).
-   Compaction's `LLMRequest` never sets `Config`/`Tools`, so it sends none.
-2. **The system prompt is glued into the first user turn's literal text**
-   (`firstTurnText := systemPrompt + "\n\n" + memTurnText`) instead of
-   going through whatever system-instruction mechanism the provider
-   adapter normally uses for it (a dedicated field on most providers -
-   Anthropic's `system` param, Gemini's `systemInstruction`, etc., not
-   the first message in the array).
-
-Provider-side prompt caching is keyed on the literal wire-level prefix,
-which for most providers includes the tool declarations array and the
-system-instruction field, not just the conversation turns. A request
-missing the tools array entirely, with the system prompt sitting somewhere
-completely different in the payload, is a structurally different request
-from every normal generation call - it can't share a cached prefix with
-them no matter how carefully the turn *contents* are preserved. The
-function's own doc comment ("preserving the exact session prefix to
-optimize prompt caching") only holds for the turns portion; in the normal
-case (any agent with real tools, which is all of them), it doesn't hold
-for the request as a whole.
-
-Real fix needs to route compaction through the same `ADKAgent`/runner
-path normal generation uses (or otherwise construct the request with the
-same `Tools`/system-instruction handling a real call would use), not just
-a test - a test alone would just keep confirming the same wrong behavior.
-Once fixed, the httptest-based wire-payload test this TODO originally
-asked for (same pattern as `openai_model_test.go`'s reasoning-egress
-tests) is what should verify it going forward.
-
-## How compaction should treat loaded skills (Resolved: D44)
-
-Decided and implemented: the memory addendum notes that a skill was
-loaded and that its content wasn't preserved (reload via `load_skill` if
-still needed), never condenses/summarizes what the skill actually said.
-A new guideline (item 7) in the default compaction prompt
-(`pkg/agent/default_compact.md`) says so explicitly. Verified live that
-the model actually followed it against a real request.
-
 ## `load_skill_extra` for skill reference files
 
 Real-world skill folders often ship extra reference files alongside
@@ -138,18 +74,6 @@ adding a max-depth counter alongside the existing cycle check - likely
 threaded through `WACKYPUB_CALL_CHAIN` the same way `--max-tool-turns`
 caps a single agent's own tool loop.
 
-## No automated test coverage for live cross-agent tool invocation
-
-Discovery (symlinked toolpacks), single-agent tool execution, cross-agent
-`wackypub agent <id> prompt` invocation via `WACKYPUB_ALLOWED_AGENTS`, and
-model-driven multi-hop chaining (one agent calling another twice in a row
-based on the first response) have all been verified live against real
-LLM backends, but only manually - there's no committed test that exercises
-a bob-style agent invoking a peer agent as a subprocess. A synthetic test
-using `httptest` (mocking the model backend the way `openai_model_test.go`
-already does) that drives a two-agent chain end-to-end would catch a
-regression here without requiring a live LLM call.
-
 ## Dedicated `wackypub init` command
 
 Bootstrapping a new workspace's `WACKYPUB_ROOT` file currently requires creating `WACKYPUB_ROOT` by hand (`touch WACKYPUB_ROOT`). A dedicated `wackypub init` command (to create `WACKYPUB_ROOT` and scaffold an agent directory) may be worth adding later.
@@ -169,21 +93,6 @@ actually happening as a tool call spawned from A's own live generation
 `WACKYPUB_CALL_CHAIN` already being non-empty), which would leave manual/
 debugging use from inside an agent's folder unrestricted. Needs a decision
 if this behavior should be refined; currently implemented with the simpler CWD-only check (see DECISIONS.md D16).
-
-## Drop the `adk-utils-go` fork once upstream catches up
-
-`go.mod` currently has:
-
-```
-replace github.com/achetronic/adk-utils-go => github.com/colinrgodsey/adk-utils-go v0.0.0-...
-```
-
-pinned to a specific commit pseudo-version on `github.com/colinrgodsey/adk-utils-go`'s
-`master` (see DECISIONS.md D3). There's no automation re-pinning this - it's
-manually bumped (`go mod edit -replace ... @master && go mod tidy`) whenever
-the fork changes. Once the reasoning-egress fix lands in
-`achetronic/adk-utils-go` upstream and is tagged, drop the `replace`
-directive entirely and depend on a real tagged version.
 
 ## `FolderAgent.RunWithRunner` is unused (Narrowed: D45)
 
@@ -211,22 +120,6 @@ the next read - no error, just a quiet gap in history. `AppendSessionContent`
 could check the file's last byte and insert a newline first if needed.
 Not fixed yet; current mitigation is "don't hand-edit `session.jsonl`
 without checking it still parses afterward."
-
-## `EstimateTokens`'s reasoning-details block cost is not counted
-
-Noted upstream (in the adk-utils-go fork's own gaps list) and true here too:
-a `reasoning_details` block kept in `partMetadata` costs real prompt tokens
-on replay - an encrypted blob is not small - but `EstimateTokens` only walks
-part `Text`, so a session carrying replayed encrypted reasoning has its
-token estimate undercounted relative to what's actually sent on the wire.
-Only matters for agents with `supportsReasoningDetails: true` (which also
-requires a pinned model - see DECISIONS.md D6), so the exposure is narrow,
-but the compaction trigger could fire later than it should for those agents.
-
-## HTTP client timeout (Resolved: 900s default + `timeoutSeconds` knob)
-
-Originally hardcoded to `120s`, causing `context deadline exceeded` during swarm workloads on slow backends (e.g. OpenRouter or local llama-server under high reasoning effort). Resolved by bumping the default HTTP client timeout in `NewOpenAIModel` and `NewAnthropicModel` to 900s (15 minutes; `DefaultHTTPTimeoutSeconds` in `pkg/agent/runtime.go`) and exposing `timeoutSeconds` in `runtime.json` for per-agent overrides.
-
 
 ## No way to cancel an in-flight agent task
 
@@ -326,58 +219,6 @@ history versus just compressing it - worth designing before some
 long-running agent actually hits this, rather than discovered live the
 way most of this project's other gaps have been.
 
-## A receiving agent has no idea whether it was called by another agent or a human (Resolved: `a2a-announce-self` skill, D31)
-
-Traced through the actual cross-agent call path: `AppendSessionTurn`
-wraps whatever text into a plain `{"role":"user","parts":[{"text":...}]}`
-turn - identical in shape whether it came from a human typing at a
-terminal or from another agent's `run_command -> wackypub agent <id>
-prompt "..."` subprocess call. Nothing attaches sender identity anywhere
-- no `senderID` field, no automatic framing, nothing. The only way a
-receiving agent currently learns it's talking to another agent is if the
-caller's message text happens to self-identify by convention, which
-nothing enforces or even documents.
-
-The infrastructure to fix this properly already exists and wouldn't need
-new state: `WACKYPUB_CALL_CHAIN` (D16) already carries exactly this -
-its second-to-last entry, when the chain is longer than 1, *is* the
-direct caller's agent ID (e.g. `"A,B"` by the time B's own generation
-runs if A called B, vs. just `"B"` for a human-initiated top-level call).
-It's currently read only for cycle detection, never surfaced to the
-model or attached to the persisted turn.
-
-Two directions, not yet decided between:
-- **Hard-coded**: `wackypub` itself reads `WACKYPUB_CALL_CHAIN` and
-  automatically injects something like `[Message from agent: A]` ahead of
-  the turn text (or into the rendered system prompt) whenever the chain
-  shows a caller - universal, zero effort for the calling agent, but
-  rigid (fixed format, no room for a caller to add more context about
-  itself than just its ID).
-- **Skill-based**: document a convention teaching agents how to
-  self-identify when calling a peer, and how to interpret/expect that
-  framing when receiving a message - more flexible (a caller could
-  identify itself with role/purpose, not just an ID), but only as
-  reliable as agents actually following the convention, and still needs
-  *some* way to reliably expose the caller's real identity (not just
-  trust self-reported text) if that reliability matters for a given use
-  case.
-
-Current lean is skill-based, for the flexibility - but not yet decided,
-and skill-based still leaves open how (or whether) `WACKYPUB_CALL_CHAIN`
-gets surfaced to the agent at all, since the model has no innate
-visibility into its own process's environment variables.
-
-**Resolved skill-based, self-reported rather than `WACKYPUB_CALL_CHAIN`-derived**:
-`skills/a2a-announce-self/SKILL.md` (D31), an `always_load: true` skill
-instructing an agent to prefix any message it sends to another agent
-with a one-line `[Message from agent: <id>]` preamble. Deliberately
-doesn't solve the "not just trust self-reported text" reliability
-question raised above - if that ever matters for a specific use case
-(e.g. an adversarial or untrusted peer), the `WACKYPUB_CALL_CHAIN`-based
-hard-coded injection this TODO originally proposed is still there to
-build later. Good enough for the common case: cooperative agents in the
-same workspace that just need to know who they're talking to.
-
 ## `files-rw` has no way to search inside a file's content - probably doesn't need its own, for the single-file case
 
 `files-rw` can read a whole file or a line range, but has no way to find
@@ -419,29 +260,6 @@ should document the "pull a file into scratchpad, then `search_scratchpad`
 it" pattern explicitly as the recommended approach for searching inside a
 file, so an agent doesn't go looking for a `files-rw search` command that
 doesn't exist.
-
-## `files-rw` reads a file's full contents into memory before ever checking its size
-
-Found while reviewing D29's `TailFile` (`pkg/filesrw/ops.go`): it calls
-`io.ReadAll(f)` on the *entire* file unconditionally, then only checks
-`MaxReadSizeBytes` against the small formatted "last N lines" *output* -
-so `tail -n 3` on an arbitrarily large file still loads the whole thing
-into memory first, regardless of how few lines were actually requested.
-Not a new bug introduced by D29 - `ReadFile` already has the identical
-shape (`io.ReadAll` on the whole file, then a size check on derived
-output/range, never a check on the raw input size before reading it).
-So this is a pre-existing pattern across the whole read path, now
-confirmed in two places.
-
-Given the live base64/`dev/urandom` resource-exhaustion incident hit
-during swarm testing (`docs/SWARM_TESTING.md`), this is a real
-unbounded-memory vector reachable through `files-rw`'s own command
-surface alone (no `bash` required) - an agent (or adversarial input)
-pointing `read`/`tail` at a multi-GB file could exhaust memory before
-`files-rw` ever gets to reject it. Fix would be checking `os.Stat`'s
-size (or reading in bounded chunks) before `io.ReadAll`, rejecting early
-if the input itself is already unreasonably large - independent of what
-range/line-count was actually requested.
 
 ## `always_load` skills drop their `description` when auto-injected
 
@@ -485,42 +303,6 @@ explicitly in `rootCmd.Long` (something like "no separate directory-
 creation command - `write`/`append` create any missing parent
 directories automatically") so it's visible before an agent goes
 looking for `mkdir` and comes up empty.
-
-## CD: release artifacts for `wackypub`/`files-rw`, plus packaged skill bundles
-
-Not workshopped yet, just captured. Right now `.github/workflows/ci.yml`
-only builds/vets/tests on PR and push to `main` - there's no release
-pipeline, no published binaries, nothing a user or another agent platform
-could download without cloning and building from source.
-
-Wanted, roughly:
-- **CD publishing built `wackypub` and `files-rw` binaries** as release
-  artifacts (presumably a normal cross-platform Go build matrix, presumably
-  tag-triggered - not decided).
-- **A `skillpack.zip`** bundling every skill currently under `skills/`
-  (`wackypub`, `scratchpad-efficiency`, `a2a-announce-self`, whatever's
-  there by the time this gets built) as a single downloadable archive.
-- **A broader `for-agents.zip`**: the skillpack, the built binaries, and an
-  addendum explaining how to install the binaries and set up a workspace
-  from scratch - a single download someone could hand to an agent running
-  on a *different* platform/harness entirely, letting it self-bootstrap
-  wackypub without a human walking it through setup by hand.
-
-Open questions for the actual workshop pass: what the "addendum" doc
-should look like (probably needs to be written agent-facing, like a
-skill, not a human README); whether `for-agents.zip` bundles binaries for
-every platform or needs to be per-platform; what triggers a release
-(tags vs. something else); whether `skillpack.zip` is just a raw archive
-of `skills/` as-is or something more curated.
-
-## Update `skills/wackypub-ws/SKILL.md` once `wackypub trace` (D36) actually ships
-
-The skill currently states plainly that `wackypub trace` is planned, not yet
-implemented (caught in review - an earlier draft documented it with real
-usage syntax as if it already existed, which it didn't). Once D36 actually
-lands, replace that placeholder section with real usage docs, and make sure
-it's consistent with whatever `-v`/verbosity behavior and commit-hopping
-mechanics actually ship, not just what D36 currently describes on paper.
 
 ## `wackypub trace` shows misleading content at a compaction step ("fog of war")
 
@@ -612,3 +394,81 @@ state (meta.json, stdin/stdout/stderr captures, etc.) forever. Not
 urgent - each entry is small and this doesn't affect correctness - but
 worth a `prune` command (or an eviction policy on `run`, mirroring
 `EvictOldestScratchpad`) before `wackyproc` sees heavy real-world use.
+
+## No automatic follow-up turn after a deferred scratchpad image is queued
+
+Confirmed live (via `wackydiscord`, D70's investigation): when `get_scratchpad`
+defers a binary/image entry (D49), the canned response says "It will be
+available in your next turn. Send another message to continue" - but nothing
+actually triggers that next turn automatically. A human has to notice the hint
+and manually send another message before the agent ever reacts to the image;
+otherwise it just sits queued in `session.jsonl` indefinitely.
+
+Discussed doing this transparently inside `AgentSDK.AddAndGenerateTurnStream`'s
+own iterator - detect that a turn just deferred an image (the
+`deferredScratchpadIDs` tracking already exists internally in
+`FolderAgent.GenerateTurnStream`, would just need to be exposed as a checkable
+signal, similar to how `UsageTracker` is already a side-channel alongside the
+stream) and automatically call `GenerateTurnStream` again with no new user
+message (the session already ends on the image-bearing turn once queued),
+yielding that turn's chunks too as part of the same overall stream - fully
+transparent to every consumer (CLI, `wackydiscord`), no changes needed
+downstream of D69's already-reviewed stream consumers.
+
+Deliberately not decided yet: whether this belongs at the SDK level (every
+consumer gets it "for free," but a single `AddAndGenerateTurn` call could then
+silently trigger two full LLM generations instead of one - real cost/latency
+implications even for one-shot CLI/scripted usage that never asked for
+auto-continuation) or scoped specifically to `wackydiscord` (which already has
+more context about driving a live back-and-forth, and is where "a human has to
+notice a subtle text hint" is most acutely a problem). Either way, needs a
+bounded retry cap (a small max auto-continuation count, same spirit as
+`maxToolTurns` bounding a tool loop) to avoid a pathological repeat-deferral
+loop if the agent's reaction to one deferred image immediately defers another.
+
+## No way to escape `<SCRATCHPAD_DATA ... />` so an agent can write a literal example of it
+
+Hit live: an agent writing a skill file documenting how to use the
+scratchpad-macro pattern for loading images needed to include a literal
+example of `<SCRATCHPAD_DATA id="X" />` in the skill's own body text - and
+couldn't, because `ExpandScratchpadMacros` (`pkg/agent/scratchpad.go`) has no
+escape mechanism at all. It's a bare substring check (`strings.Contains(text,
+"<SCRATCHPAD_DATA")`) followed by an unconditional regex replace - any
+well-formed-looking occurrence gets treated as a real macro reference,
+whether the agent meant it as one or was just writing documentation. Confirmed
+via code reading: this hits all three call sites the function has
+(`run_command`'s `args`, `run_command`'s `stdin`, `create_scratchpad`'s
+`text`) - so this isn't just a `create_scratchpad`-specific gap, it also
+breaks writing such an example via `files-rw write`/`bash` through
+`run_command`'s `stdin`, which is almost certainly the actual path this was
+hit through.
+
+No design decided yet, but the shape most templating/macro systems use for
+exactly this problem is a leading-backslash escape (`\<SCRATCHPAD_DATA ... />`
+- the expander recognizes the backslash, skips expansion for that specific
+occurrence, and strips the backslash from the output so the agent gets back
+the literal tag text it intended to write). Worth checking whether the same
+gap/fix applies to the newer `<SCRATCHPAD_EXPAND id="X" />` sentinel (D61) too,
+since it's a sibling convention living in `wackydiscord`, not core - a skill
+documenting *that* pattern would hit the identical problem, just with no
+core-side expansion to escape from (the escaping problem there, if any, would
+be `wackydiscord`-side instead).
+
+## `wackydiscord` silently drops non-image attachments
+
+`HandleMessageCreate`'s attachment loop (`tools/wackydiscord/bot/handlers.go`)
+only matches `image/*` content types or `.png`/`.jpg`/`.jpeg` filenames before
+calling `downloadAttachment`/`SDK.AddMedia`. Anything else - a `.txt`, `.pdf`,
+`.zip`, a code file - just falls through the `if` unhandled: not downloaded,
+not surfaced to the agent, not mentioned to the user. The message's text (if
+any) still goes through normally, so the attachment just silently vanishes.
+
+Confirmed image attachments go through the real `NormalizeAndResizeImage`
+pipeline via `AgentSDK.AddMedia` (D47) - same path as scratchpad-deferred
+images. Generic files obviously shouldn't be dumped straight into model
+context the way an image turn is, but there's currently no alternative path
+at all - no staging to a temp/scratch location the agent could then reach via
+`files-rw`, no scratchpad ingestion, nothing. Needs real design (where would
+a downloaded file even land - the agent's own directory? a dedicated scratch
+subdir? - and how would the agent be told it's there) before building
+anything. No design started yet.

@@ -469,3 +469,78 @@ func TestD49_DeferredImageScratchpad(t *testing.T) {
 		t.Errorf("expected get_scratchpad on image to reject when maxImageDimension is disabled")
 	}
 }
+
+func TestDeferredImage_FailureNoticeAppended(t *testing.T) {
+	wsDir := t.TempDir()
+	agentDir := filepath.Join(wsDir, "corrupted_bot")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("Prompt"), 0644); err != nil {
+		t.Fatalf("failed writing AGENTS.md: %v", err)
+	}
+	// maxImageDimension=400 enabled
+	runtimeJSON := `{"model":"test-model","endpoint":"http://localhost:1234/v1","maxImageDimension":400}`
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(runtimeJSON), 0644); err != nil {
+		t.Fatalf("failed writing runtime.json: %v", err)
+	}
+
+	// Create binary scratchpad with valid PNG signature prefix but truncated/corrupted payload
+	corruptedPngBytes := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00}
+	corruptedEntry, err := CreateBinaryScratchpad(agentDir, corruptedPngBytes, "corrupted", "image/png")
+	if err != nil {
+		t.Fatalf("CreateBinaryScratchpad failed: %v", err)
+	}
+
+	fa, err := LoadFolderAgent(wsDir, "corrupted_bot", 10)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+
+	toolsMap, _, err := BuildFolderAgentTools(agentDir)
+	if err != nil {
+		t.Fatalf("BuildFolderAgentTools failed: %v", err)
+	}
+	var toolsList []tool.Tool
+	for _, tl := range toolsMap {
+		toolsList = append(toolsList, tl)
+	}
+
+	fa.Model = &getScratchpadTestModel{id: corruptedEntry.ID}
+	fa.ADKAgent, err = BuildADKAgentWithConfig("corrupted_bot", fa.SystemPrompt, 1, fa.RuntimeConfig, fa.Model, toolsList...)
+	if err != nil {
+		t.Fatalf("BuildADKAgentWithConfig failed: %v", err)
+	}
+
+	// Add initial user turn
+	_ = AppendSessionContent(agentDir, genai.NewContentFromText("please inspect corrupted image", "user"))
+
+	respText, err := fa.GenerateTurn(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateTurn failed: %v", err)
+	}
+	if !strings.Contains(respText, "queued") {
+		t.Errorf("expected confirmation of queued image, got: %s", respText)
+	}
+
+	// Check session turns: must end on a user turn containing <IMAGE_ERROR>
+	turns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed: %v", err)
+	}
+
+	if len(turns) == 0 {
+		t.Fatalf("expected session turns to be present")
+	}
+
+	lastTurn := turns[len(turns)-1]
+	if lastTurn.Role != "user" {
+		t.Errorf("expected last turn to be role user, got: %s", lastTurn.Role)
+	}
+
+	lastText := ContentText(lastTurn)
+	if !strings.Contains(lastText, "<IMAGE_ERROR>") || !strings.Contains(lastText, corruptedEntry.ID) {
+		t.Errorf("expected last turn to contain <IMAGE_ERROR> with scratchpad ID %q, got: %s", corruptedEntry.ID, lastText)
+	}
+}
