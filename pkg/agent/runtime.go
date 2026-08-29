@@ -71,9 +71,18 @@ type RuntimeConfig struct {
 	MaxImageDimension int `json:"maxImageDimension,omitempty"`
 }
 
+// DefaultRuntimeJSON holds examples/runtimes/openrouter-auto.json's content (D74).
+//
+// Set from main.go, which embeds examples/runtimes/openrouter-auto.json and assigns
+// it here before cmd.Execute() runs - mirrors DefaultCompactMD (D45), required because
+// examples/ isn't reachable by a //go:embed directive living in pkg/agent.
+// Tests populate this themselves (see TestMain in test files) or via direct assignment.
+var DefaultRuntimeJSON string
+
 // LoadRuntimeConfig reads and unmarshals runtime.json for an agent.
 // Loads workspace root and per-agent .env files, expands environment variables (${VAR} / $VAR) in runtime.json data,
 // and handles symlinks transparently using os.ReadFile / filepath.EvalSymlinks.
+// Falls back to DefaultRuntimeJSON (bundled openrouter-auto) when runtime.json is absent (D74).
 func LoadRuntimeConfig(agentDir string) (*RuntimeConfig, error) {
 	// 0. Load root and per-agent .env files into environment
 	_, _ = LoadAgentDotEnv(agentDir)
@@ -92,8 +101,14 @@ func LoadRuntimeConfig(agentDir string) (*RuntimeConfig, error) {
 	}
 
 	data, err := os.ReadFile(realPath)
+	usingDefault := false
 	if err != nil {
-		return nil, fmt.Errorf("failed to read runtime config from %s: %w", runtimePath, err)
+		if os.IsNotExist(err) && DefaultRuntimeJSON != "" {
+			data = []byte(DefaultRuntimeJSON)
+			usingDefault = true
+		} else {
+			return nil, fmt.Errorf("failed to read runtime config from %s: %w", runtimePath, err)
+		}
 	}
 
 	// Expand environment variables (${VAR} / $VAR) in runtime.json data
@@ -102,6 +117,10 @@ func LoadRuntimeConfig(agentDir string) (*RuntimeConfig, error) {
 	var cfg RuntimeConfig
 	if err := json.Unmarshal([]byte(expandedData), &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse runtime.json at %s: %w", runtimePath, err)
+	}
+
+	if usingDefault && cfg.APIKey == "" {
+		return nil, fmt.Errorf("no runtime.json found for agent in %s; using bundled default openrouter-auto configuration, but OPENROUTER_API_KEY is not set (see examples/runtimes/README.md for setup instructions)", agentDir)
 	}
 
 	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))

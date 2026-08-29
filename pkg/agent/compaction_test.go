@@ -34,6 +34,13 @@ func TestMain(m *testing.M) {
 		panic("failed to read examples/COMPACT.md for tests: " + err.Error())
 	}
 	DefaultCompactMD = string(data)
+
+	rtData, err := os.ReadFile("../../examples/runtimes/openrouter-auto.json")
+	if err != nil {
+		panic("failed to read examples/runtimes/openrouter-auto.json for tests: " + err.Error())
+	}
+	DefaultRuntimeJSON = string(rtData)
+
 	os.Exit(m.Run())
 }
 

@@ -22,9 +22,17 @@ var bundledWSSkill string
 //go:embed examples/COMPACT.md
 var bundledDefaultCompactMD string
 
+// bundledDefaultRuntimeJSON is examples/runtimes/openrouter-auto.json, the default
+// runtime configuration shipped in the binary (D74). Assigned directly into pkg/agent's
+// DefaultRuntimeJSON var so LoadRuntimeConfig falls back to it when runtime.json is absent.
+//
+//go:embed examples/runtimes/openrouter-auto.json
+var bundledDefaultRuntimeJSON string
+
 func main() {
 	cmd.BundledA2ASkill = bundledA2ASkill
 	cmd.BundledWSSkill = bundledWSSkill
 	adkAgent.DefaultCompactMD = bundledDefaultCompactMD
+	adkAgent.DefaultRuntimeJSON = bundledDefaultRuntimeJSON
 	cmd.Execute()
 }

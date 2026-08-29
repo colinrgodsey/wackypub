@@ -1434,4 +1434,20 @@ Only fires if `MEMORY.md` actually changed - i.e. `addendum != ""` after the com
 
 **Why**: Gives git history an honest, separately-diffable boundary between "what compaction decided to summarize" and "what got pruned as a result" - a future `trace` improvement (or just a human doing `git log`/`git show` by hand) can now see exactly which turns were archived and what they became, instead of inferring it from a turn-count delta across a single conflated commit. Small, additive change - no behavior changes for anything that isn't specifically reading git history around a compaction event.
 
+## D74: Bundled `openrouter-auto` becomes the default `runtime.json` when an agent has none
+
+Implemented in `pkg/agent/runtime.go` and `main.go`.
+
+**The problem**: `LoadRuntimeConfig` (`pkg/agent/runtime.go`) hard-fails whenever `<agentDir>/runtime.json` doesn't exist - a brand-new agent directory with just an `AGENTS.md` can't generate a single turn until a human manually copies or symlinks in one of the templates from `examples/runtimes/` (per that directory's own README - "copy one, configure your `.env`... and either point `runtime.json` directly at it or symlink it in"). There's no working-out-of-the-box path.
+
+**Fix**: mirror `COMPACT.md`'s existing embedded-default pattern (D44/D45) exactly. `examples/runtimes/openrouter-auto.json` (already env-var-templated - `"apiKey": "${OPENROUTER_API_KEY}"`, already expanded today via `LoadRuntimeConfig`'s existing `os.ExpandEnv` call, no new plumbing needed there) gets embedded in `main.go` via `//go:embed` and assigned into a new `pkg/agent.DefaultRuntimeJSON` var, the same indirection `DefaultCompactMD` already uses and for the same reason - `examples/` isn't reachable by a `//go:embed` directive living inside `pkg/agent` itself.
+
+`LoadRuntimeConfig` falls back to `DefaultRuntimeJSON` only when `runtime.json` is completely absent (`os.IsNotExist` on the resolved path - already covers both "never created" and "dangling symlink to a since-removed example," since `EvalSymlinks` fails identically for both cases today). A `runtime.json` that exists but fails to parse still hard-errors exactly as it does now - swapping in a default for a *broken* config would mask a real mistake instead of surfacing it, which is a materially different situation from "never configured at all."
+
+`InspectAgent`/`wackypub workspace <id>` is unaffected - it already checks `runtime.json`'s existence directly via `pathExists`, not through `LoadRuntimeConfig`, so it keeps correctly reporting "no `runtime.json` present" as a diagnostic fact rather than being fooled by the fallback silently succeeding underneath it.
+
+**Fail-fast on a missing API key, specifically for this fallback path**: when `DefaultRuntimeJSON` is the config actually in use and the expanded `apiKey` is still empty (i.e. `OPENROUTER_API_KEY` isn't set in the environment or workspace `.env` either - likely for exactly the brand-new-agent case this feature targets), `LoadRuntimeConfig` returns a clear error naming the missing env var and pointing at `examples/runtimes/README.md`, instead of letting an empty key reach OpenRouter and surface as a generic 401 several layers downstream.
+
+**Why**: Gets a brand-new agent directory working the instant `AGENTS.md` exists, with zero required setup beyond exporting one API key - `openrouter-auto` specifically chosen (over pinning a single model) because "auto" routing degrades gracefully as a sane default rather than committing a new agent to one specific backend nobody chose on purpose. Reuses the exact embedding mechanism and fallback-only-on-absence semantics `COMPACT.md`'s default already established, rather than inventing a second pattern for the same kind of problem.
+
 

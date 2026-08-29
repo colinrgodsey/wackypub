@@ -238,7 +238,7 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 
 	var issues []string
 	if !insp.RuntimeJSONExists {
-		issues = append(issues, "runtime.json is missing - generation will fail until one is added (see docs/agents.md §3 for the schema).")
+		issues = append(issues, "runtime.json is missing - generation will fall back to the bundled openrouter-auto default (requires OPENROUTER_API_KEY), or add your own (see docs/agents.md §3 for the schema).")
 	} else if !insp.RuntimeJSONValid {
 		issues = append(issues, fmt.Sprintf("runtime.json failed to parse: %s", insp.RuntimeJSONError))
 	}
