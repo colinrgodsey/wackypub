@@ -11,6 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
@@ -842,5 +845,154 @@ func TestGenerateTurn_PostTurnCompaction(t *testing.T) {
 	}
 	if strings.Contains(memory, "Accumulated tool context reached") || strings.Contains(memory, "Reached the maximum") {
 		t.Errorf("MEMORY.md was corrupted with synthetic short-circuit message: %q", memory)
+	}
+}
+
+func TestCompactionGitTwoCommitsD73(t *testing.T) {
+	wsDir := t.TempDir()
+	agentID := "bob"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+
+	if err := InitAgentGit(wsDir, agentID); err != nil {
+		t.Fatalf("InitAgentGit failed: %v", err)
+	}
+
+	// Write AGENTS.md
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("Prompt Bob"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	// Seed 4 turns (2 user, 2 model)
+	turns := []*genai.Content{
+		genai.NewContentFromText("Turn 1 user", "user"),
+		genai.NewContentFromText("Turn 1 assistant", "model"),
+		genai.NewContentFromText("Turn 2 user", "user"),
+		genai.NewContentFromText("Turn 2 assistant", "model"),
+	}
+	if err := WriteSessionTurns(agentDir, turns); err != nil {
+		t.Fatalf("failed to write session turns: %v", err)
+	}
+
+	// Commit initial state
+	if err := CommitWorkspaceEvent(wsDir, agentID, "user"); err != nil {
+		t.Fatalf("initial CommitWorkspaceEvent failed: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		respJSON := `{
+			"choices":[{"message":{"role":"assistant","content":"- Facts from turns 1 and 2."},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":30}
+		}`
+		io.WriteString(w, respJSON)
+	}))
+	defer srv.Close()
+
+	runtimeCfg := &RuntimeConfig{
+		Provider:      "openai",
+		Model:         "test-model",
+		Endpoint:      srv.URL,
+		ContextWindow: 100,
+	}
+
+	mockModel := NewOpenAIModel(runtimeCfg)
+	adkAgent := mustBuildTestADKAgent(t, agentDir, "Prompt Bob", runtimeCfg, mockModel)
+
+	compacted, err := CheckAndCompactSession(context.Background(), agentDir, runtimeCfg, adkAgent, true)
+	if err != nil {
+		t.Fatalf("CheckAndCompactSession failed: %v", err)
+	}
+	if !compacted {
+		t.Fatalf("expected compaction to occur")
+	}
+
+	// Verify git history has the two distinct commits in sequence
+	repo, err := git.PlainOpen(agentDir)
+	if err != nil {
+		t.Fatalf("failed to open git repo: %v", err)
+	}
+
+	headRef, err := repo.Head()
+	if err != nil {
+		t.Fatalf("failed to get HEAD: %v", err)
+	}
+
+	cIter, err := repo.Log(&git.LogOptions{From: headRef.Hash()})
+	if err != nil {
+		t.Fatalf("failed to get commit log: %v", err)
+	}
+
+	var commits []*plumbing.Hash
+	var commitObjs []*object.Commit
+	err = cIter.ForEach(func(c *object.Commit) error {
+		h := c.Hash
+		commits = append(commits, &h)
+		commitObjs = append(commitObjs, c)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed iterating commits: %v", err)
+	}
+
+	// Should have:
+	// commitObjs[0] = "compact" (session pruned)
+	// commitObjs[1] = "compact (memory)" (memory updated, full session still present)
+	// commitObjs[2] = "user" (initial)
+	if len(commitObjs) < 3 {
+		t.Fatalf("expected at least 3 commits, got %d", len(commitObjs))
+	}
+
+	// 1. Check HEAD commit ("compact")
+	if !strings.HasPrefix(commitObjs[0].Message, "compact\n") {
+		t.Errorf("expected HEAD commit to be 'compact', got message: %q", commitObjs[0].Message)
+	}
+	tree0, err := commitObjs[0].Tree()
+	if err != nil {
+		t.Fatalf("failed to get tree0: %v", err)
+	}
+	f0, err := tree0.File("session.jsonl")
+	if err != nil {
+		t.Fatalf("failed to get session.jsonl from tree0: %v", err)
+	}
+	r0, _ := f0.Reader()
+	b0, _ := io.ReadAll(r0)
+	// Post-prune session should contain COMPACTION_NOTICE
+	if !strings.Contains(string(b0), "COMPACTION_NOTICE") {
+		t.Errorf("expected session.jsonl in HEAD commit to contain COMPACTION_NOTICE, got:\n%s", string(b0))
+	}
+
+	// 2. Check parent commit ("compact (memory)")
+	if !strings.HasPrefix(commitObjs[1].Message, "compact (memory)\n") {
+		t.Errorf("expected parent commit to be 'compact (memory)', got message: %q", commitObjs[1].Message)
+	}
+	tree1, err := commitObjs[1].Tree()
+	if err != nil {
+		t.Fatalf("failed to get tree1: %v", err)
+	}
+	f1Mem, err := tree1.File("MEMORY.md")
+	if err != nil {
+		t.Fatalf("failed to get MEMORY.md from tree1: %v", err)
+	}
+	r1Mem, _ := f1Mem.Reader()
+	b1Mem, _ := io.ReadAll(r1Mem)
+	if !strings.Contains(string(b1Mem), "Facts from turns 1 and 2.") {
+		t.Errorf("expected MEMORY.md in parent commit to contain addendum, got:\n%s", string(b1Mem))
+	}
+
+	f1Sess, err := tree1.File("session.jsonl")
+	if err != nil {
+		t.Fatalf("failed to get session.jsonl from tree1: %v", err)
+	}
+	r1Sess, _ := f1Sess.Reader()
+	b1Sess, _ := io.ReadAll(r1Sess)
+	// Pre-prune session should still have all original turns (e.g. Turn 1 user) and NOT have compaction notice
+	if !strings.Contains(string(b1Sess), "Turn 1 user") {
+		t.Errorf("expected session.jsonl in 'compact (memory)' commit to still contain Turn 1, got:\n%s", string(b1Sess))
+	}
+	if strings.Contains(string(b1Sess), "COMPACTION_NOTICE") {
+		t.Errorf("expected session.jsonl in 'compact (memory)' commit not to contain COMPACTION_NOTICE")
 	}
 }

@@ -329,6 +329,9 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		if err := WriteMemoryFile(agentDir, newMemory); err != nil {
 			return false, fmt.Errorf("failed to update MEMORY.md: %w", err)
 		}
+
+		wsDir := filepath.Dir(agentDir)
+		_ = CommitWorkspaceEvent(wsDir, agentID, "compact (memory)")
 	}
 
 	// Flag the discontinuity to whatever generates the next real turn (D46):
