@@ -4,3 +4,6 @@
 /wackypub
 session.lock
 /.swarm-ws
+
+# Claude Code per-project session metadata
+/.claude/
