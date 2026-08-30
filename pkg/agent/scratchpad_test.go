@@ -469,7 +469,9 @@ func TestGetScratchpad_ContextWindowCap(t *testing.T) {
 func TestGetScratchpad_FallbackCap(t *testing.T) {
 	agentDir := t.TempDir()
 
-	// No runtime.json (contextWindow unset) -> 200KB fallback cap
+	// No local runtime.json, but D74 means LoadRuntimeConfig now falls back to
+	// DefaultRuntimeJSON (contextWindow=200000), so the token-based cap fires
+	// rather than the old byte-based fallback path.
 	largeData := strings.Repeat("A", MaxScratchpadReadSizeBytes+1024)
 	entry, err := CreateScratchpad(agentDir, largeData, "test")
 	if err != nil {
@@ -477,7 +479,7 @@ func TestGetScratchpad_FallbackCap(t *testing.T) {
 	}
 
 	_, err = GetScratchpad(agentDir, entry.ID, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "exceeds the 204800 byte read limit") {
-		t.Fatalf("expected 200KB fallback cap error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "exceeds the single-read limit") {
+		t.Fatalf("expected read cap error, got: %v", err)
 	}
 }

@@ -82,6 +82,10 @@ func TestValidateAgentTarget_CallChain(t *testing.T) {
 	}
 	defer os.Chdir(origCwd)
 
+	origA2A := os.Getenv(Agent2AgentEnvVar)
+	defer os.Setenv(Agent2AgentEnvVar, origA2A)
+	os.Setenv(Agent2AgentEnvVar, "")
+
 	origChain := os.Getenv(CallChainEnvVar)
 	defer os.Setenv(CallChainEnvVar, origChain)
 
@@ -110,6 +114,10 @@ func TestValidateAgentTarget_Allowlist(t *testing.T) {
 	tmpDir := t.TempDir()
 	origWd, _ := os.Getwd()
 	defer os.Chdir(origWd)
+
+	origA2A := os.Getenv(Agent2AgentEnvVar)
+	defer os.Setenv(Agent2AgentEnvVar, origA2A)
+	os.Setenv(Agent2AgentEnvVar, "")
 
 	origChain := os.Getenv(CallChainEnvVar)
 	defer os.Setenv(CallChainEnvVar, origChain)

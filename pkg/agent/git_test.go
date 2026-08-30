@@ -179,6 +179,16 @@ func TestCrossAgentGitRevisionLineage(t *testing.T) {
 	}
 
 	// 2. Validate target 'jax' from bobDir CWD
+	// Clear both A2A env vars so inherited invocation context doesn't leak into
+	// ValidateAgentTarget's call chain calculation (ParseA2AMetadata checks AGENT2AGENT
+	// first and falls back to WACKYPUB_CALL_CHAIN, so both need isolating).
+	origA2A := os.Getenv(Agent2AgentEnvVar)
+	defer os.Setenv(Agent2AgentEnvVar, origA2A)
+	os.Setenv(Agent2AgentEnvVar, "")
+	origChain := os.Getenv(CallChainEnvVar)
+	defer os.Setenv(CallChainEnvVar, origChain)
+	os.Setenv(CallChainEnvVar, "")
+
 	origCwd, _ := os.Getwd()
 	if err := os.Chdir(bobDir); err != nil {
 		t.Fatalf("failed to chdir to bobDir: %v", err)
@@ -198,9 +208,7 @@ func TestCrossAgentGitRevisionLineage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to encode denseMeta: %v", err)
 	}
-	origA2A := os.Getenv(Agent2AgentEnvVar)
-	defer os.Setenv(Agent2AgentEnvVar, origA2A)
-	os.Setenv(Agent2AgentEnvVar, denseMeta)
+	os.Setenv(Agent2AgentEnvVar, denseMeta) // origA2A already saved/deferred above
 
 	// 4. Jax appends a turn and commits
 	if err := AppendSessionTurn(jaxDir, "user", "Message for Jax"); err != nil {
