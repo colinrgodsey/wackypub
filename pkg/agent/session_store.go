@@ -51,8 +51,11 @@ func ReadSessionTurns(agentDir string) ([]*genai.Content, error) {
 }
 
 // AppendSessionContent appends a genai.Content turn to <agent_dir>/session.jsonl.
+// If the file exists and its last byte is not a newline (e.g. from a hand-edit that
+// dropped the trailing newline), a healing '\n' is written first so the new turn lands
+// on its own line rather than being merged with the previous one. See D75.
 func AppendSessionContent(agentDir string, content *genai.Content) error {
-	sessionPath := filepath.Join(agentDir, "session.jsonl")
+	sessionPath := filepath.Join(agentDir, SessionFileName)
 
 	data, err := json.Marshal(content)
 	if err != nil {
@@ -60,14 +63,32 @@ func AppendSessionContent(agentDir string, content *genai.Content) error {
 	}
 	data = append(data, '\n')
 
-	file, err := os.OpenFile(sessionPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	// O_RDWR required for ReadAt (used to check the last byte below).
+	// O_APPEND ensures writes are still atomically forced to end-of-file.
+	file, err := os.OpenFile(sessionPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
-		return fmt.Errorf("failed to open session.jsonl for writing: %w", err)
+		return fmt.Errorf("failed to open %s for writing: %w", SessionFileName, err)
 	}
 	defer file.Close()
 
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat %s: %w", SessionFileName, err)
+	}
+	if info.Size() > 0 {
+		lastByte := make([]byte, 1)
+		if _, err := file.ReadAt(lastByte, info.Size()-1); err != nil {
+			return fmt.Errorf("failed to read last byte of %s: %w", SessionFileName, err)
+		}
+		if lastByte[0] != '\n' {
+			if _, err := file.Write([]byte{'\n'}); err != nil {
+				return fmt.Errorf("failed to write healing newline to %s: %w", SessionFileName, err)
+			}
+		}
+	}
+
 	if _, err := file.Write(data); err != nil {
-		return fmt.Errorf("failed to write content to session.jsonl: %w", err)
+		return fmt.Errorf("failed to write content to %s: %w", SessionFileName, err)
 	}
 
 	return nil

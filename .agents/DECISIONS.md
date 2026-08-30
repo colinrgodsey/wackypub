@@ -1434,6 +1434,18 @@ Only fires if `MEMORY.md` actually changed - i.e. `addendum != ""` after the com
 
 **Why**: Gives git history an honest, separately-diffable boundary between "what compaction decided to summarize" and "what got pruned as a result" - a future `trace` improvement (or just a human doing `git log`/`git show` by hand) can now see exactly which turns were archived and what they became, instead of inferring it from a turn-count delta across a single conflated commit. Small, additive change - no behavior changes for anything that isn't specifically reading git history around a compaction event.
 
+## D75: `AppendSessionContent` heals a missing trailing newline before appending
+
+Implemented in `pkg/agent/session_store.go`.
+
+**The problem**: `ReadSessionTurns` silently skips any line it can't unmarshal (by design - one bad line shouldn't take down the whole session). If `session.jsonl`'s last line has no trailing newline (e.g. after a hand-edit) and `AppendSessionContent` then appends a new turn, the two JSON objects land on one line. That merged line can't be unmarshaled, so both turns silently drop from history on the next read - a coherence gap with no error signal. Documented in AGENTS.md's Gotchas section and in TODOS.md.
+
+**Fix**: `AppendSessionContent` now opens the file with `O_RDWR|O_APPEND` (previously `O_WRONLY|O_APPEND`), calls `Stat` to check the file size, and if the file is non-empty uses `ReadAt` to inspect the last byte. If the last byte is not `'\n'`, it writes a single healing newline before the new content. `ReadAt` reads from an absolute offset without moving the file position, so the subsequent append-mode write still lands at end-of-file correctly. The check is O(1) - one `Stat` and one `ReadAt` per append call; no seek needed.
+
+**Why not fix this in `ReadSessionTurns` instead**: the corruption happens at write time and is visible on disk immediately after. A read-side fix (e.g., splitting on `}{` to recover merged objects) would be fragile, format-specific, and invisible to any other tool reading the file directly. Healing at write time is the minimal, correct boundary.
+
+**Consequence**: the first `AppendSessionContent` call after a trailing-newline-stripping hand-edit now transparently repairs the file. The session lock (held by all callers of the mutating SDK methods that call `AppendSessionContent`) serializes concurrent appenders, so there is no new race condition introduced.
+
 ## D74: Bundled `openrouter-auto` becomes the default `runtime.json` when an agent has none
 
 Implemented in `pkg/agent/runtime.go` and `main.go`.

@@ -101,16 +101,13 @@ plus the archived turns) before the new message. Either find `RunWithRunner`
 a real caller with that single-fresh-prompt shape (a plain one-off
 generation outside the session.jsonl-backed flow) or remove it.
 
-## `session.jsonl` has no defense against the missing-trailing-newline corruption mode
+## ~~`session.jsonl` has no defense against the missing-trailing-newline corruption mode~~ (closed D75)
 
-Documented in `.agents/AGENTS.md`'s Gotchas section and hit for real during
-manual testing: if the file's last line lacks a trailing newline (e.g. from
-an external edit) and `AppendSessionContent` appends to it, the two JSON
-objects land on one line and get silently skipped by `ReadSessionTurns` on
-the next read - no error, just a quiet gap in history. `AppendSessionContent`
-could check the file's last byte and insert a newline first if needed.
-Not fixed yet; current mitigation is "don't hand-edit `session.jsonl`
-without checking it still parses afterward."
+Fixed in `pkg/agent/session_store.go`. `AppendSessionContent` now checks the
+last byte of the file before appending and writes a healing `'\n'` if it's
+missing. The Gotchas entry in `AGENTS.md` can be removed or softened now that
+the fix is in place; the mitigation note ("don't hand-edit without checking")
+is no longer the only protection.
 
 ## No way to cancel an in-flight agent task
 

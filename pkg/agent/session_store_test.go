@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"google.golang.org/genai"
@@ -313,4 +316,73 @@ func TestCleanSessionTurns(t *testing.T) {
 			t.Errorf("expected 2 merged parts, got %d", len(gotMerge[0].Parts))
 		}
 	})
+}
+
+// TestAppendSessionContentHealsTrailingNewline reproduces the corruption mode documented
+// in AGENTS.md's Gotchas section: if session.jsonl's last line has no trailing newline
+// (e.g. a hand-edit that dropped it) and AppendSessionContent then appends a new turn,
+// the two JSON objects land on one line and ReadSessionTurns silently drops both. D75.
+func TestAppendSessionContentHealsTrailingNewline(t *testing.T) {
+	tempDir := t.TempDir()
+	sessionPath := filepath.Join(tempDir, SessionFileName)
+
+	// Write a valid turn directly to the file, deliberately omitting the trailing '\n'
+	// to simulate the hand-edit corruption mode.
+	firstTurn := genai.NewContentFromText("turn before hand-edit", "user")
+	firstData, err := json.Marshal(firstTurn)
+	if err != nil {
+		t.Fatalf("failed to marshal first turn: %v", err)
+	}
+	if err := os.WriteFile(sessionPath, firstData, 0644); err != nil {
+		t.Fatalf("failed to write session file without trailing newline: %v", err)
+	}
+
+	// Appending should heal the missing newline rather than merging with the prior turn.
+	secondTurn := genai.NewContentFromText("turn appended after hand-edit", "model")
+	if err := AppendSessionContent(tempDir, secondTurn); err != nil {
+		t.Fatalf("AppendSessionContent failed: %v", err)
+	}
+
+	turns, err := ReadSessionTurns(tempDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed: %v", err)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("expected 2 turns after healing append, got %d (corruption not healed)", len(turns))
+	}
+	if ContentText(turns[0]) != "turn before hand-edit" {
+		t.Errorf("turn[0] text mismatch: got %q", ContentText(turns[0]))
+	}
+	if ContentText(turns[1]) != "turn appended after hand-edit" {
+		t.Errorf("turn[1] text mismatch: got %q", ContentText(turns[1]))
+	}
+}
+
+// TestAppendSessionContentNormalCase verifies that the newline check does not interfere
+// with ordinary appends where each prior write correctly left a trailing newline.
+func TestAppendSessionContentNormalCase(t *testing.T) {
+	tempDir := t.TempDir()
+
+	for i, tc := range []struct{ role, text string }{
+		{"user", "first"},
+		{"model", "second"},
+		{"user", "third"},
+	} {
+		if err := AppendSessionTurn(tempDir, tc.role, tc.text); err != nil {
+			t.Fatalf("AppendSessionTurn[%d] failed: %v", i, err)
+		}
+	}
+
+	turns, err := ReadSessionTurns(tempDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed: %v", err)
+	}
+	if len(turns) != 3 {
+		t.Fatalf("expected 3 turns, got %d", len(turns))
+	}
+	for i, want := range []string{"first", "second", "third"} {
+		if got := ContentText(turns[i]); got != want {
+			t.Errorf("turns[%d]: got %q, want %q", i, got, want)
+		}
+	}
 }
