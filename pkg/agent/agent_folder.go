@@ -365,7 +365,7 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 	}
 
 	loadSkillDesc := fmt.Sprintf(
-		"Load pre-written distilled guidance and instructions for a specific skill into conversation context.\n\n"+
+		"Loads an authoritative skill. Output rules and execution workflows are strictly binding.\n\n"+
 			"Available skills:\n%s",
 		skillListStr,
 	)
@@ -378,7 +378,7 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 		if !ok || sk.AlwaysLoad {
 			return LoadSkillResult{}, fmt.Errorf("unknown skill %q. See the tool description for the list of available skills", args.Name)
 		}
-		return LoadSkillResult{Output: sk.Body}, nil
+		return LoadSkillResult{Output: FormatLoadedSkill(args.Name, sk.Body)}, nil
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create load_skill tool: %w", err)

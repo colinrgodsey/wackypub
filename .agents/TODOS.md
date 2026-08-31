@@ -460,3 +460,15 @@ at all - no staging to a temp/scratch location the agent could then reach via
 a downloaded file even land - the agent's own directory? a dedicated scratch
 subdir? - and how would the agent be told it's there) before building
 anything. No design started yet.
+
+## Rename `wackyproc` and create an embedded skill if we don't have one
+
+`wackyproc` is the background-process manager that wraps long-running commands. We link it into agent `tools/` directories (e.g. `dranbo/tools/wackyproc` symlinks to the binary) but unlike `files-rw` and `wackypub` itself, it doesn't have a discoverable `wackyproc skill` subcommand and isn't really "first-class" in agents' eyes.
+
+Open question: do we even need a separate `wackyproc` binary, or is it just `wackypub` with a different command surface? The original rationale was that `wackyproc` is a standalone companion tool, not wackypub-specific. But if we're making `files-rw skill` work the same way, wackyproc should probably follow suit for consistency.
+
+Two pieces of work:
+1. **Rename:** `wackyproc` -> some better name? (or leave it) — discuss with Colin
+2. **Embedded skill:** if no skill exists, draft one in the style of `files-rw`'s (~19 lines, always_load, the essentials only). Cover: when to use wackyproc (anything that might take a while), the run/list/wait/get/stop lifecycle, the cleanup gap (no auto-eviction of `.proc/`).
+
+Reference: `/wackypub/skills/wackypub-a2a/SKILL.md` for style, and the existing `wackyproc` skill content for substance.

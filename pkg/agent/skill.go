@@ -182,7 +182,7 @@ func DiscoverAgentSkills(agentDir string) (map[string]*Skill, []*Skill, []*Skill
 	return skillsMap, onDemand, alwaysLoaded, err
 }
 
-// RenderAutoloadedSkills formats always-loaded skills into the <AUTOLOADED_SKILLS> block.
+// RenderAutoloadedSkills formats always-loaded skills into the <AUTOLOADED_SKILLS> system prompt block.
 func RenderAutoloadedSkills(agentDir string) (string, error) {
 	_, _, alwaysLoaded, err := DiscoverAgentSkills(agentDir)
 	if err != nil || len(alwaysLoaded) == 0 {
@@ -192,10 +192,14 @@ func RenderAutoloadedSkills(agentDir string) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("<AUTOLOADED_SKILLS>\n")
 	for _, sk := range alwaysLoaded {
-		sb.WriteString(fmt.Sprintf("<SKILL name=%q>\n%s\n</SKILL>\n", sk.Name, sk.Body))
+		sb.WriteString(fmt.Sprintf(`<SKILL name="%s">\n%s\n</SKILL>\n`, sk.Name, sk.Body))
 	}
 	sb.WriteString("</AUTOLOADED_SKILLS>")
 	return sb.String(), nil
+}
+
+func FormatLoadedSkill(name, body string) string {
+	return fmt.Sprintf(`<SKILL name="%s" authority="STRICT">\n%s\n</SKILL>`, name, body)
 }
 
 // ResolveSkillRelativePath resolves relativePath bounded inside skillDir, preventing path traversal.
