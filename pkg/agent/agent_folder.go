@@ -706,7 +706,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		}
 		stdoutBlock = fmt.Sprintf("<STDOUT><SCRATCHPAD_DATA id=%q size=\"%d\" lines=\"%d\" /></STDOUT>", entry.ID, entry.Size, entry.Lines)
 	} else if len(stdoutBytes) > 0 {
-		stdoutBlock = fmt.Sprintf("<STDOUT>%s</STDOUT>", string(stdoutBytes))
+		stdoutBlock = fmt.Sprintf("<STDOUT>\n%s\n</STDOUT>", string(stdoutBytes))
 	} else {
 		stdoutBlock = "<STDOUT></STDOUT>"
 	}
@@ -726,7 +726,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		}
 		stderrBlock = fmt.Sprintf("<STDERR><SCRATCHPAD_DATA id=%q size=\"%d\" lines=\"%d\" /></STDERR>", entry.ID, entry.Size, entry.Lines)
 	} else if len(stderrBytes) > 0 {
-		stderrBlock = fmt.Sprintf("<STDERR>%s</STDERR>", string(stderrBytes))
+		stderrBlock = fmt.Sprintf("<STDERR>\n%s\n</STDERR>", string(stderrBytes))
 	}
 
 	output := stdoutBlock + stderrBlock
@@ -981,7 +981,7 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 					}
 				}
 
-				if usedTokens >= threshold {
+				if usedTokens >= threshold && !(fa.UsageTracker != nil && fa.UsageTracker.StoppedEarlyForCompaction) {
 					// Reset tracker so compaction pass starts with clean call count and state
 					if fa.UsageTracker != nil {
 						fa.UsageTracker.Reset()

@@ -469,9 +469,10 @@ func TestGetScratchpad_ContextWindowCap(t *testing.T) {
 func TestGetScratchpad_FallbackCap(t *testing.T) {
 	agentDir := t.TempDir()
 
-	// No local runtime.json, but D74 means LoadRuntimeConfig now falls back to
-	// DefaultRuntimeJSON (contextWindow=200000), so the token-based cap fires
-	// rather than the old byte-based fallback path.
+	// When runtime.json is absent and OPENROUTER_API_KEY is not set, LoadRuntimeConfig
+	// fails closed, triggering the 200KB byte-based fallback cap. If OPENROUTER_API_KEY
+	// is set, D74's DefaultRuntimeJSON (contextWindow=200000) token cap triggers.
+	// Both must reject an unpaginated >200KB read with a limit error.
 	largeData := strings.Repeat("A", MaxScratchpadReadSizeBytes+1024)
 	entry, err := CreateScratchpad(agentDir, largeData, "test")
 	if err != nil {
@@ -479,7 +480,7 @@ func TestGetScratchpad_FallbackCap(t *testing.T) {
 	}
 
 	_, err = GetScratchpad(agentDir, entry.ID, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "exceeds the single-read limit") {
+	if err == nil || (!strings.Contains(err.Error(), "exceeds the single-read limit") && !strings.Contains(err.Error(), "byte read limit")) {
 		t.Fatalf("expected read cap error, got: %v", err)
 	}
 }

@@ -335,41 +335,6 @@ struct in memory instead of going through this path at all), but worth
 deciding whether `OpenFile` should get the same early bypass `Resolve`
 has, or whether `Resolve`'s bypass is the one that's actually wrong.
 
-## `wackydiscord`'s per-channel binding state has no concurrency guard
-
-`ChannelBinding` fields (`IsGenerating`, `PendingUserHash`/`PendingUserText`,
-`LastTurnIndex`/`LastTurnHash`) are mutated via a non-atomic
-get-copy-mutate-set pattern (`State.GetBinding` returns a copy,
-callers mutate it, then `State.SetBinding` writes it back) across three
-independent call paths that can all run concurrently for the same channel:
-`HandleMessageCreate` (a Discord gateway event handler), the same
-function's own `autoFillUnsyncedTurns` call, and `SessionWatcher`'s
-debounced `SyncAgentToChannels` -> `autoFillUnsyncedTurns` (fired from a
-`time.AfterFunc` goroutine watching `session.jsonl` on disk).
-`discordgo.Session` dispatches gateway events concurrently by default
-(`SyncEvents` is never set), so nothing serializes these.
-
-Concrete failure scenario: a user double-sends messages quickly in the
-same bound channel, or sends a message at the same moment the file
-watcher's ~300ms debounce fires a sync for that same agent (e.g. because
-a different channel or a cross-agent call just appended a turn). Two
-goroutines read the same `ChannelBinding` snapshot, both compute a diff/
-mutation against it, and race to `SetBinding` - the loser's write is
-silently overwritten. Observed-possible outcomes: a background turn gets
-posted twice, the `IsGenerating` echo-suppression flag gets clobbered so
-a user's own message is redundantly re-posted as a "background user
-turn," or the sync marker (`LastTurnIndex`/`LastTurnHash`) temporarily
-regresses.
-
-Not a data-integrity risk - `session.jsonl` itself is protected by the
-real `AcquireSessionLock` on the wackypub side, so this can't corrupt an
-agent's actual history, only the Discord-side view of it, and
-`DiffUnsyncedTurns`'s hash-scan fallback self-heals a stale/regressed
-marker on the next sync. Worth a per-channel (or per-agent) mutex
-serializing `HandleMessageCreate`/`autoFillUnsyncedTurns`/
-`SyncAgentToChannels` against each other if double-posts or echoed
-messages turn out to be a real nuisance in practice - not done yet.
-
 ## `wackyproc` has no `prune`/cleanup command - `.proc/` grows unbounded
 
 The original `wackyproc` design doc proposed `prune --max-age`, but the
@@ -472,3 +437,8 @@ Two pieces of work:
 2. **Embedded skill:** if no skill exists, draft one in the style of `files-rw`'s (~19 lines, always_load, the essentials only). Cover: when to use wackyproc (anything that might take a while), the run/list/wait/get/stop lifecycle, the cleanup gap (no auto-eviction of `.proc/`).
 
 Reference: `/wackypub/skills/wackypub-a2a/SKILL.md` for style, and the existing `wackyproc` skill content for substance.
+
+## Fast-follow: Acquire `State.LockChannel` in `handleBindCommand`, `handleVerboseCommand`
+
+`wackydiscord`'s `HandleMessageCreate`, `SyncAgentToChannels`, `handleFillCommand`, and `handleUnbindCommand` now serialize `ChannelBinding` access through `State.LockChannel` (D76). The remaining interaction handlers (`/bind`, `/verbose` in `tools/wackydiscord/bot/commands.go`) still mutate `ChannelBinding` without acquiring the channel lock. While `HandleMessageCreate` includes a defensive `AgentID` guard that prevents stamping old sync markers if `/bind` executes mid-generation, that guard is a band-aid; wrapping `handleBindCommand` in `State.LockChannel` is the real architectural fix to serialize binding creation against in-flight message processing and background sync.
+

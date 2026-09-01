@@ -101,13 +101,14 @@ func getGeminiThinkingConfig(cfg *RuntimeConfig) (*genai.ThinkingConfig, error) 
 	return tc, nil
 }
 
-// TurnUsageTracker tracks real provider token usage and model call counts across model calls within an agent turn (D68).
+// TurnUsageTracker tracks real provider token usage and model call counts across model calls within an agent turn (D68, D77).
 type TurnUsageTracker struct {
-	ModelCalls           int
-	LastPromptTokens     int32
-	LastCandidatesTokens int32
-	LastTotalTokens      int32
-	LastUsageMetadata    *genai.GenerateContentResponseUsageMetadata
+	ModelCalls                int
+	LastPromptTokens          int32
+	LastCandidatesTokens      int32
+	LastTotalTokens           int32
+	LastUsageMetadata         *genai.GenerateContentResponseUsageMetadata
+	StoppedEarlyForCompaction bool
 }
 
 // Reset clears turn usage and call count before starting a new turn or compaction pass.
@@ -120,6 +121,7 @@ func (t *TurnUsageTracker) Reset() {
 	t.LastCandidatesTokens = 0
 	t.LastTotalTokens = 0
 	t.LastUsageMetadata = nil
+	t.StoppedEarlyForCompaction = false
 }
 
 // BuildADKAgentWithConfigAndTracker constructs a Google ADK LLMAgent for an agent directory, applying RuntimeConfig settings and tracking turn usage.
@@ -203,6 +205,7 @@ func BuildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 					}
 
 					if tokens >= threshold {
+						tracker.StoppedEarlyForCompaction = true
 						fmt.Fprintf(os.Stderr, "Warning: agent %q accumulated ~%d tokens in mid-turn tool context, reaching compaction threshold (%d / %d contextWindow) - stopping early for compaction.\n", agentID, tokens, threshold, runtimeCfg.ContextWindow)
 						return &model.LLMResponse{
 							Content: &genai.Content{

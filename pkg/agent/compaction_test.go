@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1001,5 +1002,210 @@ func TestCompactionGitTwoCommitsD73(t *testing.T) {
 	}
 	if strings.Contains(string(b1Sess), "COMPACTION_NOTICE") {
 		t.Errorf("expected session.jsonl in 'compact (memory)' commit not to contain COMPACTION_NOTICE")
+	}
+}
+
+func TestGenerateTurn_MidTurnShortCircuit_NoImmediatePostTurnCompaction_D77(t *testing.T) {
+	wsDir := t.TempDir()
+	agentID := "d77-bot"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed creating agent dir: %v", err)
+	}
+
+	// Create tool in tools/
+	toolsDir := filepath.Join(agentDir, "tools")
+	if err := os.MkdirAll(toolsDir, 0755); err != nil {
+		t.Fatalf("failed creating tools dir: %v", err)
+	}
+	toolScript := "#!/bin/sh\necho 'done'\n"
+	if err := os.WriteFile(filepath.Join(toolsDir, "test_tool.sh"), []byte(toolScript), 0755); err != nil {
+		t.Fatalf("failed creating tool script: %v", err)
+	}
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			// Return tool call with high prompt_tokens = 90
+			toolCallJSON := `{
+				"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"test_tool.sh","arguments":"{}"}}]},"finish_reason":"tool_calls"}],
+				"usage":{"prompt_tokens":90,"completion_tokens":10,"total_tokens":100}
+			}`
+			io.WriteString(w, toolCallJSON)
+		} else {
+			// If compaction were called, it would request a compaction directive prompt
+			respJSON := `{
+				"choices":[{"message":{"role":"assistant","content":"- Unexpected compaction summary."},"finish_reason":"stop"}],
+				"usage":{"prompt_tokens":30,"completion_tokens":10,"total_tokens":40}
+			}`
+			io.WriteString(w, respJSON)
+		}
+	}))
+	defer srv.Close()
+
+	// Write AGENTS.md
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("System prompt"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	// Write session ending with user turn
+	if err := AppendSessionTurn(agentDir, "user", "Start task"); err != nil {
+		t.Fatalf("failed to write session.jsonl: %v", err)
+	}
+
+	runtimeCfg := &RuntimeConfig{
+		Provider:      "openai",
+		Model:         "test-model",
+		Endpoint:      srv.URL,
+		ContextWindow: 100, // 20% overhead -> threshold is 80 tokens. Real prompt_tokens is 90 >= 80!
+	}
+	runtimeData, _ := json.Marshal(runtimeCfg)
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), runtimeData, 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+
+	fa, err := LoadFolderAgent(wsDir, agentID, DefaultMaxToolTurns)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+
+	resp, err := fa.GenerateTurn(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateTurn failed: %v", err)
+	}
+
+	// Verify that the mid-turn short-circuit message was returned
+	if !strings.Contains(resp, "stopping turn early to allow session compaction") {
+		t.Errorf("expected mid-turn short-circuit message, got: %q", resp)
+	}
+
+	// D77: Verify that StoppedEarlyForCompaction was set to true
+	if fa.UsageTracker == nil || !fa.UsageTracker.StoppedEarlyForCompaction {
+		t.Errorf("expected fa.UsageTracker.StoppedEarlyForCompaction to be true")
+	}
+
+	// D77: Verify that immediate post-turn compaction was skipped:
+	// 1. Server callCount must be 1 (compaction generation was NOT called)
+	if callCount != 1 {
+		t.Errorf("expected server callCount to be 1 (no compaction call), got: %d", callCount)
+	}
+
+	// 2. MEMORY.md must NOT have been written
+	mem, err := ReadMemoryFile(agentDir)
+	if err != nil {
+		t.Fatalf("ReadMemoryFile failed: %v", err)
+	}
+	if mem != "" {
+		t.Errorf("expected MEMORY.md to remain empty, got: %q", mem)
+	}
+
+	// 3. session.jsonl should retain the interrupted turn and its tool call / synthetic stop message
+	turns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed: %v", err)
+	}
+	if len(turns) < 3 {
+		t.Errorf("expected at least 3 turns (user, tool call, tool response/stop), got %d turns: %+v", len(turns), turns)
+	}
+}
+
+func TestGenerateTurn_MaxToolTurns_StillTriggersPostTurnCompaction_D77(t *testing.T) {
+	wsDir := t.TempDir()
+	agentID := "max-turns-d77-bot"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed creating agent dir: %v", err)
+	}
+
+	// Create tool in tools/
+	toolsDir := filepath.Join(agentDir, "tools")
+	if err := os.MkdirAll(toolsDir, 0755); err != nil {
+		t.Fatalf("failed creating tools dir: %v", err)
+	}
+	toolScript := "#!/bin/sh\necho 'done'\n"
+	if err := os.WriteFile(filepath.Join(toolsDir, "test_tool.sh"), []byte(toolScript), 0755); err != nil {
+		t.Fatalf("failed creating tool script: %v", err)
+	}
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount <= 2 {
+			// Both calls return a tool call: prompt_tokens = 35 (< 40 threshold for 50 contextWindow, does not trigger mid-turn compaction short circuit)
+			// But total_tokens = 45 (>= 40 threshold, so post-turn check will see it over threshold)
+			toolCallJSON := fmt.Sprintf(`{
+				"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_%d","type":"function","function":{"name":"test_tool.sh","arguments":"{}"}}]},"finish_reason":"tool_calls"}],
+				"usage":{"prompt_tokens":35,"completion_tokens":10,"total_tokens":45}
+			}`, callCount)
+			io.WriteString(w, toolCallJSON)
+		} else if callCount == 3 {
+			// Compaction directive prompt call
+			respJSON := `{
+				"choices":[{"message":{"role":"assistant","content":"- Summarized task from max-tool-turns run."},"finish_reason":"stop"}],
+				"usage":{"prompt_tokens":30,"completion_tokens":10,"total_tokens":40}
+			}`
+			io.WriteString(w, respJSON)
+		}
+	}))
+	defer srv.Close()
+
+	// Write AGENTS.md
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("System prompt"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	// Write session ending with user turn
+	if err := AppendSessionTurn(agentDir, "user", "Start task"); err != nil {
+		t.Fatalf("failed to write session.jsonl: %v", err)
+	}
+
+	runtimeCfg := &RuntimeConfig{
+		Provider:      "openai",
+		Model:         "test-model",
+		Endpoint:      srv.URL,
+		ContextWindow: 50, // Low context window so total session tokens trigger post-turn compaction
+	}
+	runtimeData, _ := json.Marshal(runtimeCfg)
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), runtimeData, 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+
+	// maxToolTurns = 1: 1st tool call runs, then 2nd model call hits maxToolTurns short circuit
+	fa, err := LoadFolderAgent(wsDir, agentID, 1)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+
+	resp, err := fa.GenerateTurn(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateTurn failed: %v", err)
+	}
+
+	// Verify that the maxToolTurns short-circuit message was returned (not the compaction one)
+	if !strings.Contains(resp, "Reached the maximum of 1 consecutive tool calls") {
+		t.Errorf("expected maxToolTurns short-circuit message, got: %q", resp)
+	}
+
+	// D77: Verify that StoppedEarlyForCompaction is FALSE
+	if fa.UsageTracker != nil && fa.UsageTracker.StoppedEarlyForCompaction {
+		t.Errorf("expected fa.UsageTracker.StoppedEarlyForCompaction to be false")
+	}
+
+	// D77: Verify that post-turn compaction DID run:
+	// Server callCount must be 3 (2 tool calls + 1 compaction directive prompt)
+	if callCount != 3 {
+		t.Errorf("expected server callCount to be 3 (2 tool calls + 1 compaction occurred), got: %d", callCount)
+	}
+
+	// MEMORY.md was updated with the summary
+	mem, err := ReadMemoryFile(agentDir)
+	if err != nil {
+		t.Fatalf("ReadMemoryFile failed: %v", err)
+	}
+	if !strings.Contains(mem, "Summarized task from max-tool-turns run.") {
+		t.Errorf("expected MEMORY.md to contain compaction summary, got: %q", mem)
 	}
 }
