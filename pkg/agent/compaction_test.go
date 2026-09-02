@@ -108,7 +108,7 @@ func TestCompactionPrefixPreservation(t *testing.T) {
 
 	// Check compaction with mock model (http request will fail gracefully, testing flow)
 	ctx := context.Background()
-	_, err := CheckAndCompactSession(ctx, tempDir, runtimeCfg, adkAgent, false)
+	_, err := CheckAndCompactSession(ctx, tempDir, runtimeCfg, adkAgent, false, nil)
 	if err == nil {
 		// Mock HTTP error expected
 	}
@@ -155,7 +155,7 @@ func TestCompactionEndsOnModelTurn(t *testing.T) {
 	adkAgent := mustBuildTestADKAgent(t, tempDir, "system prompt", runtimeCfg, llmModel)
 
 	ctx := context.Background()
-	compacted, err := CheckAndCompactSession(ctx, tempDir, runtimeCfg, adkAgent, false)
+	compacted, err := CheckAndCompactSession(ctx, tempDir, runtimeCfg, adkAgent, false, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession failed: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestCompactionNoticeOptOut(t *testing.T) {
 	runtimeCfg := &RuntimeConfig{ContextWindow: 1}
 	adkAgent := mustBuildTestADKAgent(t, tempDir, "system prompt", runtimeCfg, llmModel)
 
-	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false)
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession failed: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestCompactionWithCustomCompactMD(t *testing.T) {
 	runtimeCfg := &RuntimeConfig{ContextWindow: 1}
 	adkAgent := mustBuildTestADKAgent(t, tempDir, "system prompt", runtimeCfg, llmModel)
 
-	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false)
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession failed: %v", err)
 	}
@@ -420,7 +420,7 @@ func TestCheckAndCompactSession_WirePayloadMatchesRealTurnShape(t *testing.T) {
 	runtimeCfg := &RuntimeConfig{ContextWindow: 1}
 	adkAgent := mustBuildTestADKAgent(t, tempDir, "system prompt with SENTINEL_SYS_PROMPT", runtimeCfg, llmModel, mustBuildEchoTool(t))
 
-	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false)
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession failed: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestTokenWeightedCompactionPercentage(t *testing.T) {
 	runtimeCfg := &RuntimeConfig{ContextWindow: 5000} // total is ~10,000 tokens, exceeds 5000
 	adkAgent := mustBuildTestADKAgent(t, tempDir, "system prompt", runtimeCfg, llmModel)
 
-	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false)
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession failed: %v", err)
 	}
@@ -672,7 +672,7 @@ func TestCheckAndCompactSession_OverheadThreshold(t *testing.T) {
 	compactFile := filepath.Join(tempDir, "COMPACT.md")
 	_ = os.WriteFile(compactFile, []byte("---\ncompact-overhead-pct: 5\n---\nPrompt"), 0644)
 
-	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false)
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -684,7 +684,7 @@ func TestCheckAndCompactSession_OverheadThreshold(t *testing.T) {
 	_ = os.WriteFile(compactFile, []byte("---\ncompact-overhead-pct: 25\n---\nPrompt"), 0644)
 
 	// Check that compaction now triggers (mock model endpoint will error on network, proving it attempted compaction!)
-	_, err = CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false)
+	_, err = CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil)
 	if err == nil {
 		// Mock model points to 9999, so attempting LLM generation will return an error
 		t.Logf("compaction attempted and proceeded")
@@ -909,7 +909,7 @@ func TestCompactionGitTwoCommitsD73(t *testing.T) {
 	mockModel := NewOpenAIModel(runtimeCfg)
 	adkAgent := mustBuildTestADKAgent(t, agentDir, "Prompt Bob", runtimeCfg, mockModel)
 
-	compacted, err := CheckAndCompactSession(context.Background(), agentDir, runtimeCfg, adkAgent, true)
+	compacted, err := CheckAndCompactSession(context.Background(), agentDir, runtimeCfg, adkAgent, true, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession failed: %v", err)
 	}
@@ -1207,5 +1207,178 @@ func TestGenerateTurn_MaxToolTurns_StillTriggersPostTurnCompaction_D77(t *testin
 	}
 	if !strings.Contains(mem, "Summarized task from max-tool-turns run.") {
 		t.Errorf("expected MEMORY.md to contain compaction summary, got: %q", mem)
+	}
+}
+
+func TestCheckAndCompactSession_ConfigOverride(t *testing.T) {
+	tempDir := t.TempDir()
+
+	turns := []*genai.Content{
+		genai.NewContentFromText("user turn 0", "user"),
+		genai.NewContentFromText("model turn 0", "model"),
+		genai.NewContentFromText("user turn 1", "user"),
+		genai.NewContentFromText("model turn 1", "model"),
+	}
+	if err := WriteSessionTurns(tempDir, turns); err != nil {
+		t.Fatalf("failed to write session turns: %v", err)
+	}
+
+	// Write agent's on-disk COMPACT.md with specific prompt and append-only true
+	diskCompact := "---\ncompact-pct: 50\nappend-only: true\n---\nDisk prompt directive"
+	if err := os.WriteFile(filepath.Join(tempDir, "COMPACT.md"), []byte(diskCompact), 0644); err != nil {
+		t.Fatalf("failed to write disk COMPACT.md: %v", err)
+	}
+
+	// Write initial MEMORY.md
+	if err := WriteMemoryFile(tempDir, "Initial memory"); err != nil {
+		t.Fatalf("failed to write MEMORY.md: %v", err)
+	}
+
+	var capturedPrompt string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if len(req.Messages) > 0 {
+			capturedPrompt = req.Messages[len(req.Messages)-1].Content
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"New summary"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+
+	llmModel := NewOpenAIModel(&RuntimeConfig{Model: "test-model", Endpoint: srv.URL})
+	runtimeCfg := &RuntimeConfig{ContextWindow: 1000}
+	adkAgent := mustBuildTestADKAgent(t, tempDir, "system prompt", runtimeCfg, llmModel)
+
+	// 1. With config override: should use override prompt and append-only=false
+	override := &CompactConfig{
+		CompactPct: 50,
+		AppendOnly: false,
+		Prompt:     "Override prompt directive",
+	}
+
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, true, override)
+	if err != nil {
+		t.Fatalf("CheckAndCompactSession with override failed: %v", err)
+	}
+	if !compacted {
+		t.Fatalf("expected compaction to occur")
+	}
+
+	if capturedPrompt != "Override prompt directive" {
+		t.Errorf("expected prompt %q, got %q", "Override prompt directive", capturedPrompt)
+	}
+
+	mem, err := ReadMemoryFile(tempDir)
+	if err != nil {
+		t.Fatalf("failed to read memory: %v", err)
+	}
+	// Since AppendOnly was false in override, memory should be replaced by "New summary", not containing "Initial memory"
+	if mem != "New summary" {
+		t.Errorf("expected overwritten memory %q, got %q", "New summary", mem)
+	}
+
+	// 2. Without override (nil): should use disk COMPACT.md (append-only=true, disk prompt)
+	// Reset turns and memory
+	if err := WriteSessionTurns(tempDir, turns); err != nil {
+		t.Fatalf("failed to write session turns: %v", err)
+	}
+	if err := WriteMemoryFile(tempDir, "Initial memory 2"); err != nil {
+		t.Fatalf("failed to write MEMORY.md: %v", err)
+	}
+
+	compacted, err = CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, true, nil)
+	if err != nil {
+		t.Fatalf("CheckAndCompactSession with nil override failed: %v", err)
+	}
+	if !compacted {
+		t.Fatalf("expected compaction to occur")
+	}
+
+	if capturedPrompt != "Disk prompt directive" {
+		t.Errorf("expected prompt %q, got %q", "Disk prompt directive", capturedPrompt)
+	}
+
+	mem2, err := ReadMemoryFile(tempDir)
+	if err != nil {
+		t.Fatalf("failed to read memory: %v", err)
+	}
+	// Since AppendOnly was true in disk file, memory should be appended
+	if !strings.Contains(mem2, "Initial memory 2") || !strings.Contains(mem2, "New summary") {
+		t.Errorf("expected appended memory containing both, got %q", mem2)
+	}
+}
+
+func TestCompactSessionWithConfig_Passthrough(t *testing.T) {
+	wsDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(wsDir, RootMarkerFile), []byte(""), 0644)
+	origCwd, _ := os.Getwd()
+	if err := os.Chdir(wsDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origCwd)
+
+	agentID := "testagent"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir agent: %v", err)
+	}
+
+	turns := []*genai.Content{
+		genai.NewContentFromText("u1", "user"),
+		genai.NewContentFromText("m1", "model"),
+	}
+	if err := WriteSessionTurns(agentDir, turns); err != nil {
+		t.Fatalf("write turns: %v", err)
+	}
+
+	var capturedPrompt string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if len(req.Messages) > 0 {
+			capturedPrompt = req.Messages[len(req.Messages)-1].Content
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"* summary"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+
+	rt := &RuntimeConfig{
+		Model:    "test-model",
+		Endpoint: srv.URL,
+	}
+	rtData, _ := json.Marshal(rt)
+	_ = os.WriteFile(filepath.Join(agentDir, "runtime.json"), rtData, 0644)
+	_ = os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("# test agent\n"), 0644)
+	_ = os.WriteFile(filepath.Join(agentDir, "COMPACT.md"), []byte("Disk prompt from agent file"), 0644)
+
+	sdk := NewSDK(wsDir)
+
+	override := &CompactConfig{
+		CompactPct: 50,
+		AppendOnly: true,
+		Prompt:     "SDK override prompt",
+	}
+
+	compacted, err := sdk.CompactSessionWithConfig(context.Background(), agentID, true, override)
+	if err != nil {
+		t.Fatalf("CompactSessionWithConfig failed: %v", err)
+	}
+	if !compacted {
+		t.Fatal("expected compaction to succeed")
+	}
+	if capturedPrompt != "SDK override prompt" {
+		t.Errorf("expected prompt %q, got %q", "SDK override prompt", capturedPrompt)
 	}
 }

@@ -172,8 +172,9 @@ func FormatCompactionNotice(notice string) string {
 // instruction, tools, memory turn, the archived turns - is structurally
 // identical to a real generation call, unlike the hand-built request this
 // used to send directly to an *model.LLM (no Tools, system prompt glued into
-// turn 1's text - see D45 for the full trace).
-func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *RuntimeConfig, adkAgent agent.Agent, force bool) (bool, error) {
+// cfgOverride, when non-nil, replaces the agent's COMPACT.md configuration without
+// reading or modifying it on disk (D83). When nil, LoadCompactConfig(agentDir) is used.
+func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *RuntimeConfig, adkAgent agent.Agent, force bool, cfgOverride *CompactConfig) (bool, error) {
 	turns, err := ReadSessionTurns(agentDir)
 	if err != nil {
 		return false, err
@@ -183,9 +184,15 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		return false, nil
 	}
 
-	compactCfg, err := LoadCompactConfig(agentDir)
-	if err != nil {
-		return false, err
+	var compactCfg *CompactConfig
+	if cfgOverride != nil {
+		compactCfg = cfgOverride
+	} else {
+		var err error
+		compactCfg, err = LoadCompactConfig(agentDir)
+		if err != nil {
+			return false, err
+		}
 	}
 
 	if !force {

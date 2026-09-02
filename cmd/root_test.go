@@ -2,10 +2,17 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	adkAgent "github.com/colinrgodsey/wackypub/pkg/agent"
+	"google.golang.org/genai"
 )
 
 func TestBundledSkillOutput(t *testing.T) {
@@ -89,4 +96,140 @@ func TestBundledSkillOutput(t *testing.T) {
 			t.Errorf("unexpected skill output: %q", out)
 		}
 	})
+}
+
+func resetCompactFlags(t *testing.T) {
+	t.Helper()
+	clearCompactFlags()
+	t.Cleanup(clearCompactFlags)
+}
+
+func clearCompactFlags() {
+	if f := agentCompactCmd.Flags().Lookup("md-file"); f != nil {
+		f.Changed = false
+		_ = f.Value.Set("")
+	}
+	compactMDFile = ""
+	RootCmd.SetOut(os.Stdout)
+	RootCmd.SetErr(os.Stderr)
+}
+
+func TestAgentCompactCmd_BadPath(t *testing.T) {
+	resetCompactFlags(t)
+
+	wsDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(wsDir, adkAgent.RootMarkerFile), []byte(""), 0644)
+
+	RootCmd.SetArgs([]string{"--ws", wsDir, "agent", "compact", "bob", "--md-file", "/nonexistent/COMPACT.md"})
+	err := RootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for nonexistent --md-file, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to read compact md file:") {
+		t.Errorf("expected 'failed to read compact md file:', got: %v", err)
+	}
+}
+
+func TestAgentCompactCmd_InvalidYAML(t *testing.T) {
+	resetCompactFlags(t)
+
+	wsDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(wsDir, adkAgent.RootMarkerFile), []byte(""), 0644)
+
+	badFile := filepath.Join(wsDir, "BAD_COMPACT.md")
+	if err := os.WriteFile(badFile, []byte("---\n[invalid yaml: {foo\n---\nPrompt"), 0644); err != nil {
+		t.Fatalf("failed to write bad file: %v", err)
+	}
+
+	RootCmd.SetArgs([]string{"--ws", wsDir, "agent", "compact", "bob", "--md-file", badFile})
+	err := RootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid YAML in --md-file, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to parse compact md file:") {
+		t.Errorf("expected 'failed to parse compact md file:', got: %v", err)
+	}
+}
+
+func TestAgentCompactCmd_ValidMDFileAndDefault(t *testing.T) {
+	resetCompactFlags(t)
+
+	wsDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(wsDir, adkAgent.RootMarkerFile), []byte(""), 0644)
+
+	origCwd, _ := os.Getwd()
+	if err := os.Chdir(wsDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origCwd)
+
+	agentID := "testbot"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir agent: %v", err)
+	}
+
+	turns := []*genai.Content{
+		genai.NewContentFromText("u1", "user"),
+		genai.NewContentFromText("m1", "model"),
+	}
+	if err := adkAgent.WriteSessionTurns(agentDir, turns); err != nil {
+		t.Fatalf("write turns: %v", err)
+	}
+
+	var capturedPrompt string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if len(req.Messages) > 0 {
+			capturedPrompt = req.Messages[len(req.Messages)-1].Content
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"* summary"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+
+	rt := &adkAgent.RuntimeConfig{
+		Model:    "test-model",
+		Endpoint: srv.URL,
+	}
+	rtData, _ := json.Marshal(rt)
+	_ = os.WriteFile(filepath.Join(agentDir, "runtime.json"), rtData, 0644)
+	_ = os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("# testbot\n"), 0644)
+	_ = os.WriteFile(filepath.Join(agentDir, "COMPACT.md"), []byte("Disk default prompt"), 0644)
+
+	// 1. With --md-file
+	altFile := filepath.Join(wsDir, "CUSTOM_RECIPE.md")
+	altContent := "---\ncompact-pct: 50\nappend-only: false\n---\nAlternate CLI recipe prompt"
+	if err := os.WriteFile(altFile, []byte(altContent), 0644); err != nil {
+		t.Fatalf("write alt file: %v", err)
+	}
+
+	RootCmd.SetArgs([]string{"--ws", wsDir, "agent", "compact", agentID, "--md-file", altFile})
+	if err := RootCmd.Execute(); err != nil {
+		t.Fatalf("RootCmd.Execute with --md-file failed: %v", err)
+	}
+	if capturedPrompt != "Alternate CLI recipe prompt" {
+		t.Errorf("expected prompt %q, got %q", "Alternate CLI recipe prompt", capturedPrompt)
+	}
+
+	// 2. Without --md-file (default behavior)
+	resetCompactFlags(t)
+	// Re-seed turns
+	if err := adkAgent.WriteSessionTurns(agentDir, turns); err != nil {
+		t.Fatalf("write turns: %v", err)
+	}
+
+	RootCmd.SetArgs([]string{"--ws", wsDir, "agent", "compact", agentID})
+	if err := RootCmd.Execute(); err != nil {
+		t.Fatalf("RootCmd.Execute without --md-file failed: %v", err)
+	}
+	if capturedPrompt != "Disk default prompt" {
+		t.Errorf("expected prompt %q, got %q", "Disk default prompt", capturedPrompt)
+	}
 }

@@ -402,6 +402,13 @@ func (s *AgentSDK) StripSignatures(agentID string) (int, error) {
 // force bypasses the contextWindow/token-estimate gate checks (D44) - only this
 // manual path can force; the automatic pre-generation check never does.
 func (s *AgentSDK) CompactSession(ctx context.Context, agentID string, force bool) (bool, error) {
+	return s.CompactSessionWithConfig(ctx, agentID, force, nil)
+}
+
+// CompactSessionWithConfig manually triggers session compaction evaluation for an agent
+// with an optional CompactConfig override (D83). When cfgOverride is non-nil, it replaces
+// the agent's COMPACT.md configuration without reading or modifying it on disk.
+func (s *AgentSDK) CompactSessionWithConfig(ctx context.Context, agentID string, force bool, cfgOverride *CompactConfig) (bool, error) {
 	if agentID == "" {
 		return false, fmt.Errorf("agentID cannot be empty")
 	}
@@ -422,7 +429,7 @@ func (s *AgentSDK) CompactSession(ctx context.Context, agentID string, force boo
 	if err != nil {
 		return false, err
 	}
-	return CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, force)
+	return CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, force, cfgOverride)
 }
 
 // CreateScratchpad creates a new persistent scratchpad entry for an agent (<ws_dir>/<agent_id>/scratchpad/).

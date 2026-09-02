@@ -15,7 +15,8 @@ import (
 )
 
 var (
-	messageFlag string
+	messageFlag   string
+	compactMDFile string
 )
 
 func newSDK(wsDir string) *adkAgent.AgentSDK {
@@ -408,8 +409,21 @@ operation.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> compact")
 		}
 
+		var compactCfg *adkAgent.CompactConfig
+		if compactMDFile != "" {
+			data, err := os.ReadFile(compactMDFile)
+			if err != nil {
+				return fmt.Errorf("failed to read compact md file: %w", err)
+			}
+			cfg, err := adkAgent.ParseCompactConfig(string(data))
+			if err != nil {
+				return fmt.Errorf("failed to parse compact md file: %w", err)
+			}
+			compactCfg = cfg
+		}
+
 		ctx := context.Background()
-		compacted, err := sdk.CompactSession(ctx, agentID, true)
+		compacted, err := sdk.CompactSessionWithConfig(ctx, agentID, true, compactCfg)
 		if err != nil {
 			return err
 		}
@@ -874,6 +888,7 @@ func init() {
 	// panics on the collision as soon as --help (or completion) merges the two flag sets.
 	agentAddCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
 	agentPromptCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
+	agentCompactCmd.Flags().StringVar(&compactMDFile, "md-file", "", "Path to alternate COMPACT.md file to use for compaction recipe")
 	scratchpadCreateCmd.Flags().StringVar(&messageFlag, "message", "", "Scratchpad text payload")
 
 	scratchpadReadCmd.Flags().IntVar(&scratchpadSkipLines, "skip-lines", 0, "Number of lines to skip from start of entry")

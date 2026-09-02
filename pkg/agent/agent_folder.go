@@ -894,7 +894,7 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 		// 1. Check for context window compaction trigger before generating - never
 		// forced here, only wackypub agent compact / AgentSDK.CompactSession
 		// can force (D44, D68).
-		_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, false)
+		_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, false, nil)
 		if err != nil {
 			// Log compaction warning, but continue execution if possible
 			fmt.Fprintf(os.Stderr, "Warning: session compaction error: %v\n", err)
@@ -1003,7 +1003,7 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 					if fa.UsageTracker != nil {
 						fa.UsageTracker.Reset()
 					}
-					_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, true)
+					_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, true, nil)
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "Warning: post-turn session compaction error: %v\n", err)
 					}
