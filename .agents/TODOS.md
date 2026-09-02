@@ -486,3 +486,23 @@ form. That file carries `always_load: true`, so it is injected into every agent'
 currently being taught the broken pattern, and nothing tells them the targeted form exists. Worth
 covering the two modes and the "already-terminal processes are ignored" contract, since the natural
 wrong assumption is that `wait N` means "give me anything that has finished."
+
+
+## Workspace-root snapshot commit has been a silent no-op since D35, and the feature may deserve a redo
+
+`CreateWorkspaceSnapshot` calls `CommitWorkspaceEvent(wsDir, "system", "snapshot")`. Because the agent
+id is non-empty, `ResolveGitRepoDir` joins `<wsDir>/system` and requires that directory to be a git
+repo; no such directory exists anywhere, so the root-repo snapshot commit never happens and never
+failed. The line is byte-identical to the original D35 commit (0b0d3c4), the guard
+`IsWorkspaceGitRepo(wsDir)` makes it look intentional, and it returns nil before any failure
+reporting, so it stays invisible (found during the git-warning review, session git-warn-review).
+Separately, no caller passes agentID == "" anywhere, so the `repoDir == wsDir` branch in
+`ResolveGitRepoDir`/`CommitWorkspaceEvent` is effectively dead code.
+
+Fixing the routing is one line but changes behavior (the root repo really starts committing, and is
+ignored by D35's own workspace root gitignore which excludes everything except .gitignore,
+WACKYPUB_ROOT, MANIFEST.md), so it needs sign-off rather than a silent fold-in. Colin said the
+whole feature was "always wonky" and might be worth redoing: candidates are a dedicated snapshot
+store, routing "system" to the root repo deliberately, dropping the snapshot commit entirely, and
+the reviewer's broader recommendation, falling back to the `git` CLI when go-git fails, which is the
+one change that addresses go-git's narrower config/validation rather than patching symptoms.

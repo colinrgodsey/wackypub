@@ -2,13 +2,17 @@ package agent
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-git/go-git/v5"
 	goconfig "github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
@@ -64,14 +68,14 @@ func EnsureAgentGitignore(agentDir string) error {
 	return os.WriteFile(ignorePath, []byte(DefaultAgentGitignoreContent), 0644)
 }
 
-// IsWorkspaceGitRepo returns true if <dir>/.git exists.
+// IsWorkspaceGitRepo returns true if <dir>/.git exists as a directory or regular file.
 func IsWorkspaceGitRepo(dir string) bool {
 	if dir == "" {
 		return false
 	}
 	gitDir := filepath.Join(dir, ".git")
 	st, err := os.Stat(gitDir)
-	return err == nil && st.IsDir()
+	return err == nil && (st.IsDir() || st.Mode().IsRegular())
 }
 
 // ResolveGitRepoDir resolves whether the agent has its own repository (<wsDir>/<agentID>/.git)
@@ -99,6 +103,9 @@ func InitWorkspaceGit(wsDir string) error {
 	if wsDir == "" {
 		return fmt.Errorf("workspace directory path cannot be empty")
 	}
+	if IsWorkspaceGitRepo(wsDir) {
+		return EnsureWorkspaceGitignore(wsDir)
+	}
 	_, err := git.PlainInit(wsDir, false)
 	if err != nil && err != git.ErrRepositoryAlreadyExists {
 		return fmt.Errorf("failed to initialize workspace git repository at %s: %w", wsDir, err)
@@ -117,6 +124,9 @@ func InitAgentGit(wsDir, agentID string) error {
 	agentDir := filepath.Join(wsDir, agentID)
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
 		return fmt.Errorf("failed to create agent directory: %w", err)
+	}
+	if IsWorkspaceGitRepo(agentDir) {
+		return EnsureAgentGitignore(agentDir)
 	}
 	_, err := git.PlainInit(agentDir, false)
 	if err != nil && err != git.ErrRepositoryAlreadyExists {
@@ -142,14 +152,67 @@ func GetWorkspaceHeadCommit(repoDir string) (string, error) {
 	return ref.Hash().String(), nil
 }
 
+// Workspace git failures are reported when they first happen and whenever the reason changes, since
+// almost every caller of CommitWorkspaceEvent discards its error. Without this, a repository go-git cannot
+// open, or one holding a path staging cannot handle, stops recording history forever in silence. The record
+// clears on a successful commit so a repaired repository reports a later break, and it is keyed per repository
+// so a workspace with several agents reports each broken one.
+var (
+	// gitWarnOut is swapped by tests without holding gitWarnMu, so tests in this package must not
+	// use t.Parallel until that is addressed, or a redirected writer will race.
+	gitWarnOut io.Writer = os.Stderr
+	// Held across both the gitWarnLast check and every write to gitWarnOut, so concurrent
+	// agents cannot interleave a print and a map update, and a redirected writer stays safe.
+	gitWarnMu   sync.Mutex
+	gitWarnLast = map[string]string{}
+)
+
+// reportGitFailure announces a failing repository, ignoring a repeat of the same error and speaking up
+// again once the reason changes, which is how an operator learns that the first fix did not take.
+func reportGitFailure(repoDir, op string, err error) {
+	gitWarnMu.Lock()
+	defer gitWarnMu.Unlock()
+	key := repoDir + "\x00" + op
+	if gitWarnLast[key] == err.Error() {
+		return
+	}
+	gitWarnLast[key] = err.Error()
+	fmt.Fprintf(gitWarnOut, "Warning: workspace git %s failed for %s and will keep failing until corrected, so history is not being recorded: %v\n", op, repoDir, err)
+}
+
+// clearGitFailure forgets a repository's failure, noting the recovery only if it had been failing.
+func clearGitFailure(repoDir, op string) {
+	gitWarnMu.Lock()
+	defer gitWarnMu.Unlock()
+	key := repoDir + "\x00" + op
+	if _, had := gitWarnLast[key]; !had {
+		return
+	}
+	delete(gitWarnLast, key)
+	fmt.Fprintf(gitWarnOut, "Warning: workspace git %s working again for %s\n", op, repoDir)
+}
+
 // CommitWorkspaceEvent creates a new git commit for a workspace or agent state-mutating event according to D35.
-// If git tracking is not enabled for the agent or workspace, this is a silent no-op.
+// Where git tracking is not enabled this stays a silent no-op that neither reports nor clears, because absent
+// versioning is a configuration choice rather than a recovery. Reporting lives here so every discarding caller
+// is covered, which means a caller that handles the returned error itself should not print it as well.
 func CommitWorkspaceEvent(wsDir, agentID, eventType string) error {
 	repoDir := ResolveGitRepoDir(wsDir, agentID)
 	if repoDir == "" {
 		return nil
 	}
 
+	err := commitWorkspaceEvent(wsDir, repoDir, agentID, eventType)
+	if err != nil {
+		reportGitFailure(repoDir, "commit", err)
+	} else {
+		clearGitFailure(repoDir, "commit")
+	}
+	return err
+}
+
+// commitWorkspaceEvent is the D35 commit itself, error-only for callers that decide how loudly to fail.
+func commitWorkspaceEvent(wsDir, repoDir, agentID, eventType string) error {
 	if repoDir == wsDir {
 		_ = EnsureWorkspaceGitignore(repoDir)
 	} else {
@@ -164,6 +227,19 @@ func CommitWorkspaceEvent(wsDir, agentID, eventType string) error {
 	worktree, err := repo.Worktree()
 	if err != nil {
 		return fmt.Errorf("failed to get git worktree for %s: %w", repoDir, err)
+	}
+
+	// Exclude gitlink (submodule) entries from index so staging doesn't fail on directories
+	if idx, err := repo.Storer.Index(); err == nil {
+		for _, e := range idx.Entries {
+			if e.Mode == filemode.Submodule {
+				// Gitlink names containing glob metacharacters are not escaped (rare, accepted).
+				worktree.Excludes = append(worktree.Excludes,
+					gitignore.ParsePattern(e.Name, nil),
+					gitignore.ParsePattern(e.Name+"/**", nil),
+				)
+			}
+		}
 	}
 
 	// Stage all workspace/agent changes

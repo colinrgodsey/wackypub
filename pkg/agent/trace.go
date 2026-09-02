@@ -174,8 +174,10 @@ func TraceAgentCommit(wsDir, agentID, commitSpec string, opts TraceOptions) (*Tr
 
 		repo, err := git.PlainOpen(agentDir)
 		if err != nil {
+			reportGitFailure(agentDir, "trace", err)
 			break
 		}
+		clearGitFailure(agentDir, "trace")
 
 		hash, err := ResolveCommitHash(repo, currentCommitSpec)
 		if err != nil {
@@ -272,8 +274,10 @@ func TraceByTraceID(wsDir, traceID string, opts TraceOptions) (*TraceResult, err
 		}
 		repo, err := git.PlainOpen(agentDir)
 		if err != nil {
+			reportGitFailure(agentDir, "trace-search", err)
 			continue
 		}
+		clearGitFailure(agentDir, "trace-search")
 
 		cIter, err := repo.CommitObjects()
 		if err != nil {
