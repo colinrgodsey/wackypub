@@ -24,15 +24,15 @@ import (
 	"google.golang.org/genai"
 )
 
-// TestMain seeds DefaultCompactMD from the real examples/COMPACT.md before any
-// test runs. Production gets this from main.go's //go:embed (D45) - main.go
+// TestMain seeds DefaultCompactMD from the real examples/compaction/COMPACT-append.md
+// before any test runs. Production gets this from main.go's //go:embed (D45) - main.go
 // never runs under `go test`, so tests read the same real file directly
 // instead of a fabricated fixture, to keep exercising the actual shipped
 // default content rather than a stand-in.
 func TestMain(m *testing.M) {
-	data, err := os.ReadFile("../../examples/COMPACT.md")
+	data, err := os.ReadFile("../../examples/compaction/COMPACT-append.md")
 	if err != nil {
-		panic("failed to read examples/COMPACT.md for tests: " + err.Error())
+		panic("failed to read examples/compaction/COMPACT-append.md for tests: " + err.Error())
 	}
 	DefaultCompactMD = string(data)
 

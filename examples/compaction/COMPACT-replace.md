@@ -40,7 +40,7 @@ Structure the document with whatever headers/sections make it easiest to resume 
 - **Current State** - what's done, what's in progress, what's blocked.
 - **Key Decisions & Discoveries** - decisions and their rationale, constraints or requirements uncovered, approaches tried that didn't work (and why).
 - **Next Steps** - what happens next, in priority order, plus any open questions.
-- **Context to Preserve** - user preferences, promises made, anything domain-specific that isn't obvious from the rest.
+- **Context to Preserve** - user preferences, promises made, anything domain-specific that isn't obvious from the rest, and any other memory focus given in your system prompt.
 
 Markdown headers (`#`, `##`, `###`) are expected here, unlike append-only compaction's flat bullet list - this document replaces <PERSISTENT_MEMORY> wholesale rather than appending to it, so it should stand on its own.
 

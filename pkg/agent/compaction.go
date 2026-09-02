@@ -18,12 +18,12 @@ import (
 const DefaultCompactionPct = 50.0
 const DefaultCompactionOverheadPct = 20.0
 
-// DefaultCompactMD holds examples/COMPACT.md's content, in the same
+// DefaultCompactMD holds examples/compaction/COMPACT-append.md's content, in the same
 // append-only/compact-pct frontmatter + body shape a real <agentDir>/COMPACT.md
 // has - parsed through the exact same ParseCompactConfig path, according to D44.
 //
-// Set from main.go (D45), which embeds examples/COMPACT.md and assigns it here
-// before cmd.Execute() runs - mirrors cmd.BundledA2ASkill/BundledWSSkill (D34),
+// Set from main.go (D45), which embeds examples/compaction/COMPACT-append.md and assigns
+// it here before cmd.Execute() runs - mirrors cmd.BundledA2ASkill/BundledWSSkill (D34),
 // required because examples/ isn't reachable by a //go:embed directive living
 // in pkg/agent (embed patterns can't use ".." to leave their own package
 // directory, and a symlink pointing back into pkg/agent doesn't work either -
