@@ -1496,7 +1496,7 @@ Implemented in `pkg/agent/adk_agent.go` and `pkg/agent/agent_folder.go`.
 
 ## D78: `wackyproc wait` can target a process ID and ignores processes already terminal when the call began
 
-Not yet implemented. Touches `tools/wackyproc/main.go` (`waitCmd`) and `tools/wackyproc/proc/manager.go` (`Wait`). The bundled `skills/wackyproc/SKILL.md` documents the bare `wait <seconds>` form and needs updating alongside.
+Implemented in `tools/wackyproc/main.go` (`waitCmd`) and `tools/wackyproc/proc/manager.go` (`Wait`, plus the `isTerminal` helper), and documented in that tool's `README.md`. The bundled `skills/wackyproc/SKILL.md` still documents only the bare `wait <seconds>` form - tracked in TODOS.md.
 
 `wackyproc wait [seconds]` blocks until a process that was still running when the call began reaches a terminal state, exiting 0 and printing its ID. Before polling, it snapshots the set of already-terminal process IDs once and never reports a member of that set. With no tracked processes it blocks until the timeout. The timeout defaults to `MaxWaitSeconds`.
 

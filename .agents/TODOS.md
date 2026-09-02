@@ -442,3 +442,47 @@ Reference: `/wackypub/skills/wackypub-a2a/SKILL.md` for style, and the existing 
 
 `wackydiscord`'s `HandleMessageCreate`, `SyncAgentToChannels`, `handleFillCommand`, and `handleUnbindCommand` now serialize `ChannelBinding` access through `State.LockChannel` (D76). The remaining interaction handlers (`/bind`, `/verbose` in `tools/wackydiscord/bot/commands.go`) still mutate `ChannelBinding` without acquiring the channel lock. While `HandleMessageCreate` includes a defensive `AgentID` guard that prevents stamping old sync markers if `/bind` executes mid-generation, that guard is a band-aid; wrapping `handleBindCommand` in `State.LockChannel` is the real architectural fix to serialize binding creation against in-flight message processing and background sync.
 
+## `CheckLiveness` collapses `CRASHED` into `FAILED` for every observer after the first
+
+Found while reviewing D78 (pre-existing; `liveness.go` untouched by it). `CheckLiveness`
+(`liveness.go:60-69`) reads the on-disk `exit_code` file *before* any liveness or crash logic
+and reports any non-zero value as `FAILED` - including exit code `137`
+(`CrashedExitCode`, `types.go:18`), which is precisely the sentinel that same file's crash branch
+persists at `liveness.go:103` and `:113`. `CRASHED` is therefore only visible during the single
+`CheckLiveness` call that first detects and writes it; every later reader, whether a subsequent
+`list` or a `wait` poll, sees the persisted `137` and reports `FAILED`.
+
+Worse than a lost label: `137` is *also* the legitimate exit status of a process genuinely killed
+by `SIGKILL`, which a surviving supervisor records as an honest `FAILED`. Once written, "no exit
+code was ever recorded, outcome unknown" and "this process was SIGKILLed and we watched it happen"
+are byte-identical on disk. The sentinel is indistinguishable from one of the two states it exists
+to separate, so fixing the read order alone is not sufficient - the crash marker needs its own
+channel (a dedicated file, or a distinct sentinel outside the 0-255 signal range) rather than a
+value in the same field. Verified live by `kill -9`-ing a supervisor and its child process group: `wait` still
+returned the ID correctly because `isTerminal` treats both as terminal, but `list` showed
+`FAILED`/137 where `CRASHED` was expected. Fix is to read crash state before falling back to the
+generic non-zero path. This matters for D79. One of its stated reasons for keeping `consumed` a separate flag
+rather than a fourth status is that a `CRASHED` process which gets read must stay identifiable as
+crashed - and that is already false today, independent of anything D79 does. Either fix this first,
+or amend D79 to rest solely on the other argument, which survives on its own: `status` is derived
+fresh on every read by design and should not be merged with a persisted, externally-mutated bit.
+
+## Negative `wackyproc wait` timeouts are swallowed by pflag with a misleading error
+
+Pre-existing, not a D78 regression. `wackyproc wait -5` (and `wait --for <id> -5`) never reaches
+`strconv.Atoi`: pflag consumes `-5` as shorthand flag parsing and fails with
+`Error: unknown shorthand flag: '5' in -5`. The consequence is that `clampWaitSeconds`' negative
+branch has been unreachable through the CLI for as long as it has existed - only reachable via
+direct `proc.Wait` calls, which is exactly where the unit tests exercise it. The standard `wait -- -5`
+escape works. Worth fixing so the message names the real problem, since anyone hitting it later is
+likely to file it as a D78 regression.
+
+## Bundled `wackyproc` skill still documents the pre-D78 `wait` surface
+
+D78 added `wait --for <id>` and made already-terminal-at-entry processes invisible to any-mode
+`wait`, and updated `tools/wackyproc/README.md`. It deliberately did NOT touch
+`tools/wackyproc/skills/wackyproc/SKILL.md`, which still documents only the bare `wait <seconds>`
+form. That file carries `always_load: true`, so it is injected into every agent's prompt: agents are
+currently being taught the broken pattern, and nothing tells them the targeted form exists. Worth
+covering the two modes and the "already-terminal processes are ignored" contract, since the natural
+wrong assumption is that `wait N` means "give me anything that has finished."
