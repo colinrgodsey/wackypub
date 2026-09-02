@@ -1382,3 +1382,138 @@ func TestCompactSessionWithConfig_Passthrough(t *testing.T) {
 		t.Errorf("expected prompt %q, got %q", "SDK override prompt", capturedPrompt)
 	}
 }
+
+func TestLoadRuntimeConfigFile(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// 1. Empty path
+	if _, err := LoadRuntimeConfigFile(""); err == nil {
+		t.Error("expected error for empty path, got nil")
+	}
+
+	// 2. Nonexistent path
+	if _, err := LoadRuntimeConfigFile(filepath.Join(tempDir, "missing.json")); err == nil || !strings.Contains(err.Error(), "failed to read runtime config file:") {
+		t.Errorf("expected failed to read runtime config file error, got: %v", err)
+	}
+
+	// 3. Invalid JSON
+	badPath := filepath.Join(tempDir, "bad.json")
+	_ = os.WriteFile(badPath, []byte("invalid json"), 0644)
+	if _, err := LoadRuntimeConfigFile(badPath); err == nil || !strings.Contains(err.Error(), "failed to parse runtime config file:") {
+		t.Errorf("expected failed to parse runtime config file error, got: %v", err)
+	}
+
+	// 4. Valid with symlink and env expansion
+	t.Setenv("TEST_D84_MODEL", "expanded-model-name")
+	targetPath := filepath.Join(tempDir, "target.json")
+	targetContent := `{"endpoint":"http://localhost:1234","model":"${TEST_D84_MODEL}"}`
+	if err := os.WriteFile(targetPath, []byte(targetContent), 0644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	symlinkPath := filepath.Join(tempDir, "link.json")
+	if err := os.Symlink(targetPath, symlinkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfigFile(symlinkPath)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfigFile failed: %v", err)
+	}
+	if cfg.Model != "expanded-model-name" {
+		t.Errorf("expected model expanded-model-name, got %q", cfg.Model)
+	}
+	if cfg.Provider != "openai" {
+		t.Errorf("expected default provider openai, got %q", cfg.Provider)
+	}
+}
+
+func TestCompactSessionWithOptions_RuntimeOverride(t *testing.T) {
+	wsDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(wsDir, RootMarkerFile), []byte(""), 0644)
+	origCwd, _ := os.Getwd()
+	if err := os.Chdir(wsDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origCwd)
+
+	agentID := "testagent-d84"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir agent: %v", err)
+	}
+
+	turns := []*genai.Content{
+		genai.NewContentFromText("u1", "user"),
+		genai.NewContentFromText("m1", "model"),
+	}
+	if err := WriteSessionTurns(agentDir, turns); err != nil {
+		t.Fatalf("write turns: %v", err)
+	}
+
+	var liveServerHit bool
+	liveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		liveServerHit = true
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer liveSrv.Close()
+
+	var capturedModel string
+	overrideSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &req)
+		capturedModel = req.Model
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"* compact summary"},"finish_reason":"stop"}]}`)
+	}))
+	defer overrideSrv.Close()
+
+	// Live agent runtime pointing to liveSrv
+	liveRt := &RuntimeConfig{
+		Model:    "live-expensive-model",
+		Endpoint: liveSrv.URL,
+	}
+	liveRtData, _ := json.Marshal(liveRt)
+	_ = os.WriteFile(filepath.Join(agentDir, "runtime.json"), liveRtData, 0644)
+	_ = os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("# test agent D84\n"), 0644)
+
+	// Override runtime pointing to overrideSrv with small-cheap-model
+	overrideRtFile := filepath.Join(wsDir, "small-runtime.json")
+	overrideRt := &RuntimeConfig{
+		Model:    "small-cheap-model",
+		Endpoint: overrideSrv.URL,
+	}
+	overrideRtData, _ := json.Marshal(overrideRt)
+	_ = os.WriteFile(overrideRtFile, overrideRtData, 0644)
+
+	sdk := NewSDK(wsDir)
+
+	opts := CompactSessionOptions{
+		RuntimePath: overrideRtFile,
+	}
+	compacted, err := sdk.CompactSessionWithOptions(context.Background(), agentID, true, opts)
+	if err != nil {
+		t.Fatalf("CompactSessionWithOptions failed: %v", err)
+	}
+	if !compacted {
+		t.Fatal("expected compaction to succeed")
+	}
+
+	if liveServerHit {
+		t.Error("expected live agent server NOT to be called, but it was hit")
+	}
+	if capturedModel != "small-cheap-model" {
+		t.Errorf("expected override model %q, got %q", "small-cheap-model", capturedModel)
+	}
+
+	// Verify MEMORY.md was updated
+	mem, err := ReadMemoryFile(agentDir)
+	if err != nil {
+		t.Fatalf("ReadMemoryFile failed: %v", err)
+	}
+	if !strings.Contains(mem, "* compact summary") {
+		t.Errorf("expected MEMORY.md to contain compact summary, got: %q", mem)
+	}
+}

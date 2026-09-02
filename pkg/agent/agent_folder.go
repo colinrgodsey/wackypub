@@ -807,20 +807,9 @@ func LoadFolderAgentWithA2A(wsDir string, agentID string, a2aMeta *A2AMetadata, 
 	}
 
 	// 4. Initialize LLM Model adapter
-	var llmModel model.LLM
-	switch runtimeCfg.Provider {
-	case "anthropic":
-		llmModel = NewAnthropicModel(runtimeCfg)
-	case "openai", "openai-compatible":
-		llmModel = NewOpenAIModel(runtimeCfg)
-	case "gemini":
-		geminiModel, err := CreateGeminiModel(context.Background(), runtimeCfg.Model, runtimeCfg.APIKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create Gemini model for %s: %w", agentID, err)
-		}
-		llmModel = geminiModel
-	default:
-		return nil, fmt.Errorf("unsupported provider %q in runtime.json for agent %s (supported: openai, gemini, anthropic)", runtimeCfg.Provider, agentID)
+	llmModel, err := NewModelForRuntime(context.Background(), runtimeCfg, agentID)
+	if err != nil {
+		return nil, err
 	}
 
 	resolvedTimeout := DefaultCommandTimeoutSeconds

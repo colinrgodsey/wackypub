@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"google.golang.org/adk/v2/model"
 )
 
 // DefaultHTTPTimeoutSeconds is the default timeout (15 minutes) for HTTP client calls to LLM backends.
@@ -134,4 +137,64 @@ func LoadRuntimeConfig(agentDir string) (*RuntimeConfig, error) {
 	cfg.Provider = provider
 
 	return &cfg, nil
+}
+
+// LoadRuntimeConfigFile reads and unmarshals a RuntimeConfig from an explicit file path (D84).
+// Resolves symlinks, expands environment variables (${VAR} / $VAR), and sets default provider.
+// Returns an error if the file is absent, unreadable, or invalid JSON (no bundled-default fallback).
+func LoadRuntimeConfigFile(path string) (*RuntimeConfig, error) {
+	if path == "" {
+		return nil, fmt.Errorf("failed to read runtime config file: path cannot be empty")
+	}
+
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		realPath = path
+	}
+
+	data, err := os.ReadFile(realPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read runtime config file: %w", err)
+	}
+
+	expandedData := os.ExpandEnv(string(data))
+
+	var cfg RuntimeConfig
+	if err := json.Unmarshal([]byte(expandedData), &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse runtime config file: %w", err)
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
+	if provider == "" {
+		if cfg.Endpoint != "" {
+			provider = "openai"
+		} else {
+			provider = "gemini"
+		}
+	}
+	cfg.Provider = provider
+
+	return &cfg, nil
+}
+
+// NewModelForRuntime initializes an ADK model.LLM adapter according to runtimeCfg.Provider.
+func NewModelForRuntime(ctx context.Context, runtimeCfg *RuntimeConfig, agentID string) (model.LLM, error) {
+	if runtimeCfg == nil {
+		return nil, fmt.Errorf("runtime config cannot be nil")
+	}
+
+	switch runtimeCfg.Provider {
+	case "anthropic":
+		return NewAnthropicModel(runtimeCfg), nil
+	case "openai", "openai-compatible":
+		return NewOpenAIModel(runtimeCfg), nil
+	case "gemini":
+		geminiModel, err := CreateGeminiModel(ctx, runtimeCfg.Model, runtimeCfg.APIKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Gemini model for %s: %w", agentID, err)
+		}
+		return geminiModel, nil
+	default:
+		return nil, fmt.Errorf("unsupported provider %q in runtime configuration for agent %s (supported: openai, gemini, anthropic)", runtimeCfg.Provider, agentID)
+	}
 }

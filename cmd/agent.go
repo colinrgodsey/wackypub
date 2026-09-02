@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	messageFlag   string
-	compactMDFile string
+	messageFlag        string
+	compactMDFile      string
+	compactRuntimeFile string
 )
 
 func newSDK(wsDir string) *adkAgent.AgentSDK {
@@ -394,6 +395,12 @@ Arguments:
 Prints whether compaction actually ran. Acquires the session lock for the duration of the
 operation.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if compactRuntimeFile != "" {
+			if _, err := adkAgent.LoadRuntimeConfigFile(compactRuntimeFile); err != nil {
+				return err
+			}
+		}
+
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {
 			return err
@@ -423,7 +430,11 @@ operation.`,
 		}
 
 		ctx := context.Background()
-		compacted, err := sdk.CompactSessionWithConfig(ctx, agentID, true, compactCfg)
+		opts := adkAgent.CompactSessionOptions{
+			ConfigOverride: compactCfg,
+			RuntimePath:    compactRuntimeFile,
+		}
+		compacted, err := sdk.CompactSessionWithOptions(ctx, agentID, true, opts)
 		if err != nil {
 			return err
 		}
@@ -889,6 +900,7 @@ func init() {
 	agentAddCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
 	agentPromptCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
 	agentCompactCmd.Flags().StringVar(&compactMDFile, "md-file", "", "Path to alternate COMPACT.md file to use for compaction recipe")
+	agentCompactCmd.Flags().StringVar(&compactRuntimeFile, "runtime", "", "Path to alternate runtime.json file to use for compaction")
 	scratchpadCreateCmd.Flags().StringVar(&messageFlag, "message", "", "Scratchpad text payload")
 
 	scratchpadReadCmd.Flags().IntVar(&scratchpadSkipLines, "skip-lines", 0, "Number of lines to skip from start of entry")

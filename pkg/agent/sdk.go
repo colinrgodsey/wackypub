@@ -398,17 +398,31 @@ func (s *AgentSDK) StripSignatures(agentID string) (int, error) {
 	return StripSessionSignatures(agentDir)
 }
 
+// CompactSessionOptions specifies optional configuration and runtime overrides for compaction (D83, D84).
+type CompactSessionOptions struct {
+	ConfigOverride *CompactConfig
+	RuntimePath    string
+}
+
 // CompactSession manually triggers session compaction evaluation for an agent.
 // force bypasses the contextWindow/token-estimate gate checks (D44) - only this
 // manual path can force; the automatic pre-generation check never does.
 func (s *AgentSDK) CompactSession(ctx context.Context, agentID string, force bool) (bool, error) {
-	return s.CompactSessionWithConfig(ctx, agentID, force, nil)
+	return s.CompactSessionWithOptions(ctx, agentID, force, CompactSessionOptions{})
 }
 
 // CompactSessionWithConfig manually triggers session compaction evaluation for an agent
 // with an optional CompactConfig override (D83). When cfgOverride is non-nil, it replaces
 // the agent's COMPACT.md configuration without reading or modifying it on disk.
 func (s *AgentSDK) CompactSessionWithConfig(ctx context.Context, agentID string, force bool, cfgOverride *CompactConfig) (bool, error) {
+	return s.CompactSessionWithOptions(ctx, agentID, force, CompactSessionOptions{
+		ConfigOverride: cfgOverride,
+	})
+}
+
+// CompactSessionWithOptions manually triggers session compaction evaluation for an agent
+// with optional CompactConfig and RuntimeConfig overrides (D83, D84).
+func (s *AgentSDK) CompactSessionWithOptions(ctx context.Context, agentID string, force bool, opts CompactSessionOptions) (bool, error) {
 	if agentID == "" {
 		return false, fmt.Errorf("agentID cannot be empty")
 	}
@@ -425,11 +439,51 @@ func (s *AgentSDK) CompactSessionWithConfig(ctx context.Context, agentID string,
 	}
 	defer lock.Release()
 
-	fa, err := LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
+	if opts.RuntimePath == "" {
+		fa, err := LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
+		if err != nil {
+			return false, err
+		}
+		return CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, force, opts.ConfigOverride)
+	}
+
+	// Runtime override path (D84):
+	if !pathExists(agentDir) {
+		return false, fmt.Errorf("agent directory %s does not exist", agentDir)
+	}
+
+	// 0. Load .env for agent (so env vars referenced in override runtime are available)
+	_, _ = LoadAgentDotEnv(agentDir)
+
+	// 1. Load override runtime config
+	overrideRuntimeCfg, err := LoadRuntimeConfigFile(opts.RuntimePath)
 	if err != nil {
 		return false, err
 	}
-	return CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, force, cfgOverride)
+
+	// 2. Render normal AGENTS.md system prompt
+	expandedPrompt, err := RenderAgentSystemPrompt(s.WorkspaceDir, agentID)
+	if err != nil {
+		return false, fmt.Errorf("failed to render system prompt for agent %s: %w", agentID, err)
+	}
+
+	// 3. Initialize model adapter from override runtime
+	overrideLLMModel, err := NewModelForRuntime(ctx, overrideRuntimeCfg, agentID)
+	if err != nil {
+		return false, err
+	}
+
+	// 4. Build disposable ADK agent with NO tools (compaction never invokes tools, D45)
+	maxToolTurns := s.MaxToolTurns
+	if maxToolTurns <= 0 {
+		maxToolTurns = DefaultMaxToolTurns
+	}
+	adkAgent, err := BuildADKAgentWithConfig(agentID, expandedPrompt, maxToolTurns, overrideRuntimeCfg, overrideLLMModel)
+	if err != nil {
+		return false, fmt.Errorf("failed to build disposable ADK agent for compaction of %s: %w", agentID, err)
+	}
+
+	return CheckAndCompactSession(ctx, agentDir, overrideRuntimeCfg, adkAgent, force, opts.ConfigOverride)
 }
 
 // CreateScratchpad creates a new persistent scratchpad entry for an agent (<ws_dir>/<agent_id>/scratchpad/).

@@ -109,7 +109,12 @@ func clearCompactFlags() {
 		f.Changed = false
 		_ = f.Value.Set("")
 	}
+	if f := agentCompactCmd.Flags().Lookup("runtime"); f != nil {
+		f.Changed = false
+		_ = f.Value.Set("")
+	}
 	compactMDFile = ""
+	compactRuntimeFile = ""
 	RootCmd.SetOut(os.Stdout)
 	RootCmd.SetErr(os.Stderr)
 }
@@ -231,5 +236,130 @@ func TestAgentCompactCmd_ValidMDFileAndDefault(t *testing.T) {
 	}
 	if capturedPrompt != "Disk default prompt" {
 		t.Errorf("expected prompt %q, got %q", "Disk default prompt", capturedPrompt)
+	}
+}
+
+func TestAgentCompactCmd_RuntimeMissing(t *testing.T) {
+	resetCompactFlags(t)
+
+	wsDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(wsDir, adkAgent.RootMarkerFile), []byte(""), 0644)
+
+	RootCmd.SetArgs([]string{"--ws", wsDir, "agent", "compact", "bob", "--runtime", "/nonexistent/runtime.json"})
+	err := RootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for nonexistent --runtime, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to read runtime config file:") {
+		t.Errorf("expected 'failed to read runtime config file:', got: %v", err)
+	}
+}
+
+func TestAgentCompactCmd_RuntimeInvalidJSON(t *testing.T) {
+	resetCompactFlags(t)
+
+	wsDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(wsDir, adkAgent.RootMarkerFile), []byte(""), 0644)
+
+	badFile := filepath.Join(wsDir, "bad-runtime.json")
+	if err := os.WriteFile(badFile, []byte("{invalid json}"), 0644); err != nil {
+		t.Fatalf("failed to write bad file: %v", err)
+	}
+
+	RootCmd.SetArgs([]string{"--ws", wsDir, "agent", "compact", "bob", "--runtime", badFile})
+	err := RootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid JSON in --runtime, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to parse runtime config file:") {
+		t.Errorf("expected 'failed to parse runtime config file:', got: %v", err)
+	}
+}
+
+func TestAgentCompactCmd_RuntimeAndMDFileCombined(t *testing.T) {
+	resetCompactFlags(t)
+
+	wsDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(wsDir, adkAgent.RootMarkerFile), []byte(""), 0644)
+
+	origCwd, _ := os.Getwd()
+	if err := os.Chdir(wsDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origCwd)
+
+	agentID := "combo-agent"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir agent: %v", err)
+	}
+
+	turns := []*genai.Content{
+		genai.NewContentFromText("u1", "user"),
+		genai.NewContentFromText("m1", "model"),
+	}
+	if err := adkAgent.WriteSessionTurns(agentDir, turns); err != nil {
+		t.Fatalf("write turns: %v", err)
+	}
+
+	var capturedModel string
+	var capturedPrompt string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.Unmarshal(body, &req)
+		capturedModel = req.Model
+		if len(req.Messages) > 0 {
+			capturedPrompt = req.Messages[len(req.Messages)-1].Content
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"* combined summary"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+
+	// Agent's live files (should be ignored for model & recipe)
+	liveRt := &adkAgent.RuntimeConfig{
+		Model:    "live-model",
+		Endpoint: "http://unused.live",
+	}
+	liveRtData, _ := json.Marshal(liveRt)
+	_ = os.WriteFile(filepath.Join(agentDir, "runtime.json"), liveRtData, 0644)
+	_ = os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("# combo-agent\n"), 0644)
+	_ = os.WriteFile(filepath.Join(agentDir, "COMPACT.md"), []byte("Disk COMPACT prompt"), 0644)
+
+	// Custom runtime override
+	customRtFile := filepath.Join(wsDir, "override-runtime.json")
+	customRt := &adkAgent.RuntimeConfig{
+		Model:    "combo-override-model",
+		Endpoint: srv.URL,
+	}
+	customRtData, _ := json.Marshal(customRt)
+	_ = os.WriteFile(customRtFile, customRtData, 0644)
+
+	// Custom compact md override
+	customMDFile := filepath.Join(wsDir, "override-recipe.md")
+	customMDContent := "---\ncompact-pct: 50\nappend-only: false\n---\nCombo override prompt directive"
+	_ = os.WriteFile(customMDFile, []byte(customMDContent), 0644)
+
+	RootCmd.SetArgs([]string{
+		"--ws", wsDir,
+		"agent", "compact", agentID,
+		"--runtime", customRtFile,
+		"--md-file", customMDFile,
+	})
+	if err := RootCmd.Execute(); err != nil {
+		t.Fatalf("RootCmd.Execute with --runtime and --md-file failed: %v", err)
+	}
+
+	if capturedModel != "combo-override-model" {
+		t.Errorf("expected model %q, got %q", "combo-override-model", capturedModel)
+	}
+	if capturedPrompt != "Combo override prompt directive" {
+		t.Errorf("expected prompt %q, got %q", "Combo override prompt directive", capturedPrompt)
 	}
 }
