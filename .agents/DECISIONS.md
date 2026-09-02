@@ -1569,3 +1569,53 @@ Rejection returns an error naming the required id shape rather than reusing `scr
 **Rejected:** validating only inside `findScratchpadFile` on the reasonable-sounding grounds that it is the chokepoint, which is true for reads and false for the one function that deletes; resolving the path with `filepath.Abs` and then comparing a prefix after the join, which still attempts resolution, is easy to get wrong around symlinks, and leaves the wildcard enumeration intact; and rejecting only `..` while permitting other metacharacters, which fixes the traversal and leaves the enumeration.
 
 **Same shape, two other sites.** `FileSessionService.Delete` (`file_session_service.go:185`) joins a request-supplied session id into a workspace path and then deletes a well-known filename inside it, so it is the identical construction with a destructive verb. It is not reachable in the current binary, the session service is only wired in for in-process turn execution and the REST controller that would call delete belongs to an optional ADK server wackypub never instantiates, so this is latent rather than live, and it turns on the first day anyone adds a hosted or API mode. `LoadFolderAgentWithA2A` (`agent_folder.go:763`) joins an agent id into a workspace path and then loads `runtime.json`, `.env`, and memory from the result and may drive a turn there. It is reachable from every CLI and cross-agent call, and is currently safe only incidentally, because every call site happens to run `AuthorizeAgentTarget` first, whose exact-match allowlist rejects traversal strings by never containing one. Neither site validates internally, so nothing prevents a future call site from skipping the SDK gate and nothing would flag the omission. If that gate is ever bypassed the consequence is considerably worse than the case this decision closes, since it is directory-wide read of API keys and memory rather than one entry, and a successful load proceeds to run a turn under the hijacked target's identity and config. Neither site is fixed here, and both deserve the same first-statement validator.
+
+
+## D82: `wackyproc peek` reads process output without consuming it
+
+Not yet implemented.
+
+**Problem.** `wackyproc get <id>` is the only way to inspect a process record's captured output, and under D79's consumption-order disposal, getting is retrieving: the record becomes eligible for disposal once read. There is no cheap way to check a long-running process's latest stdout without either pulling a full dump or consuming the record. D79's own principle is that a peek at partial output is not consumption of final output, and that principle should hold for finished processes too.
+
+**Fix.** Add `wackyproc peek <id> [--lines N]` (default N=20) reading the trailing N lines of the record's captured stdout and stderr from the same on-disk files `get` reads, line-bounded, and never marking the record consumed, terminal or not. `peek` is a pure observer; only `get` (retrieval intent) participates in D79's disposal. Same consumption-order benefit applies: peeking a finished record keeps it eligible while an unread crashed process stays protected by the existing rules.
+
+**Rejected.** Overloading `get` with a `--tail` flag, because `get`'s contract is specifically "I'm retrieving this, treat it as read" (D79), and conflating a cheap progress check with retrieval muddies the one signal D79's disposal logic depends on.
+
+## D83: `wackypub agent compact` accepts an alternate COMPACT.md
+
+Not yet implemented.
+
+**Problem.** `CheckAndCompactSession` (`compaction.go:176`) loads compaction config internally via `LoadCompactConfig(agentDir)` (`compaction.go:186`), always from `<agentDir>/COMPACT.md`. A one-off compaction with a different recipe (different compact-pct, different frontmatter, different body directives) currently requires mutating the agent's real COMPACT.md, then restoring it.
+
+**Fix.** Thread an optional `*CompactConfig` override through `CheckAndCompactSession` and `AgentSDK.CompactSession`; when present, it replaces the internal load. The CLI gets `--md-file <path>` on `agentCompactCmd` (`cmd/agent.go:382`), which parses the given file through the existing `ParseCompactConfig` and passes it down. The agent's own COMPACT.md is never written. Independent of `--runtime` (D84); both flags may be supplied together.
+
+**Rejected.** Writing a temporary COMPACT.md into the agent dir and restoring it, because it races with a concurrent compaction and risks leaving the file mutated on error.
+
+## D84: `wackypub agent compact` accepts a runtime override to target a smaller model
+
+Not yet implemented.
+
+**Problem.** Compacting a session normally run on a large-context model down to a summary sized and priced for a smaller model, without changing the agent's live runtime.json. The naive reading is that `CheckAndCompactSession`'s `runtimeCfg` parameter controls this; it does only the threshold and token-estimate math (`ContextWindow`, `PreserveThinking` at `compaction.go:191-218`). The model that actually writes the compaction summary is the `model.LLM` baked into the `adkAgent` at load time from the agent's own runtime.json, so swapping only `runtimeCfg` changes the math but not the summarizer.
+
+**Fix.** `--runtime <path.json>` on `agentCompactCmd` builds a second, disposable `agent.Agent` from the override via `BuildADKAgentWithConfig` (same rendered system instruction, no tools, since compaction's disposable session never invokes tools per D45) and passes both that agent and its `RuntimeConfig` into `CheckAndCompactSession` in place of the live ones. Touches `AgentSDK.CompactSession` (`sdk.go:404`) or a new sibling method, plus `cmd/agent.go`. Independent of `--md-file` (D83); both may be given together.
+
+**Rejected.** Swapping only `runtimeCfg`, which changes thresholds but leaves the summarizer on the expensive model; and mutating the agent's runtime.json for the run then restoring it, the same race/leave-mutated risk rejected in D83.
+
+
+## D85: cancellable turns via context at the SDK level, used by the CLI and wackydiscord `/stop`
+
+Not yet implemented.
+
+**Problem.** Nothing can cancel an in-flight agent generation. The SDK turn entry points already take a `context.Context` (`GenerateTurnStream` at `sdk.go:134`, `AddAndGenerateTurnStream` at `sdk.go:191`, plus the non-streaming variants), but callers pass a fixed, non-cancellable context: wackydiscord's Discord handler uses `context.Background()` (`tools/wackydiscord/bot/handlers.go:134/139`), and the CLI has no cancel path either. The only `WithCancel` in the package is an unrelated per-tool-call timeout (`agent_folder.go:553`), which cancels a single subprocess, not the generation. So a runaway or unwanted turn runs to completion with no way to stop it from the CLI or a Discord channel.
+
+**Fix.** Make cancellation a first-class SDK concern, context-based, so every consumer benefits without per-surface plumbing:
+- Verify and, where missing, wire `ctx` cancellation through the generation path (SDK stream methods to `FolderAgent.GenerateTurnStream` to the model call), so cancelling the context stops the turn.
+- Expose a way to cancel an in-flight generation by id: on the SDK side, a `CancelTurn(agentID)` (or a returned `context.CancelFunc` per turn when the SDK owns the context) so callers can associate an in-flight generation with a handle.
+- CLI: drive `GenerateTurnStream`/`AddAndGenerateTurnStream` with a signal-derived context (e.g. SIGINT), so Ctrl-C cancels the turn.
+- wackydiscord: `/stop` on the bound channel calls through to the SDK cancel handle for that agent; the existing binding model (per-channel agent) makes the mapping straightforward.
+- The tool-timeout cancel at `agent_folder.go:553` stays as-is (subprocess-level); this is the turn-level cancel.
+
+This is the general "No way to cancel an in-flight agent task" TODO brought forward as a decision, and it unblocks `wackydiscord /**stop**` (current slash commands: bind, unbind, status, fill).
+
+**Rejected.** Scoping `/stop` to wackydiscord alone with surface-specific plumbing, which leaves the CLI and every future consumer without the same capability; and polling/flags to "request" cancellation, which cannot interrupt a blocked model call. Context is the existing idiomatic transport and the SDK already parses it.
+

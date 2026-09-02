@@ -506,3 +506,122 @@ whole feature was "always wonky" and might be worth redoing: candidates are a de
 store, routing "system" to the root repo deliberately, dropping the snapshot commit entirely, and
 the reviewer's broader recommendation, falling back to the `git` CLI when go-git fails, which is the
 one change that addresses go-git's narrower config/validation rather than patching symptoms.
+
+
+## Mid-turn short-circuit should compact instead of requiring a "continue" turn
+
+When accumulated tool context crosses the compaction threshold mid-turn, the harness returns a
+synthetic response telling the model to send another message to proceed (`adk_agent.go:187-215`,
+tracked via `StoppedEarlyForCompaction`, D63/D68). The assumption is that the next top-level turn
+triggers compaction, but if the next turn is another tool-heavy one, or the trigger is missed, the
+bail wastes both a user message and budget. Colin's proposal: when we bail in this state, issue the
+compaction directly rather than waiting. Compaction is safe at this boundary because the bail point
+is between tool turns. Interplay to preserve: D77 skips forced compaction on the turn a mid-turn
+short-circuit interrupted, so the auto-compact must be careful not to conflict.
+
+
+**Shelved per Colin (2026-09-02).** Colin: this should be part of a broader "multi-turn" turn pattern, the same shape the deferred image queueing has, where a turn needs a follow-up to complete (compact-on-bail, image queueing). Do not re-open as a compaction-only fix; fold into the multi-turn pattern when that is designed.
+## `wackyproc` "peek" command for stdout
+
+`wackyproc get <id>` returns the full captured stdout/stderr of a process record and (per D79
+consumption-order disposal) interacts with when the record is considered consumed. There is no way
+to check a long-running process's latest output cheaply without a full dump. Add `wackyproc peek
+<id> [lines]` (or a `--tail` flag on `get`) that shows the trailing N lines of stdout without
+draining or consuming the record, for progress checks on still-running processes. wackyproc
+subcommands today: run, list, wait, get, stop, supervise, skill.
+
+
+**Decision: D82 (not yet implemented).**
+## ~~Skills don't need to render `@` file pointers~~ (closed: verified non-issue — the only `ExpandMacros` caller is `RenderAgentSystemPrompt` on `AGENTS.md`; skill content is never macro-expanded on either the always-load or `load_skill` path)
+
+**Colin's follow-up, tested and verdict stands.** He hypothesized that system-prompt assembly inflates `@` macros in autoloaded skills. Empirically disproved: built a scratch agent with an `always_load: true` skill containing `@other-file.md` and `@missing-file.md` (the first a real file in the agent dir), rendered via `RenderAgentSystemPrompt`, and both pointers survived verbatim inside the `<AUTOLOADED_SKILLS>` block. Code confirms: the block is appended AFTER `ExpandMacros(AGENTS.md)` and nothing re-expands the assembled prompt; the only `ExpandMacros` call site in the tree is `macro.go:39`.
+
+`ExpandMacros` (`pkg/agent/macro.go:16`) expands `@path` references in content (`relPath :=
+strings.TrimPrefix(match, "@")` at macro.go:61, exercised in macro_test.go). Skill content that
+carries `@` pointers gets this rendering even though skill files are shipped material; the pointers
+in a skill are references for the reader, not templates to expand. Scope where the skill load path
+triggers expansion and skip it there, or only expand on explicit intent. The exact render site needs
+confirming before implementing.
+
+## `wackypub agent compact` should accept an alternate COMPACT.md file
+
+The CLI compact (`cmd/agent.go:382` `agentCompactCmd`) always uses `<agentDir>/COMPACT.md` via
+`LoadCompactConfig` (`compaction.go:111-116`). Add a flag (e.g. `--md-file <path>`) so a
+CLI-triggered compact can use a different COMPACT.md, for one-off compaction recipes or a different
+compact-pct/frontmatter without mutating the agent's real file.
+
+
+**Decision: D83 (not yet implemented).**
+## Append-only COMPACT.md needs truncation or rotation at some point
+
+COMPACT.md is append-only by design (append-only/compact-pct frontmatter, embedded default from
+`examples/compaction/COMPACT-append.md`, D45/D46) and its body grows unbounded across compactions;
+no truncation exists anywhere in `compaction.go`. Decide a cap: summarize or prune old body lines,
+keep the last N, or fold guidance into MEMORY.md. Careful: the body carries accumulated instructions
+for future compactions, so naive truncation loses drift guidance. Related to the existing "Modular
+compaction strategy" TODO.
+
+
+**Left as a TODO per Colin (2026-09-02)** — may be a duplicate of the existing `MEMORY.md grows forever` TODO — COMPACT.md is read-only from the harness side (no write sites), and `append-only: true` governs MEMORY.md amends, not COMPACT.md growth. Revisit later; likely close as duplicate in favor of the MEMORY.md TODO.
+## ~~Does files-rw honor absolute paths?~~ (closed: empirically verified — an absolute path lands exactly where given; the earlier finding was a relative-path mistake resolving against the agent workspace, which is the documented contract)
+
+Empirical, from a real session: `files-rw write /wackypub/pkg/agent/git_warning_test.go` wrote to
+`~/workspace/dranbo/pkg/agent/git_warning_test.go` instead, i.e. the path was treated as relative to
+the agent's workspace and the absolute prefix was silently re-based. Either accept absolute paths
+(with the same ACL/escape checks the rest of the harness applies) or reject them loudly so callers
+learn the workspace-relative contract instead of losing files into their own agent dir. The tool
+lives outside pkg/agent (tools/files-rw), so its argument handling needs its own check.
+
+## wackydiscord `/stop` command
+
+Slash commands today are bind, unbind, status, fill (`tools/wackydiscord/bot/commands.go:11`). No
+way to cancel an in-flight agent turn from Discord; the existing "No way to cancel an in-flight
+agent task" TODO (above) is the general form. Add a `/stop` interaction for the bound agent. Risk:
+needs cancellation plumbing in the turn runner (generation stop / context cancel), which may not
+exist yet, so may need harness work before the Discord surface.
+
+
+
+**Decision: D85 (not yet implemented).** Colin: yes — a general, context-based cancellation pattern at the SDK level, applying to the CLI too, with `/stop` as one consumer.
+## `wackypub agent compact` should accept a runtime override (large context -> smaller model)
+
+Alongside a COMPACT.md override, compaction takes contextWindow and PreserveThinking from
+runtime.json (`CheckAndCompactSession` at compaction.go:176/192/199/214-215, and the summary
+model from the agent's configured runtime). Add a flag (e.g. `--runtime <path.json>`) so a
+CLI-triggered compact can target a different runtime than the agent's live one. Colin's use case:
+compact a large-context session down to a summary sized and priced for a smaller model, e.g. an
+agent normally running a big-context model can have its session compacted against a
+small-context/small-model runtime.json without changing what the agent runs on day to day.
+Interplay: summary thresholds and overhead pct still come from the compaction config; the runtime
+override only swaps contextWindow/PreserveThinking/model for this run.
+
+**Decision: D84 (not yet implemented). Note the corrected shape: the override must build a disposable agent from the runtime, not just swap `runtimeCfg`, because the summarizer model comes from the agent, not the config parameter (see D84).**
+
+
+## `@` macro expansion in the AGENTS.md include chain mangles email addresses and @-handles
+
+`RenderAgentSystemPrompt` expands `@<FILE_PATH>` recursively over AGENTS.md and every file it
+includes (`macroRegex = @([a-zA-Z0-9_\-./]+)`, `macro.go:12`). Any email address or @-handle in an
+included file (IDENTITY.md, SOUL.md, USER.md, TOOLS.md, etc.) matches the regex and is treated as a
+file path, producing `<-- Error reading macro file <token>: ... -->` markers (`macro.go:73`) that
+destroy the original text. Live evidence in Dranbo's own rendered prompt: `dranbofieldston@agentmail.to`
+became `dranbofieldston<!-- Error reading macro file agentmail.to: ... -->`, and `@DranboF` became a
+marker too. Same class as the D80 residuals note about first-class false positives: expansion that is
+happy to eat prose. Fix options are a design choice, pending Colin: an escape convention (`@@` or
+backslash), only expand when the target file actually exists (typo'd macros then fail silently instead
+of loudly), or a narrower regex (e.g. require a known extension or a path containing `/`). Note the
+include chain itself must keep working.
+
+
+## No way to ask how much context an agent session is using
+
+There is no surface for "how big is this agent's session right now" outside the internal compaction
+path. `EstimateTokens(turns, includeThinking)` exists (`session_store.go:149`) and the turn tracker
+records `LastPromptTokens` from the last model response (`adk_agent.go:107/151`), both consumed
+internally by `CheckAndCompactSession` (`compaction.go:200`) to decide whether to compact. But
+nothing exposes the count to an operator or to the agent itself. `EstimateTokens` is rough
+(heuristic per-content estimate), while `LastPromptTokens` is provider-reported and only reflects
+the last request, not the whole session. TODO (no decision yet, Colin 2026-09-02): provide some way
+to figure out the context count for a current agent session — questions to settle later: the
+surface (CLI `wackypub agent <id> context`? SDK method? tool?), the source (estimate vs provider
+usage vs a combination), and whether the agent should be able to ask itself.
