@@ -111,18 +111,27 @@ func TestExecuteTool_SymlinkResolution(t *testing.T) {
 func TestExecuteTool_Failure(t *testing.T) {
 	agentDir := t.TempDir()
 	toolPath := filepath.Join(agentDir, "fail_tool.sh")
-	script := "#!/bin/sh\necho \"something broke\" >&2\nexit 1\n"
+	script := "#!/bin/sh\necho \"stdout output before failure\"\necho \"something broke\" >&2\nexit 1\n"
 	if err := os.WriteFile(toolPath, []byte(script), 0755); err != nil {
 		t.Fatalf("failed to write fail tool script: %v", err)
 	}
 
-	_, err := executeTool(context.Background(), agentDir, "fail_tool.sh", toolPath, ExecToolArgs{}, nil)
+	out, err := executeTool(context.Background(), agentDir, "fail_tool.sh", toolPath, ExecToolArgs{}, nil)
 
 	if err == nil {
 		t.Fatalf("expected an error, got nil")
 	}
-	if !strings.Contains(err.Error(), "tool fail_tool.sh failed: something broke") {
-		t.Fatalf("unexpected error message: %q", err.Error())
+	if !strings.Contains(err.Error(), "tool fail_tool.sh failed: exit status 1") {
+		t.Fatalf("unexpected headline error message: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "stdout output before failure") {
+		t.Fatalf("expected stdout output to be preserved in error: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "something broke") {
+		t.Fatalf("expected stderr output to be preserved in error: %q", err.Error())
+	}
+	if !strings.Contains(out, "stdout output before failure") {
+		t.Fatalf("expected stdout output to survive in failure result payload: %q", out)
 	}
 }
 
@@ -437,17 +446,23 @@ func TestSearchScratchpad(t *testing.T) {
 func TestExecuteTool_Timeout(t *testing.T) {
 	agentDir := t.TempDir()
 	toolPath := filepath.Join(agentDir, "sleep_tool.sh")
-	script := "#!/bin/sh\nsleep 5\necho done\n"
+	script := "#!/bin/sh\necho \"partial output before sleep\"\nsleep 5\necho done\n"
 	if err := os.WriteFile(toolPath, []byte(script), 0755); err != nil {
 		t.Fatalf("failed to write tool script: %v", err)
 	}
 
-	_, err := executeTool(context.Background(), agentDir, "sleep_tool.sh", toolPath, ExecToolArgs{}, nil, 1)
+	out, err := executeTool(context.Background(), agentDir, "sleep_tool.sh", toolPath, ExecToolArgs{}, nil, 1)
 	if err == nil {
 		t.Fatalf("expected timeout error, got nil")
 	}
 	if !strings.Contains(err.Error(), "tool sleep_tool.sh timed out after 1 seconds") {
 		t.Fatalf("unexpected error message: %v", err)
+	}
+	if !strings.Contains(err.Error(), "partial output before sleep") {
+		t.Fatalf("expected stdout output to be preserved in timeout error: %q", err.Error())
+	}
+	if !strings.Contains(out, "partial output before sleep") {
+		t.Fatalf("expected stdout output to survive in timeout result payload: %q", out)
 	}
 }
 
@@ -728,5 +743,143 @@ func TestDeterministicToolOrderingD57(t *testing.T) {
 				t.Fatalf("iter %d: tool order mismatch at index %d: got %q, expected %q (full received: %v)", iter, i, receivedToolNames[i], expectedOrder[i], receivedToolNames)
 			}
 		}
+	}
+}
+
+func TestExecuteTool_CapturePath_NonExistentMacroDoesNotFail(t *testing.T) {
+	agentDir := t.TempDir()
+	toolPath := filepath.Join(agentDir, "large_macro.sh")
+
+	// Output > ScratchpadOutputThreshold (4000 bytes) containing a macro referencing a non-existent ID
+	largePayload := strings.Repeat("hello world line\n", 300) + `<SCRATCHPAD_DATA id="dead" />` + "\n"
+	script := fmt.Sprintf("#!/bin/sh\ncat << 'EOF'\n%sEOF\n", largePayload)
+	if err := os.WriteFile(toolPath, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write script: %v", err)
+	}
+
+	out, err := executeTool(context.Background(), agentDir, "large_macro.sh", toolPath, ExecToolArgs{}, nil)
+	if err != nil {
+		t.Fatalf("expected executeTool to succeed without expanding macro, got error: %v", err)
+	}
+
+	// Output should reference scratchpad entry
+	if !strings.Contains(out, "<STDOUT><SCRATCHPAD_DATA id=") {
+		t.Fatalf("expected output over threshold to be stored in scratchpad, got: %s", out)
+	}
+
+	// Read stored scratchpad entry and verify macro was preserved verbatim
+	items, _, _, err := ListScratchpads(agentDir)
+	if err != nil || len(items) == 0 {
+		t.Fatalf("failed to list scratchpads: %v", err)
+	}
+	content, err := readScratchpadRaw(agentDir, items[0].ID, nil, nil)
+	if err != nil {
+		t.Fatalf("failed to read raw scratchpad: %v", err)
+	}
+	if !strings.Contains(content, `<SCRATCHPAD_DATA id="dead" />`) {
+		t.Fatalf("expected literal macro in stored scratchpad, got: %s", content)
+	}
+}
+
+func TestExecuteTool_CapturePath_LiveMacroDoesNotSplice(t *testing.T) {
+	agentDir := t.TempDir()
+
+	// Create a live scratchpad entry
+	secretText := "TOP_SECRET_VERBATIM_CHECK"
+	liveEntry, err := CreateScratchpad(agentDir, secretText, "test")
+	if err != nil {
+		t.Fatalf("CreateScratchpad failed: %v", err)
+	}
+
+	toolPath := filepath.Join(agentDir, "live_macro.sh")
+	macroTag := fmt.Sprintf(`<SCRATCHPAD_DATA id=%q />`, liveEntry.ID)
+	largePayload := strings.Repeat("padding text line\n", 300) + macroTag + "\n"
+	script := fmt.Sprintf("#!/bin/sh\ncat << 'EOF'\n%sEOF\n", largePayload)
+	if err := os.WriteFile(toolPath, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write script: %v", err)
+	}
+
+	out, err := executeTool(context.Background(), agentDir, "live_macro.sh", toolPath, ExecToolArgs{}, nil)
+	if err != nil {
+		t.Fatalf("expected executeTool to succeed, got error: %v", err)
+	}
+
+	if !strings.Contains(out, "<STDOUT><SCRATCHPAD_DATA id=") {
+		t.Fatalf("expected output over threshold to be stored in scratchpad, got: %s", out)
+	}
+
+	// Find the new scratchpad entry created for tool's output
+	items, _, _, err := ListScratchpads(agentDir)
+	if err != nil {
+		t.Fatalf("failed to list scratchpads: %v", err)
+	}
+	var toolEntryID string
+	for _, it := range items {
+		if it.ID != liveEntry.ID {
+			toolEntryID = it.ID
+			break
+		}
+	}
+	if toolEntryID == "" {
+		t.Fatalf("failed to find captured tool scratchpad entry")
+	}
+
+	content, err := readScratchpadRaw(agentDir, toolEntryID, nil, nil)
+	if err != nil {
+		t.Fatalf("failed to read raw scratchpad: %v", err)
+	}
+
+	// Must contain the literal tag without splicing the live entry's secret text
+	if !strings.Contains(content, macroTag) {
+		t.Fatalf("expected literal macro tag %q in stored scratchpad, got: %s", macroTag, content)
+	}
+	if strings.Contains(content, secretText) {
+		t.Fatalf("live scratchpad content was incorrectly spliced into captured output: %s", content)
+	}
+}
+
+func TestExecuteTool_FailureOverThreshold_PreservedInScratchpad(t *testing.T) {
+	agentDir := t.TempDir()
+	toolPath := filepath.Join(agentDir, "fail_large.sh")
+
+	largePayload := strings.Repeat("failure output line before exit\n", 300)
+	script := fmt.Sprintf("#!/bin/sh\ncat << 'EOF'\n%sEOF\necho \"error on stderr\" >&2\nexit 1\n", largePayload)
+	if err := os.WriteFile(toolPath, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write script: %v", err)
+	}
+
+	out, err := executeTool(context.Background(), agentDir, "fail_large.sh", toolPath, ExecToolArgs{}, nil)
+	if err == nil {
+		t.Fatalf("expected error from failing tool, got nil")
+	}
+
+	// Headline reason must be exit status
+	if !strings.Contains(err.Error(), "tool fail_large.sh failed: exit status 1") {
+		t.Fatalf("unexpected headline error: %q", err.Error())
+	}
+	// Output blocks in error must reference scratchpad entry for large stdout
+	if !strings.Contains(err.Error(), "<STDOUT><SCRATCHPAD_DATA id=") {
+		t.Fatalf("expected error to contain scratchpad reference for stdout: %q", err.Error())
+	}
+	// Error must contain preserved stderr
+	if !strings.Contains(err.Error(), "<STDERR>") || !strings.Contains(err.Error(), "error on stderr") {
+		t.Fatalf("expected error to contain stderr block: %q", err.Error())
+	}
+	// Result payload must also preserve the output blocks
+	if !strings.Contains(out, "<STDOUT><SCRATCHPAD_DATA id=") {
+		t.Fatalf("expected out payload to contain scratchpad reference for stdout: %q", out)
+	}
+
+	// Verify scratchpad entry actually exists on disk
+	items, _, _, listErr := ListScratchpads(agentDir)
+	if listErr != nil || len(items) == 0 {
+		t.Fatalf("expected scratchpad entry to be created for failed tool: %v", listErr)
+	}
+	raw, readErr := readScratchpadRaw(agentDir, items[0].ID, nil, nil)
+	if readErr != nil {
+		t.Fatalf("failed to read created scratchpad: %v", readErr)
+	}
+	if !strings.Contains(raw, "failure output line before exit") {
+		t.Fatalf("scratchpad content missing tool output: %q", raw)
 	}
 }

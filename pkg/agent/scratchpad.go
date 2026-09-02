@@ -117,12 +117,34 @@ func generateRandomID() string {
 	return result.String()
 }
 
-func findScratchpadFile(agentDir string, id string) (string, string, bool, error) {
+var scratchpadIDRegex = regexp.MustCompile(`^[0-9a-z]{4}$`)
+
+// validateScratchpadID validates that id conforms to the required 4-character [0-9a-z] token shape per D81.
+func validateScratchpadID(id string) error {
+	if !scratchpadIDRegex.MatchString(id) {
+		return fmt.Errorf("invalid scratchpad entry ID %q: must be exactly 4 lowercase alphanumeric characters ([0-9a-z])", id)
+	}
+	return nil
+}
+
+// listScratchpadMatches resolves all entry files matching id in <agentDir>/scratchpad/ per D81.
+func listScratchpadMatches(agentDir string, id string) ([]string, error) {
+	if err := validateScratchpadID(id); err != nil {
+		return nil, err
+	}
 	spDir := filepath.Join(agentDir, ScratchpadDirName)
 	pattern := filepath.Join(spDir, id+"-*")
 	matches, err := filepath.Glob(pattern)
 	if err != nil || len(matches) == 0 {
-		return "", "", false, fmt.Errorf("scratchpad entry %q not found", id)
+		return nil, fmt.Errorf("scratchpad entry %q not found", id)
+	}
+	return matches, nil
+}
+
+func findScratchpadFile(agentDir string, id string) (string, string, bool, error) {
+	matches, err := listScratchpadMatches(agentDir, id)
+	if err != nil {
+		return "", "", false, err
 	}
 	for _, m := range matches {
 		base := filepath.Base(m)
@@ -196,19 +218,11 @@ func EvictOldestScratchpad(spDir string, maxCap int) {
 	}
 }
 
-// CreateScratchpad creates a new text scratchpad entry in <agentDir>/scratchpad/<id>-<lines>-<createdBy>.txt
-// according to D30/D39.
-// Automatically expands inline <SCRATCHPAD_DATA id="X" ... /> macros before storing.
-// Atomic and collision-safe across separate OS processes via O_CREATE|O_EXCL.
-// Automatically evicts the entry with the oldest mtime when live entries exceed cap (300).
-func CreateScratchpad(agentDir string, text string, createdBy string) (*ScratchpadEntry, error) {
-	expandedText, err := ExpandScratchpadMacros(agentDir, text)
-	if err != nil {
-		return nil, fmt.Errorf("failed to expand scratchpad macros: %w", err)
-	}
-
+// createScratchpadRaw stores text verbatim in <agentDir>/scratchpad/<id>-<lines>-<createdBy>.txt
+// without macro expansion per D80. Used internally for machine-captured output (stdout, stderr).
+func createScratchpadRaw(agentDir string, text string, createdBy string) (*ScratchpadEntry, error) {
 	if createdBy == "" {
-		createdBy = "create_scratchpad"
+		createdBy = "run_command"
 	}
 
 	spDir := filepath.Join(agentDir, ScratchpadDirName)
@@ -216,7 +230,7 @@ func CreateScratchpad(agentDir string, text string, createdBy string) (*Scratchp
 		return nil, fmt.Errorf("failed to create scratchpad directory: %w", err)
 	}
 
-	lineCount := CountLines(expandedText)
+	lineCount := CountLines(text)
 	var id string
 	var filePath string
 	var file *os.File
@@ -243,7 +257,7 @@ func CreateScratchpad(agentDir string, text string, createdBy string) (*Scratchp
 		return nil, fmt.Errorf("failed to generate unique scratchpad ID after retries")
 	}
 
-	if _, err := file.WriteString(expandedText); err != nil {
+	if _, err := file.WriteString(text); err != nil {
 		_ = file.Close()
 		_ = os.Remove(filePath)
 		return nil, fmt.Errorf("failed to write scratchpad content: %w", err)
@@ -257,13 +271,31 @@ func CreateScratchpad(agentDir string, text string, createdBy string) (*Scratchp
 
 	return &ScratchpadEntry{
 		ID:        id,
-		Size:      len(expandedText),
+		Size:      len(text),
 		Lines:     lineCount,
 		CreatedBy: createdBy,
-		Text:      expandedText,
+		Text:      text,
 		IsBinary:  false,
 		MIMEType:  "text/plain",
 	}, nil
+}
+
+// CreateScratchpad creates a new text scratchpad entry in <agentDir>/scratchpad/<id>-<lines>-<createdBy>.txt
+// according to D30/D39.
+// Automatically expands inline <SCRATCHPAD_DATA id="X" ... /> macros before storing.
+// Atomic and collision-safe across separate OS processes via O_CREATE|O_EXCL.
+// Automatically evicts the entry with the oldest mtime when live entries exceed cap (300).
+func CreateScratchpad(agentDir string, text string, createdBy string) (*ScratchpadEntry, error) {
+	expandedText, err := ExpandScratchpadMacros(agentDir, text)
+	if err != nil {
+		return nil, fmt.Errorf("failed to expand scratchpad macros: %w", err)
+	}
+
+	if createdBy == "" {
+		createdBy = "create_scratchpad"
+	}
+
+	return createScratchpadRaw(agentDir, expandedText, createdBy)
 }
 
 // CreateBinaryScratchpad creates a new binary scratchpad entry in <agentDir>/scratchpad/<id>-0-<createdBy>.dat per D48.
@@ -328,13 +360,11 @@ func CreateBinaryScratchpad(agentDir string, data []byte, createdBy string, mime
 	}, nil
 }
 
-// DeleteScratchpad removes a scratchpad entry (.txt or .dat) by ID per D48.
+// DeleteScratchpad removes a scratchpad entry (.txt or .dat) by ID per D48/D81.
 func DeleteScratchpad(agentDir string, id string) error {
-	spDir := filepath.Join(agentDir, ScratchpadDirName)
-	pattern := filepath.Join(spDir, id+"-*")
-	matches, err := filepath.Glob(pattern)
-	if err != nil || len(matches) == 0 {
-		return fmt.Errorf("scratchpad entry %q not found", id)
+	matches, err := listScratchpadMatches(agentDir, id)
+	if err != nil {
+		return err
 	}
 	deleted := false
 	for _, m := range matches {

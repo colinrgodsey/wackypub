@@ -337,7 +337,7 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 		}
 		out, err := executeTool(ctx, agentDir, args.Command, toolPath, execArgs, a2aMeta, timeoutSeconds)
 		if err != nil {
-			return RunCommandResult{}, err
+			return RunCommandResult{Output: out}, err
 		}
 		return RunCommandResult{Output: out}, nil
 	})
@@ -677,20 +677,38 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	_ = CommitWorkspaceEvent(wsDir, agentID, fmt.Sprintf("tool call (%s)", toolName))
 
 	err = cmd.Run()
-	if err != nil {
-		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
-			return "", fmt.Errorf("tool %s timed out after %d seconds", toolName, timeout)
-		}
-		errStr := stderr.String()
-		if errStr == "" {
-			errStr = err.Error()
-		}
-		return "", fmt.Errorf("tool %s failed: %s", toolName, errStr)
-	}
-
 	stdoutBytes := stdout.Bytes()
 	stderrBytes := stderr.Bytes()
 
+	output, buildErr := buildOutputBlocks(agentDir, stdoutBytes, stderrBytes)
+	if buildErr != nil {
+		if err != nil {
+			return "", fmt.Errorf("tool %s failed: %v (failed to process output: %w)", toolName, err, buildErr)
+		}
+		return "", buildErr
+	}
+
+	if err != nil {
+		var headline string
+		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+			headline = fmt.Sprintf("tool %s timed out after %d seconds", toolName, timeout)
+		} else {
+			headline = fmt.Sprintf("tool %s failed: %s", toolName, err.Error())
+		}
+
+		if len(stdoutBytes) > 0 || len(stderrBytes) > 0 {
+			return output, fmt.Errorf("%s\n%s", headline, output)
+		}
+		return output, fmt.Errorf("%s", headline)
+	}
+
+	return output, nil
+}
+
+// buildOutputBlocks formats captured stdout and stderr into blocks (<STDOUT>, <STDERR>).
+// For text exceeding ScratchpadOutputThreshold, stores text verbatim using createScratchpadRaw (no macro expansion per D80).
+// For binary content, stores verbatim using CreateBinaryScratchpad (D48).
+func buildOutputBlocks(agentDir string, stdoutBytes, stderrBytes []byte) (string, error) {
 	var stdoutBlock string
 	if isBinary, mimeType := DetectMediaType(stdoutBytes); isBinary {
 		// D48: Binary stdout is always routed to a .dat scratchpad entry regardless of size
@@ -700,7 +718,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		}
 		stdoutBlock = fmt.Sprintf("<STDOUT><SCRATCHPAD_DATA id=%q size=\"%d\" lines=\"0\" mime=%q /></STDOUT>", entry.ID, entry.Size, mimeType)
 	} else if len(stdoutBytes) > ScratchpadOutputThreshold {
-		entry, err := CreateScratchpad(agentDir, string(stdoutBytes), "run_command")
+		entry, err := createScratchpadRaw(agentDir, string(stdoutBytes), "run_command")
 		if err != nil {
 			return "", fmt.Errorf("failed to create stdout scratchpad entry: %w", err)
 		}
@@ -720,7 +738,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		}
 		stderrBlock = fmt.Sprintf("<STDERR><SCRATCHPAD_DATA id=%q size=\"%d\" lines=\"0\" mime=%q /></STDERR>", entry.ID, entry.Size, mimeType)
 	} else if len(stderrBytes) > ScratchpadOutputThreshold {
-		entry, err := CreateScratchpad(agentDir, string(stderrBytes), "run_command")
+		entry, err := createScratchpadRaw(agentDir, string(stderrBytes), "run_command")
 		if err != nil {
 			return "", fmt.Errorf("failed to create stderr scratchpad entry: %w", err)
 		}
@@ -729,8 +747,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		stderrBlock = fmt.Sprintf("<STDERR>\n%s\n</STDERR>", string(stderrBytes))
 	}
 
-	output := stdoutBlock + stderrBlock
-	return output, nil
+	return stdoutBlock + stderrBlock, nil
 }
 
 // FolderAgent encapsulates an agent loaded from a folder environment (<ws_dir>/<agent_id>).

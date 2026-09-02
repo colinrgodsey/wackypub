@@ -52,12 +52,21 @@ func TestScratchpadCreationAndRetrieval(t *testing.T) {
 		t.Errorf("expected paginated output %q, got %q", expected, paginated)
 	}
 
-	// Test missing ID error
-	_, err = GetScratchpad(agentDir, "missing", nil, nil)
+	// Test missing ID error (conforming 4-char ID)
+	_, err = GetScratchpad(agentDir, "zzzz", nil, nil)
 	if err == nil {
 		t.Fatalf("expected error for missing ID, got nil")
 	}
-	if !strings.Contains(err.Error(), `scratchpad entry "missing" not found`) {
+	if !strings.Contains(err.Error(), `scratchpad entry "zzzz" not found`) {
+		t.Errorf("unexpected error message: %v", err)
+	}
+
+	// Test malformed ID error (D81)
+	_, err = GetScratchpad(agentDir, "missing", nil, nil)
+	if err == nil {
+		t.Fatalf("expected error for malformed ID, got nil")
+	}
+	if !strings.Contains(err.Error(), `invalid scratchpad entry ID "missing"`) {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }
@@ -482,5 +491,187 @@ func TestGetScratchpad_FallbackCap(t *testing.T) {
 	_, err = GetScratchpad(agentDir, entry.ID, nil, nil)
 	if err == nil || (!strings.Contains(err.Error(), "exceeds the single-read limit") && !strings.Contains(err.Error(), "byte read limit")) {
 		t.Fatalf("expected read cap error, got: %v", err)
+	}
+}
+
+func TestScratchpad_IDValidation_Read(t *testing.T) {
+	wsDir := t.TempDir()
+	agentA := filepath.Join(wsDir, "agentA")
+	agentB := filepath.Join(wsDir, "agentB")
+
+	entryA, err := CreateScratchpad(agentA, "secret data in agentA", "agentA")
+	if err != nil {
+		t.Fatalf("CreateScratchpad failed: %v", err)
+	}
+
+	// 1. Malformed IDs rejected with no filesystem access attempted
+	malformedIDs := []string{"", "a", "ab", "abc", "abcde", "missing", "TOOLONG", "ABCD", "ab-d", "ab_d"}
+	for _, id := range malformedIDs {
+		_, err := GetScratchpad(agentA, id, nil, nil)
+		if err == nil {
+			t.Errorf("GetScratchpad(%q) expected error for malformed ID, got nil", id)
+		} else if !strings.Contains(err.Error(), fmt.Sprintf("invalid scratchpad entry ID %q", id)) || !strings.Contains(err.Error(), "must be exactly 4 lowercase alphanumeric characters") {
+			t.Errorf("GetScratchpad(%q) unexpected error message: %v", id, err)
+		}
+
+		_, err = readScratchpadRaw(agentA, id, nil, nil)
+		if err == nil {
+			t.Errorf("readScratchpadRaw(%q) expected error for malformed ID, got nil", id)
+		} else if !strings.Contains(err.Error(), fmt.Sprintf("invalid scratchpad entry ID %q", id)) {
+			t.Errorf("readScratchpadRaw(%q) unexpected error message: %v", id, err)
+		}
+	}
+
+	// 2. Parent-directory traversal cannot resolve an entry in sibling agent's scratchpad
+	// Escaping variant: genuinely escapes agentB/scratchpad into sibling agentA/scratchpad/
+	escapingTraversalID := "../../agentA/scratchpad/" + entryA.ID
+	_, err = GetScratchpad(agentB, escapingTraversalID, nil, nil)
+	if err == nil {
+		t.Errorf("GetScratchpad escaping traversal ID %q expected error, got nil", escapingTraversalID)
+	} else if !strings.Contains(err.Error(), "invalid scratchpad entry ID") {
+		t.Errorf("GetScratchpad escaping traversal ID %q expected invalid ID error, got: %v", escapingTraversalID, err)
+	}
+
+	// Control case: single '..' only cancels 'scratchpad' subfolder, resolving to agentB/agentA/scratchpad/ (non-reaching)
+	controlTraversalID := "../agentA/scratchpad/" + entryA.ID
+	_, err = GetScratchpad(agentB, controlTraversalID, nil, nil)
+	if err == nil {
+		t.Errorf("GetScratchpad control traversal ID %q expected error, got nil", controlTraversalID)
+	} else if !strings.Contains(err.Error(), "invalid scratchpad entry ID") {
+		t.Errorf("GetScratchpad control traversal ID %q expected invalid ID error, got: %v", controlTraversalID, err)
+	}
+
+	// 3. Trailing-wildcard id resolves nothing
+	wildcardIDs := []string{"abc*", "*", entryA.ID[:3] + "*"}
+	for _, id := range wildcardIDs {
+		_, err := GetScratchpad(agentA, id, nil, nil)
+		if err == nil {
+			t.Errorf("GetScratchpad wildcard ID %q expected error, got nil", id)
+		} else if !strings.Contains(err.Error(), "invalid scratchpad entry ID") {
+			t.Errorf("GetScratchpad wildcard ID %q expected invalid ID error, got: %v", id, err)
+		}
+	}
+
+	// 4. Wildcard combined with traversal: reaches sibling agent's directory without prior knowledge of any id
+	traversalWildcardID := "../../agentA/scratchpad/*"
+	val, err := GetScratchpad(agentB, traversalWildcardID, nil, nil)
+	if err == nil {
+		t.Errorf("GetScratchpad traversal wildcard ID %q unexpectedly succeeded: read %q", traversalWildcardID, val)
+	} else if !strings.Contains(err.Error(), "invalid scratchpad entry ID") {
+		t.Errorf("GetScratchpad traversal wildcard ID %q expected invalid ID error, got: %v", traversalWildcardID, err)
+	}
+
+	// 5. Ordinary four-character ID still works as before
+	val, err = GetScratchpad(agentA, entryA.ID, nil, nil)
+	if err != nil {
+		t.Fatalf("GetScratchpad with valid ID failed: %v", err)
+	}
+	if val != "secret data in agentA" {
+		t.Errorf("expected %q, got %q", "secret data in agentA", val)
+	}
+
+	// Non-existent four-character ID returns not found (not invalid ID shape)
+	_, err = GetScratchpad(agentA, "zzzz", nil, nil)
+	if err == nil {
+		t.Fatalf("expected error for non-existent 4-char ID, got nil")
+	}
+	if !strings.Contains(err.Error(), `scratchpad entry "zzzz" not found`) {
+		t.Errorf("expected not found error, got: %v", err)
+	}
+}
+
+func TestScratchpad_IDValidation_Delete(t *testing.T) {
+	wsDir := t.TempDir()
+	agentA := filepath.Join(wsDir, "agentA")
+	agentB := filepath.Join(wsDir, "agentB")
+
+	entryA, err := CreateScratchpad(agentA, "secret data in agentA", "agentA")
+	if err != nil {
+		t.Fatalf("CreateScratchpad failed: %v", err)
+	}
+
+	// 1. Malformed IDs rejected with no filesystem access attempted
+	malformedIDs := []string{"", "a", "abc", "abcde", "missing", "ABCD"}
+	for _, id := range malformedIDs {
+		err := DeleteScratchpad(agentA, id)
+		if err == nil {
+			t.Errorf("DeleteScratchpad(%q) expected error for malformed ID, got nil", id)
+		} else if !strings.Contains(err.Error(), fmt.Sprintf("invalid scratchpad entry ID %q", id)) || !strings.Contains(err.Error(), "must be exactly 4 lowercase alphanumeric characters") {
+			t.Errorf("DeleteScratchpad(%q) unexpected error message: %v", id, err)
+		}
+	}
+
+	// 2. Parent-directory traversal cannot delete an entry in sibling agent's scratchpad
+	// Escaping variant: genuinely escapes agentB/scratchpad into sibling agentA/scratchpad/
+	escapingTraversalID := "../../agentA/scratchpad/" + entryA.ID
+	err = DeleteScratchpad(agentB, escapingTraversalID)
+	if err == nil {
+		t.Errorf("DeleteScratchpad escaping traversal ID %q expected error, got nil", escapingTraversalID)
+	} else if !strings.Contains(err.Error(), "invalid scratchpad entry ID") {
+		t.Errorf("DeleteScratchpad escaping traversal ID %q expected invalid ID error, got: %v", escapingTraversalID, err)
+	}
+
+	// Control case: single '..' only cancels 'scratchpad' subfolder, resolving to agentB/agentA/scratchpad/ (non-reaching)
+	controlTraversalID := "../agentA/scratchpad/" + entryA.ID
+	err = DeleteScratchpad(agentB, controlTraversalID)
+	if err == nil {
+		t.Errorf("DeleteScratchpad control traversal ID %q expected error, got nil", controlTraversalID)
+	} else if !strings.Contains(err.Error(), "invalid scratchpad entry ID") {
+		t.Errorf("DeleteScratchpad control traversal ID %q expected invalid ID error, got: %v", controlTraversalID, err)
+	}
+
+	// Verify agentA's entry is untouched
+	val, err := GetScratchpad(agentA, entryA.ID, nil, nil)
+	if err != nil || val != "secret data in agentA" {
+		t.Fatalf("entry in agentA was affected by traversal delete attempt: val=%q, err=%v", val, err)
+	}
+
+	// 3. Trailing-wildcard id resolves nothing
+	wildcardIDs := []string{"abc*", "*", entryA.ID[:3] + "*"}
+	for _, id := range wildcardIDs {
+		err := DeleteScratchpad(agentA, id)
+		if err == nil {
+			t.Errorf("DeleteScratchpad wildcard ID %q expected error, got nil", id)
+		} else if !strings.Contains(err.Error(), "invalid scratchpad entry ID") {
+			t.Errorf("DeleteScratchpad wildcard ID %q expected invalid ID error, got: %v", id, err)
+		}
+	}
+
+	// 4. Wildcard combined with traversal: attempts to delete sibling agent's entries without knowing id
+	traversalWildcardID := "../../agentA/scratchpad/*"
+	err = DeleteScratchpad(agentB, traversalWildcardID)
+	if err == nil {
+		t.Errorf("DeleteScratchpad traversal wildcard ID %q unexpectedly succeeded", traversalWildcardID)
+	} else if !strings.Contains(err.Error(), "invalid scratchpad entry ID") {
+		t.Errorf("DeleteScratchpad traversal wildcard ID %q expected invalid ID error, got: %v", traversalWildcardID, err)
+	}
+
+	// Verify agentA's entry is still untouched
+	val, err = GetScratchpad(agentA, entryA.ID, nil, nil)
+	if err != nil || val != "secret data in agentA" {
+		t.Fatalf("entry in agentA was affected by wildcard traversal delete attempt: val=%q, err=%v", val, err)
+	}
+
+	// 5. Ordinary four-character ID still deletes as before
+	entryToDelete, err := CreateScratchpad(agentA, "to be deleted", "test")
+	if err != nil {
+		t.Fatalf("CreateScratchpad failed: %v", err)
+	}
+	if err := DeleteScratchpad(agentA, entryToDelete.ID); err != nil {
+		t.Fatalf("DeleteScratchpad with valid ID failed: %v", err)
+	}
+	// Verify it's gone
+	_, err = GetScratchpad(agentA, entryToDelete.ID, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("scratchpad entry %q not found", entryToDelete.ID)) {
+		t.Errorf("expected entry to be deleted, got: %v", err)
+	}
+
+	// Non-existent four-character ID returns not found (not invalid ID shape)
+	err = DeleteScratchpad(agentA, "zzzz")
+	if err == nil {
+		t.Fatalf("expected error for non-existent 4-char ID, got nil")
+	}
+	if !strings.Contains(err.Error(), `scratchpad entry "zzzz" not found`) {
+		t.Errorf("expected not found error, got: %v", err)
 	}
 }
