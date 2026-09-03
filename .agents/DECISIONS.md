@@ -1510,7 +1510,7 @@ Implemented in `tools/wackyproc/main.go` (`waitCmd`) and `tools/wackyproc/proc/m
 
 ## D79: `wackyproc` disposes of process records by consumption order, never by wall clock
 
-Not yet implemented. Touches `tools/wackyproc/proc/types.go` (new fields, `MaxTerminalEntries`), `tools/wackyproc/proc/manager.go` (`Get`, `List`, `Run`, disposal), `tools/wackyproc/proc/id.go` (sequence lock), and `tools/wackyproc/main.go` (new `prune`/`unconsume` commands).
+Implemented in `tools/wackyproc` (`Meta.Gen`/`Meta.ConsumedSeq` and `MaxTerminalEntries` in `proc/types.go`; the `.seq` counter + `.seq.lock` dir-lock primitive and `IsProcessRecordDir` in `proc/seqlock.go`; `Get` marks terminal records consumed set-once, `Run` assigns `Gen` and evicts consumed terminal records past the cap in ascending `Gen` order, `List` warns when the cap is exceeded with nothing disposable, `Prune`/`Unconsume` in `proc/manager.go`; `prune`/`unconsume` commands in `main.go`). Nested repo commit `db00dff`; parent pointer bump `8f7574d`.
 
 Nothing removes a process record today. The only `os.RemoveAll` calls in the codebase (`manager.go` 138/155/159/166/181) are spawn-path rollback, so `.proc/` grows without bound and every `wait` poll runs `CheckLiveness` over every entry.
 
