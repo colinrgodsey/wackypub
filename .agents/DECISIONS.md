@@ -1573,7 +1573,7 @@ Rejection returns an error naming the required id shape rather than reusing `scr
 
 ## D82: `wackyproc peek` reads process output without consuming it
 
-Not yet implemented.
+Implemented in `tools/wackyproc` (`main.go` `peekCmd`; `proc.Peek` and `proc.trailingLines` in `proc/manager.go`). Nested repo commit `b67427d`; parent pointer bump `2580149`.
 
 **Problem.** `wackyproc get <id>` is the only way to inspect a process record's captured output, and under D79's consumption-order disposal, getting is retrieving: the record becomes eligible for disposal once read. There is no cheap way to check a long-running process's latest stdout without either pulling a full dump or consuming the record. D79's own principle is that a peek at partial output is not consumption of final output, and that principle should hold for finished processes too.
 
@@ -1583,7 +1583,7 @@ Not yet implemented.
 
 ## D83: `wackypub agent compact` accepts an alternate COMPACT.md
 
-Not yet implemented.
+Implemented in `pkg/agent/compaction.go` (`CheckAndCompactSession` trailing `cfgOverride *CompactConfig`), `pkg/agent/sdk.go` (`CompactSessionWithConfig`), and `cmd/agent.go` (`--md-file` on `agentCompactCmd`, parsed via `ParseCompactConfig` before agent resolution). Commit `fada78a`.
 
 **Problem.** `CheckAndCompactSession` (`compaction.go:176`) loads compaction config internally via `LoadCompactConfig(agentDir)` (`compaction.go:186`), always from `<agentDir>/COMPACT.md`. A one-off compaction with a different recipe (different compact-pct, different frontmatter, different body directives) currently requires mutating the agent's real COMPACT.md, then restoring it.
 
@@ -1593,7 +1593,7 @@ Not yet implemented.
 
 ## D84: `wackypub agent compact` accepts a runtime override to target a smaller model
 
-Not yet implemented.
+Implemented in `pkg/agent/runtime.go` (`LoadRuntimeConfigFile`, `NewModelForRuntime` extracted from the live load path) and `pkg/agent/sdk.go` (`CompactSessionOptions`, `CompactSessionWithOptions` building the no-tools disposable agent; `CompactSession`/`CompactSessionWithConfig` delegate), with `--runtime` on `cmd/agent.go`'s `agentCompactCmd`. Commit `9dd2a19`.
 
 **Problem.** Compacting a session normally run on a large-context model down to a summary sized and priced for a smaller model, without changing the agent's live runtime.json. The naive reading is that `CheckAndCompactSession`'s `runtimeCfg` parameter controls this; it does only the threshold and token-estimate math (`ContextWindow`, `PreserveThinking` at `compaction.go:191-218`). The model that actually writes the compaction summary is the `model.LLM` baked into the `adkAgent` at load time from the agent's own runtime.json, so swapping only `runtimeCfg` changes the math but not the summarizer.
 
@@ -1604,7 +1604,7 @@ Not yet implemented.
 
 ## D85: cancellable turns via context at the SDK level, used by the CLI and wackydiscord `/stop`
 
-Not yet implemented.
+Implemented in `pkg/agent/sdk.go` (`inFlightTurns` registry, `registerInFlightTurn`, `AgentSDK.CancelTurn`; `GenerateTurnStream`/`AddAndGenerateTurnStream` wrap the caller context with `context.WithCancel` and yield `turnCtx.Err()`), `cmd/agent.go` (`signalCtx` from `signal.NotifyContext` at the turn commands), and `tools/wackydiscord` (the `stop` slash command; `HandleMessageCreate` renders `context.Canceled` as a clean stop instead of an error). Commits `527e150` (nested repo) and `01fb5a5` (parent).
 
 **Problem.** Nothing can cancel an in-flight agent generation. The SDK turn entry points already take a `context.Context` (`GenerateTurnStream` at `sdk.go:134`, `AddAndGenerateTurnStream` at `sdk.go:191`, plus the non-streaming variants), but callers pass a fixed, non-cancellable context: wackydiscord's Discord handler uses `context.Background()` (`tools/wackydiscord/bot/handlers.go:134/139`), and the CLI has no cancel path either. The only `WithCancel` in the package is an unrelated per-tool-call timeout (`agent_folder.go:553`), which cancels a single subprocess, not the generation. So a runaway or unwanted turn runs to completion with no way to stop it from the CLI or a Discord channel.
 
