@@ -531,7 +531,7 @@ draining or consuming the record, for progress checks on still-running processes
 subcommands today: run, list, wait, get, stop, supervise, skill.
 
 
-**Decision: D82 (not yet implemented).**
+**Decision: D82 (implemented, nested repo `b67427d`).**
 ## ~~Skills don't need to render `@` file pointers~~ (closed: verified non-issue — the only `ExpandMacros` caller is `RenderAgentSystemPrompt` on `AGENTS.md`; skill content is never macro-expanded on either the always-load or `load_skill` path)
 
 **Colin's follow-up, tested and verdict stands.** He hypothesized that system-prompt assembly inflates `@` macros in autoloaded skills. Empirically disproved: built a scratch agent with an `always_load: true` skill containing `@other-file.md` and `@missing-file.md` (the first a real file in the agent dir), rendered via `RenderAgentSystemPrompt`, and both pointers survived verbatim inside the `<AUTOLOADED_SKILLS>` block. Code confirms: the block is appended AFTER `ExpandMacros(AGENTS.md)` and nothing re-expands the assembled prompt; the only `ExpandMacros` call site in the tree is `macro.go:39`.
@@ -551,7 +551,7 @@ CLI-triggered compact can use a different COMPACT.md, for one-off compaction rec
 compact-pct/frontmatter without mutating the agent's real file.
 
 
-**Decision: D83 (not yet implemented).**
+**Decision: D83 (implemented, `fada78a`).**
 ## Append-only COMPACT.md needs truncation or rotation at some point
 
 COMPACT.md is append-only by design (append-only/compact-pct frontmatter, embedded default from
@@ -582,7 +582,7 @@ exist yet, so may need harness work before the Discord surface.
 
 
 
-**Decision: D85 (not yet implemented).** Colin: yes — a general, context-based cancellation pattern at the SDK level, applying to the CLI too, with `/stop` as one consumer.
+**Decision: D85 (implemented, `01fb5a5` + nested `527e150`).** Colin: yes — a general, context-based cancellation pattern at the SDK level, applying to the CLI too, with `/stop` as one consumer.
 ## `wackypub agent compact` should accept a runtime override (large context -> smaller model)
 
 Alongside a COMPACT.md override, compaction takes contextWindow and PreserveThinking from
@@ -595,7 +595,7 @@ small-context/small-model runtime.json without changing what the agent runs on d
 Interplay: summary thresholds and overhead pct still come from the compaction config; the runtime
 override only swaps contextWindow/PreserveThinking/model for this run.
 
-**Decision: D84 (not yet implemented). Note the corrected shape: the override must build a disposable agent from the runtime, not just swap `runtimeCfg`, because the summarizer model comes from the agent, not the config parameter (see D84).**
+**Decision: D84 (implemented, `9dd2a19`). Note the corrected shape: the override must build a disposable agent from the runtime, not just swap `runtimeCfg`, because the summarizer model comes from the agent, not the config parameter (see D84).**
 
 
 ## `@` macro expansion in the AGENTS.md include chain mangles email addresses and @-handles
@@ -625,3 +625,30 @@ the last request, not the whole session. TODO (no decision yet, Colin 2026-09-02
 to figure out the context count for a current agent session — questions to settle later: the
 surface (CLI `wackypub agent <id> context`? SDK method? tool?), the source (estimate vs provider
 usage vs a combination), and whether the agent should be able to ask itself.
+
+
+## `files-rw` lacks a symlink command and does not show symlinks in `list`
+
+Agent workspaces are built on symlinks (`runtime.json` -> `../runtimes/<name>.json`, and the symlinked `tools/`/`skills/` layouts), but `files-rw` can neither create links nor see them: there is no subcommand for it, and `list` reports symlinks indistinguishably from regular files with no target shown. Agents currently have to drop to shell for link creation and cannot introspect link topology through their primary file tool at all. Add a `symlink` command (link path + target; settle relative-vs-absolute default behavior) and make `list` mark symlinks with their resolved targets.
+
+## Git-style hook scripts as injection points (date, RAG, A2A headers)
+
+There is no per-turn extension point where an operator can inject content without editing prompts. Proposal (Colin, 2026-09-03): git-hook-like scripts that run at defined lifecycle points. Concrete drivers:
+
+- **Date injection**: agents have no notion of current date; they must shell out to `date` to write correctly-named daily memory files. The obvious first hook.
+- **RAG injection**: retrieve relevant memory into context before a turn.
+- **A2A headers**: hooks able to inject into or amend the A2A metadata on outbound peer messages.
+
+Design surface: the event set (turn-start / pre-request-build / a2a-send / ...), hook placement (agent dir vs workspace root), the execution contract (what arrives on stdin/env, what a hook may modify, how results merge back), and failure semantics (does a failing hook fail the turn or warn?).
+
+## Queued image loads should auto-trigger a follow-up turn
+
+The image pipeline is currently two turns: an image loaded into a scratchpad entry surfaces only on the NEXT turn, so an agent must deliberately end a turn just to see it (load, describe, wait). Proposal: when image loads are pending at end-of-turn, auto-trigger a follow-up turn carrying them instead of idling until the user pings. This is one more instance of the "turn that needs a follow-up to complete" pattern already gathering TODOs (compact-on-bail, deferred image queueing) - design it as part of that multi-turn pattern rather than ad-hoc.
+
+## wackydiscord: verbose tool output lands after the turn; consider rendering from the session.jsonl watch
+
+Verbose mode appends tool calls at the END, after the agent has finished its turn, instead of interleaving them in the order they happened. Question (Colin, 2026-09-03): does wackydiscord need a fundamental change - going back to rendering Discord output based ENTIRELY on the session.jsonl watch (the earlier design)? Under watch-based rendering the one hard case is deduplication of the user turn: the user's Discord message also appears in the watched session, so the watcher must suppress re-echoing it. Weigh push-based stream rendering (current) vs watch-based rendering (ordering falls out for free, single source of truth) before touching the display order.
+
+## Agents cannot write examples containing macro syntax: expansion also fires on agent-authored stdin/args
+
+D80 stopped macro-expanding captured tool output on ingest, but `run_command` still expands macro references found in agent-authored args and stdin. Consequence: an agent literally cannot write documentation, skills, or test fixtures containing example macro syntax - the example self-expands (or aborts the command) at authoring time. Workaround today is token-splitting sed tricks, which are awkward and burn context. Proposal: an escape hatch for literal macro text (an escape sequence, or a literal-form marker token) while keeping server-side expansion for genuine references.
