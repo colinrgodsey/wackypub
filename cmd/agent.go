@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -19,6 +21,10 @@ var (
 	compactMDFile      string
 	compactRuntimeFile string
 )
+
+func signalCtx() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
 
 func newSDK(wsDir string) *adkAgent.AgentSDK {
 	sdk := adkAgent.NewSDK(wsDir)
@@ -192,7 +198,8 @@ Acquires the session lock for the duration of the operation.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> generate")
 		}
 
-		ctx := context.Background()
+		ctx, stop := signalCtx()
+		defer stop()
 		first := true
 		for chunk, err := range sdk.GenerateTurnStream(ctx, agentID) {
 			if err != nil {
@@ -429,7 +436,8 @@ operation.`,
 			compactCfg = cfg
 		}
 
-		ctx := context.Background()
+		ctx, stop := signalCtx()
+		defer stop()
 		opts := adkAgent.CompactSessionOptions{
 			ConfigOverride: compactCfg,
 			RuntimePath:    compactRuntimeFile,
@@ -502,7 +510,8 @@ what's printed, though it is still persisted to session.jsonl).`,
 			return fmt.Errorf("user message is required. Provide via argument, --message flag, or stdin pipe")
 		}
 
-		ctx := context.Background()
+		ctx, stop := signalCtx()
+		defer stop()
 		first := true
 		for chunk, err := range sdk.AddAndGenerateTurnStream(ctx, agentID, userMsg) {
 			if err != nil {
@@ -557,7 +566,8 @@ real terminal, not something an agent should invoke on itself via run_command.`,
 		}
 
 		fmt.Printf("wackypub REPL - agent %q. Type \"exit\"/\"quit\" or press Ctrl+D to end.\n", agentID)
-		ctx := context.Background()
+		ctx, stop := signalCtx()
+		defer stop()
 		scanner := bufio.NewScanner(os.Stdin)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for {

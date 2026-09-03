@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"google.golang.org/genai"
 )
@@ -129,6 +130,53 @@ func (s *AgentSDK) AddMedia(agentID string, reader io.Reader) (*genai.Content, e
 	return content, nil
 }
 
+// inFlightTurnEntry tracks an active turn cancellation handle (D85).
+type inFlightTurnEntry struct {
+	cancel context.CancelFunc
+}
+
+var (
+	inFlightTurnsMu sync.Mutex
+	inFlightTurns   = make(map[string]*inFlightTurnEntry)
+)
+
+// registerInFlightTurn registers a cancel function for an agent's active turn.
+// Returns a cleanup function that deregisters the turn and invokes cancel.
+func registerInFlightTurn(agentID string, cancel context.CancelFunc) func() {
+	entry := &inFlightTurnEntry{cancel: cancel}
+	inFlightTurnsMu.Lock()
+	// If a new turn starts for the same agent while one is registered
+	// (shouldn't happen under the session lock, but be safe):
+	// the new registration replaces the old; the old cancel is still
+	// called by its own defer when that stream completes.
+	inFlightTurns[agentID] = entry
+	inFlightTurnsMu.Unlock()
+
+	return func() {
+		cancel()
+		inFlightTurnsMu.Lock()
+		if inFlightTurns[agentID] == entry {
+			delete(inFlightTurns, agentID)
+		}
+		inFlightTurnsMu.Unlock()
+	}
+}
+
+// CancelTurn cancels an in-flight turn for the given agent if one is currently active (D85).
+// It is safe to call concurrently from any goroutine.
+func (s *AgentSDK) CancelTurn(agentID string) error {
+	inFlightTurnsMu.Lock()
+	entry, ok := inFlightTurns[agentID]
+	inFlightTurnsMu.Unlock()
+
+	if !ok || entry == nil {
+		return fmt.Errorf("no in-flight turn for agent %q", agentID)
+	}
+
+	entry.cancel()
+	return nil
+}
+
 // GenerateTurnStream loads the folder agent and generates the assistant turn yielding text chunks as they arrive.
 // Holds the session lock for the entire duration of the stream.
 func (s *AgentSDK) GenerateTurnStream(ctx context.Context, agentID string) iter.Seq2[string, error] {
@@ -152,19 +200,30 @@ func (s *AgentSDK) GenerateTurnStream(ctx context.Context, agentID string) iter.
 		}
 		defer lock.Release()
 
+		turnCtx, cancel := context.WithCancel(ctx)
+		defer registerInFlightTurn(agentID, cancel)()
+
 		fa, err := LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
 		if err != nil {
 			yield("", fmt.Errorf("failed to load agent %q: %w", agentID, err))
 			return
 		}
 
-		for chunk, err := range fa.GenerateTurnStream(ctx) {
+		for chunk, err := range fa.GenerateTurnStream(turnCtx) {
+			if turnCtx.Err() != nil {
+				yield("", turnCtx.Err())
+				return
+			}
 			if !yield(chunk, err) {
 				return
 			}
 			if err != nil {
 				return
 			}
+		}
+		if turnCtx.Err() != nil {
+			yield("", turnCtx.Err())
+			return
 		}
 	}
 }
@@ -218,6 +277,9 @@ func (s *AgentSDK) AddAndGenerateTurnStream(ctx context.Context, agentID string,
 		}
 		defer lock.Release()
 
+		turnCtx, cancel := context.WithCancel(ctx)
+		defer registerInFlightTurn(agentID, cancel)()
+
 		// 1. Append User Turn
 		if err := AppendSessionTurn(agentDir, "user", userMessage); err != nil {
 			yield("", fmt.Errorf("failed to append user turn: %w", err))
@@ -231,13 +293,21 @@ func (s *AgentSDK) AddAndGenerateTurnStream(ctx context.Context, agentID string,
 			return
 		}
 
-		for chunk, err := range fa.GenerateTurnStream(ctx) {
+		for chunk, err := range fa.GenerateTurnStream(turnCtx) {
+			if turnCtx.Err() != nil {
+				yield("", turnCtx.Err())
+				return
+			}
 			if !yield(chunk, err) {
 				return
 			}
 			if err != nil {
 				return
 			}
+		}
+		if turnCtx.Err() != nil {
+			yield("", turnCtx.Err())
+			return
 		}
 	}
 }

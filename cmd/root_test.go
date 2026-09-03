@@ -363,3 +363,19 @@ func TestAgentCompactCmd_RuntimeAndMDFileCombined(t *testing.T) {
 		t.Errorf("expected prompt %q, got %q", "Combo override prompt directive", capturedPrompt)
 	}
 }
+
+func TestSignalCtx(t *testing.T) {
+	ctx, stop := signalCtx()
+	defer stop()
+
+	if ctx == nil {
+		t.Fatal("expected non-nil context")
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("expected active context, got: %v", ctx.Err())
+	}
+	stop()
+	if ctx.Err() == nil {
+		t.Fatal("expected cancelled context after calling stop()")
+	}
+}

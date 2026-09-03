@@ -8,7 +8,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestSDKAddUserTurnAndReadSession(t *testing.T) {
@@ -232,4 +235,103 @@ func TestStreamingEarlyBreakReleasesLock(t *testing.T) {
 	if resp != "Chunk 2" {
 		t.Errorf("expected 'Chunk 2', got %q", resp)
 	}
+}
+
+func TestSDK_CancelTurn(t *testing.T) {
+	tempDir := t.TempDir()
+	sdk := NewSDK(tempDir)
+
+	// 1. CancelTurn with nothing in flight returns an error naming the agent
+	if err := sdk.CancelTurn("nonexistent"); err == nil || !strings.Contains(err.Error(), "no in-flight turn for agent \"nonexistent\"") {
+		t.Fatalf("expected no in-flight turn error, got: %v", err)
+	}
+
+	agentID := "cancel_agent"
+	agentDir := sdk.AgentDir(agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("Cancel test agent"), 0644); err != nil {
+		t.Fatalf("failed writing AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte("cancel_agent\n"), 0644); err != nil {
+		t.Fatalf("failed to write allowed agents: %v", err)
+	}
+
+	requestStarted := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		close(requestStarted)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	runtimeJSON := fmt.Sprintf(`{"model":"test-model","endpoint":%q}`, srv.URL)
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(runtimeJSON), 0644); err != nil {
+		t.Fatalf("failed writing runtime.json: %v", err)
+	}
+
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	if err := os.Chdir(agentDir); err != nil {
+		t.Fatalf("failed to chdir to agentDir: %v", err)
+	}
+	defer os.Chdir(origCwd)
+
+	streamDone := make(chan error, 1)
+	go func() {
+		var streamErr error
+		for _, err := range sdk.AddAndGenerateTurnStream(context.Background(), agentID, "Hello") {
+			if err != nil {
+				streamErr = err
+				break
+			}
+		}
+		streamDone <- streamErr
+	}()
+
+	// Wait until the mock model has received the request
+	select {
+	case <-requestStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for request to start")
+	}
+
+	// Cancel the in-flight turn
+	if err := sdk.CancelTurn(agentID); err != nil {
+		t.Fatalf("CancelTurn failed: %v", err)
+	}
+
+	// Assert stream finishes promptly with cancellation error
+	select {
+	case err := <-streamDone:
+		if err == nil {
+			t.Fatal("expected non-nil error when turn is cancelled, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for cancelled stream to terminate")
+	}
+
+	// After stream completion, CancelTurn must again report no in-flight turn
+	if err := sdk.CancelTurn(agentID); err == nil || !strings.Contains(err.Error(), "no in-flight turn") {
+		t.Fatalf("expected no in-flight turn after completion, got: %v", err)
+	}
+}
+
+func TestSDK_CancelTurn_ConcurrentSafety(t *testing.T) {
+	tempDir := t.TempDir()
+	sdk := NewSDK(tempDir)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			agent := fmt.Sprintf("agent_%d", id%5)
+			_ = sdk.CancelTurn(agent)
+		}(i)
+	}
+	wg.Wait()
 }
