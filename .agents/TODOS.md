@@ -69,7 +69,6 @@ caps a single agent's own tool loop.
 
 Bootstrapping a new workspace's `WACKYPUB_ROOT` file currently requires creating `WACKYPUB_ROOT` by hand (`touch WACKYPUB_ROOT`). A dedicated `wackypub init` command (to create `WACKYPUB_ROOT` and scaffold an agent directory) may be worth adding later.
 
-
 ## Open question: does `WACKYPUB_ALLOWED_AGENTS` restrict CWD-based invocations in general, or only actual tool-call context?
 
 Flagged during the D16 design discussion, deliberately deferred. If
@@ -487,7 +486,6 @@ currently being taught the broken pattern, and nothing tells them the targeted f
 covering the two modes and the "already-terminal processes are ignored" contract, since the natural
 wrong assumption is that `wait N` means "give me anything that has finished."
 
-
 ## Workspace-root snapshot commit has been a silent no-op since D35, and the feature may deserve a redo
 
 `CreateWorkspaceSnapshot` calls `CommitWorkspaceEvent(wsDir, "system", "snapshot")`. Because the agent
@@ -507,7 +505,6 @@ store, routing "system" to the root repo deliberately, dropping the snapshot com
 the reviewer's broader recommendation, falling back to the `git` CLI when go-git fails, which is the
 one change that addresses go-git's narrower config/validation rather than patching symptoms.
 
-
 ## Mid-turn short-circuit should compact instead of requiring a "continue" turn
 
 When accumulated tool context crosses the compaction threshold mid-turn, the harness returns a
@@ -519,7 +516,6 @@ compaction directly rather than waiting. Compaction is safe at this boundary bec
 is between tool turns. Interplay to preserve: D77 skips forced compaction on the turn a mid-turn
 short-circuit interrupted, so the auto-compact must be careful not to conflict.
 
-
 **Shelved per Colin (2026-09-02).** Colin: this should be part of a broader "multi-turn" turn pattern, the same shape the deferred image queueing has, where a turn needs a follow-up to complete (compact-on-bail, image queueing). Do not re-open as a compaction-only fix; fold into the multi-turn pattern when that is designed.
 ## `wackyproc` "peek" command for stdout
 
@@ -529,7 +525,6 @@ to check a long-running process's latest output cheaply without a full dump. Add
 <id> [lines]` (or a `--tail` flag on `get`) that shows the trailing N lines of stdout without
 draining or consuming the record, for progress checks on still-running processes. wackyproc
 subcommands today: run, list, wait, get, stop, supervise, skill.
-
 
 **Decision: D82 (implemented, nested repo `b67427d`).**
 ## ~~Skills don't need to render `@` file pointers~~ (closed: verified non-issue — the only `ExpandMacros` caller is `RenderAgentSystemPrompt` on `AGENTS.md`; skill content is never macro-expanded on either the always-load or `load_skill` path)
@@ -550,7 +545,6 @@ The CLI compact (`cmd/agent.go:382` `agentCompactCmd`) always uses `<agentDir>/C
 CLI-triggered compact can use a different COMPACT.md, for one-off compaction recipes or a different
 compact-pct/frontmatter without mutating the agent's real file.
 
-
 **Decision: D83 (implemented, `fada78a`).**
 ## Append-only COMPACT.md needs truncation or rotation at some point
 
@@ -560,7 +554,6 @@ no truncation exists anywhere in `compaction.go`. Decide a cap: summarize or pru
 keep the last N, or fold guidance into MEMORY.md. Careful: the body carries accumulated instructions
 for future compactions, so naive truncation loses drift guidance. Related to the existing "Modular
 compaction strategy" TODO.
-
 
 **Left as a TODO per Colin (2026-09-02)** — may be a duplicate of the existing `MEMORY.md grows forever` TODO — COMPACT.md is read-only from the harness side (no write sites), and `append-only: true` governs MEMORY.md amends, not COMPACT.md growth. Revisit later; likely close as duplicate in favor of the MEMORY.md TODO.
 ## ~~Does files-rw honor absolute paths?~~ (closed: empirically verified — an absolute path lands exactly where given; the earlier finding was a relative-path mistake resolving against the agent workspace, which is the documented contract)
@@ -580,8 +573,6 @@ agent task" TODO (above) is the general form. Add a `/stop` interaction for the 
 needs cancellation plumbing in the turn runner (generation stop / context cancel), which may not
 exist yet, so may need harness work before the Discord surface.
 
-
-
 **Decision: D85 (implemented, `01fb5a5` + nested `527e150`).** Colin: yes — a general, context-based cancellation pattern at the SDK level, applying to the CLI too, with `/stop` as one consumer.
 ## `wackypub agent compact` should accept a runtime override (large context -> smaller model)
 
@@ -597,7 +588,6 @@ override only swaps contextWindow/PreserveThinking/model for this run.
 
 **Decision: D84 (implemented, `9dd2a19`). Note the corrected shape: the override must build a disposable agent from the runtime, not just swap `runtimeCfg`, because the summarizer model comes from the agent, not the config parameter (see D84).**
 
-
 ## `@` macro expansion in the AGENTS.md include chain mangles email addresses and @-handles
 
 `RenderAgentSystemPrompt` expands `@<FILE_PATH>` recursively over AGENTS.md and every file it
@@ -612,7 +602,6 @@ backslash), only expand when the target file actually exists (typo'd macros then
 of loudly), or a narrower regex (e.g. require a known extension or a path containing `/`). Note the
 include chain itself must keep working.
 
-
 ## No way to ask how much context an agent session is using
 
 There is no surface for "how big is this agent's session right now" outside the internal compaction
@@ -625,19 +614,6 @@ the last request, not the whole session. TODO (no decision yet, Colin 2026-09-02
 to figure out the context count for a current agent session — questions to settle later: the
 surface (CLI `wackypub agent <id> context`? SDK method? tool?), the source (estimate vs provider
 usage vs a combination), and whether the agent should be able to ask itself.
-
-
-## Git-style hook scripts as injection points (date, RAG, A2A headers)
-
-**Decision: D87 (not yet implemented).**
-
-There is no per-turn extension point where an operator can inject content without editing prompts. Proposal (Colin, 2026-09-03): git-hook-like scripts that run at defined lifecycle points. Concrete drivers:
-
-- **Date injection**: agents have no notion of current date; they must shell out to `date` to write correctly-named daily memory files. The obvious first hook.
-- **RAG injection**: retrieve relevant memory into context before a turn.
-- **A2A headers**: hooks able to inject into or amend the A2A metadata on outbound peer messages.
-
-Design surface: the event set (turn-start / pre-request-build / a2a-send / ...), hook placement (agent dir vs workspace root), the execution contract (what arrives on stdin/env, what a hook may modify, how results merge back), and failure semantics (does a failing hook fail the turn or warn?).
 
 ## Queued image loads should auto-trigger a follow-up turn
 
