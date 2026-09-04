@@ -51,8 +51,12 @@ worth keeping as a record, but neither alone earns `y` or `n`.
 ## Checklist
 
 - **`?` `files-rw`** (`tools/files-rw/` submodule, [colinrgodsey/files-rw](https://github.com/colinrgodsey/files-rw)) - filesystem read/write/edit/patch/
-  copy/move/delete/list gated by a per-directory `FILES_RW_ACCESS`
-  allowlist (see DECISIONS.md D22-D26). The `n` report from the second
+  copy/move/delete/symlink/list gated by a per-directory `FILES_RW_ACCESS`
+  allowlist (see DECISIONS.md D22-D26, D86). The `symlink` command (D86)
+  is in scope: creation-time ACL confinement (write@source, read@target
+  coverage) closes path-existence probing, chains/cycles cap at 8 hops,
+  dangling links error on write/patch without auto-vivification, and delete
+  unlinks only the symlink itself. The `n` report from the second
   swarm run is deleted per the invalidation rule - D24's findings drove a
   fix, revised once more per D26 (`go-gitdiff` for `patch`, a flat
   `Nlink > 1` check for hardlinks). Verified directly since (not a swarm

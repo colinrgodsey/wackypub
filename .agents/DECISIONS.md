@@ -1621,7 +1621,7 @@ This is the general "No way to cancel an in-flight agent task" TODO brought forw
 
 ## D86: `files-rw` gains a `symlink` command and `list` shows symlinks
 
-Not yet implemented. Touches `tools/files-rw/filesrw/ops.go` (`ListDir` rewrite), `tools/files-rw/main.go` (`symlink` command), and `.agents/SECURITY_TESTING.md` (the new command ships with a swarm-testing entry).
+Implemented in `tools/files-rw/filesrw/ops.go` (`ListDir` rewrite), `tools/files-rw/filesrw/access.go` (creation-time confinement, hop cap, non-following leaf resolution), `tools/files-rw/main.go` (`symlink` command, `list --json`), and `.agents/SECURITY_TESTING.md` (swarm-testing checklist entry). Nested repo commits `a3a9092` (+ review-fix `78d1c9a`); parent pointer bumps `2d4e8ef`, `4a54558`.
 
 **Problem.** Agent workspaces are built on symlinks (runtime.json -> ../runtimes/<name>.json, symlinked tools/ and skills/), but the primary file tool cannot create a link and `list` reports links indistinguishably from regular files with no target shown. `ListDir` (ops.go:303) is a thin `exec.Command("ls", ...)` wrapper with zero structured type awareness; recovering a raw target would require text-scraping `ls -l`'s `->` suffix, the brittle pattern this tool's design avoids everywhere else.
 
