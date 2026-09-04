@@ -1,0 +1,13 @@
+#!/bin/sh
+# Example on-user-message hook: prepends a current-datetime preamble to the inbound message text.
+# Input: message text on stdin, current env in the process environment.
+# Output: JSON on stdout: {"text": "<preamble><original message>"}
+
+json_str() {
+	awk 'BEGIN{ORS=""} {gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); gsub(/\t/,"\\t"); gsub(/\r/,"\\r"); if(NR>1) printf "\\n"; printf "%s", $0}'
+}
+
+NOW=$(date)
+PREAMBLE=$(printf '[Current datetime: %s]\n\n' "$NOW" | json_str)
+MESSAGE=$(cat | json_str)
+printf '{"text":"%s%s"}\n' "$PREAMBLE" "$MESSAGE"

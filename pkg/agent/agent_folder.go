@@ -819,6 +819,7 @@ type FolderAgent struct {
 	CommandTimeoutSeconds int
 	A2AMeta               *A2AMetadata
 	UsageTracker          *TurnUsageTracker
+	HookEnv               map[string]string
 }
 
 // LoadFolderAgent loads and initializes an agent from <wsDir>/<agentID>.
@@ -828,6 +829,11 @@ func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int, commandTime
 
 // LoadFolderAgentWithA2A loads and initializes an agent with explicit A2AMetadata context (D59).
 func LoadFolderAgentWithA2A(wsDir string, agentID string, a2aMeta *A2AMetadata, maxToolTurns int, commandTimeoutSeconds ...int) (*FolderAgent, error) {
+	return LoadFolderAgentWithHookEnv(wsDir, agentID, a2aMeta, nil, maxToolTurns, commandTimeoutSeconds...)
+}
+
+// LoadFolderAgentWithHookEnv loads and initializes an agent with explicit A2AMetadata context and hook environment mutations (D87).
+func LoadFolderAgentWithHookEnv(wsDir string, agentID string, a2aMeta *A2AMetadata, hookEnv map[string]string, maxToolTurns int, commandTimeoutSeconds ...int) (*FolderAgent, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
@@ -850,7 +856,7 @@ func LoadFolderAgentWithA2A(wsDir string, agentID string, a2aMeta *A2AMetadata, 
 	}
 
 	// 2. Render AGENTS.md (expanding @<FILE_PATH> macros)
-	expandedPrompt, err := RenderAgentSystemPrompt(wsDir, agentID)
+	expandedPrompt, err := RenderAgentSystemPrompt(wsDir, agentID, hookEnv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to render system prompt for agent %s: %w", agentID, err)
 	}
@@ -913,6 +919,7 @@ func LoadFolderAgentWithA2A(wsDir string, agentID string, a2aMeta *A2AMetadata, 
 		CommandTimeoutSeconds: resolvedTimeout,
 		A2AMeta:               a2aMeta,
 		UsageTracker:          tracker,
+		HookEnv:               hookEnv,
 	}, nil
 }
 
