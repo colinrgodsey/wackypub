@@ -27,13 +27,15 @@ const (
 )
 
 type ScratchpadEntry struct {
-	ID        string `json:"id"`
-	Size      int    `json:"size"`
-	Lines     int    `json:"lines"`
-	CreatedBy string `json:"created_by"`
-	Text      string `json:"text,omitempty"`
-	IsBinary  bool   `json:"is_binary,omitempty"`
-	MIMEType  string `json:"mime_type,omitempty"`
+	ID        string   `json:"id"`
+	Size      int      `json:"size"`
+	Lines     int      `json:"lines"`
+	CreatedBy string   `json:"created_by"`
+	Text      string   `json:"text,omitempty"`
+	IsBinary  bool     `json:"is_binary,omitempty"`
+	MIMEType  string   `json:"mime_type,omitempty"`
+	Warning   string   `json:"warning,omitempty"`
+	Warnings  []string `json:"warnings,omitempty"`
 }
 
 type ScratchpadItem struct {
@@ -282,11 +284,11 @@ func createScratchpadRaw(agentDir string, text string, createdBy string) (*Scrat
 
 // CreateScratchpad creates a new text scratchpad entry in <agentDir>/scratchpad/<id>-<lines>-<createdBy>.txt
 // according to D30/D39.
-// Automatically expands inline <SCRATCHPAD_DATA id="X" ... /> macros before storing.
+// Automatically expands inline <SCRATCHPAD_DATA id="X" ... /> macros before storing per D90.
 // Atomic and collision-safe across separate OS processes via O_CREATE|O_EXCL.
 // Automatically evicts the entry with the oldest mtime when live entries exceed cap (300).
 func CreateScratchpad(agentDir string, text string, createdBy string) (*ScratchpadEntry, error) {
-	expandedText, err := ExpandScratchpadMacros(agentDir, text)
+	expandedText, warnings, err := ExpandScratchpadMacros(agentDir, text)
 	if err != nil {
 		return nil, fmt.Errorf("failed to expand scratchpad macros: %w", err)
 	}
@@ -295,7 +297,15 @@ func CreateScratchpad(agentDir string, text string, createdBy string) (*Scratchp
 		createdBy = "create_scratchpad"
 	}
 
-	return createScratchpadRaw(agentDir, expandedText, createdBy)
+	entry, err := createScratchpadRaw(agentDir, expandedText, createdBy)
+	if err != nil {
+		return nil, err
+	}
+	if len(warnings) > 0 {
+		entry.Warnings = warnings
+		entry.Warning = strings.Join(warnings, "\n")
+	}
+	return entry, nil
 }
 
 // CreateBinaryScratchpad creates a new binary scratchpad entry in <agentDir>/scratchpad/<id>-0-<createdBy>.dat per D48.
@@ -527,7 +537,7 @@ func ListScratchpads(agentDir string) ([]ScratchpadItem, int, int, error) {
 }
 
 var (
-	scratchpadMacroRegex = regexp.MustCompile(`<SCRATCHPAD_DATA\s+([^>]+)\s*/?>`)
+	scratchpadMacroRegex = regexp.MustCompile(`(\\?)<SCRATCHPAD_DATA\s+([^>]+)\s*/?>`)
 	macroIDRegex         = regexp.MustCompile(`id=\\?"([^"\\]+)\\?"`)
 	macroSkipLinesRegex  = regexp.MustCompile(`skip_lines=\\?"(\d+)\\?"`)
 	macroNumLinesRegex   = regexp.MustCompile(`num_lines=\\?"(\d+)\\?"`)
@@ -535,16 +545,23 @@ var (
 )
 
 // ExpandScratchpadMacros replaces any inline <SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" json_escape="true" /> macros
-// in text with the corresponding scratchpad text content according to D18/D28/D30/D37.
-func ExpandScratchpadMacros(agentDir string, text string) (string, error) {
+// in text with the corresponding scratchpad text content according to D18/D28/D30/D37/D90.
+// Non-escaped macros whose IDs do not exist pass through literally and emit warnings.
+// A leading backslash (\) escapes the macro, rendering it literally without warnings even if the ID exists.
+func ExpandScratchpadMacros(agentDir string, text string) (string, []string, error) {
 	if !strings.Contains(text, "<SCRATCHPAD_DATA") {
-		return text, nil
+		return text, nil, nil
 	}
 
 	var firstErr error
+	var warnings []string
 	expanded := scratchpadMacroRegex.ReplaceAllStringFunc(text, func(match string) string {
 		if firstErr != nil {
 			return match
+		}
+
+		if strings.HasPrefix(match, "\\") {
+			return strings.TrimPrefix(match, "\\")
 		}
 
 		idMatch := macroIDRegex.FindStringSubmatch(match)
@@ -574,9 +591,30 @@ func ExpandScratchpadMacros(agentDir string, text string) (string, error) {
 			}
 		}
 
+		_, _, isBinary, err := findScratchpadFile(agentDir, id)
+		if err != nil {
+			warnMsg := fmt.Sprintf("warning: scratchpad entry %q not found; macro passed through literally", id)
+			found := false
+			for _, w := range warnings {
+				if w == warnMsg {
+					found = true
+					break
+				}
+			}
+			if !found {
+				warnings = append(warnings, warnMsg)
+			}
+			return match
+		}
+
+		if isBinary {
+			firstErr = fmt.Errorf("scratchpad entry %q is binary data and cannot be expanded as text", id)
+			return match
+		}
+
 		content, err := readScratchpadRaw(agentDir, id, skipLines, numLines)
 		if err != nil {
-			firstErr = fmt.Errorf("scratchpad entry %q not found for macro expansion", id)
+			firstErr = err
 			return match
 		}
 
@@ -591,9 +629,9 @@ func ExpandScratchpadMacros(agentDir string, text string) (string, error) {
 	})
 
 	if firstErr != nil {
-		return "", firstErr
+		return "", nil, firstErr
 	}
-	return expanded, nil
+	return expanded, warnings, nil
 }
 
 type ScratchpadMatch struct {

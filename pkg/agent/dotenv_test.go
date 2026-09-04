@@ -104,7 +104,7 @@ echo "OVERRIDDEN_VAR=$OVERRIDDEN_VAR"
 		},
 	}
 
-	output, err := executeTool(context.Background(), agentDir, "env_test.sh", toolPath, args, nil)
+	output, _, err := executeTool(context.Background(), agentDir, "env_test.sh", toolPath, args, nil)
 	if err != nil {
 		t.Fatalf("executeTool failed: %v", err)
 	}

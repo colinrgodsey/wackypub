@@ -33,7 +33,7 @@ func TestExecuteTool(t *testing.T) {
 		Args: []string{"hello"},
 		Env:  map[string]string{"TEST_VAR": "world"},
 	}
-	output, err := executeTool(context.Background(), agentDir, "echo_tool.sh", toolPath, args, nil)
+	output, _, err := executeTool(context.Background(), agentDir, "echo_tool.sh", toolPath, args, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestExecuteTool_NoStdinEchoWithoutExplicitStdin(t *testing.T) {
 	}
 
 	args := ExecToolArgs{Args: []string{"some", "args"}}
-	output, err := executeTool(context.Background(), agentDir, "read_stdin.sh", toolPath, args, nil)
+	output, _, err := executeTool(context.Background(), agentDir, "read_stdin.sh", toolPath, args, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestExecuteTool_SymlinkResolution(t *testing.T) {
 		t.Fatalf("failed to create symlink: %v", err)
 	}
 
-	out, err := executeTool(context.Background(), agentDir, "script_link.sh", symlinkPath, ExecToolArgs{}, nil)
+	out, _, err := executeTool(context.Background(), agentDir, "script_link.sh", symlinkPath, ExecToolArgs{}, nil)
 	if err != nil {
 		t.Fatalf("executeTool failed: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestExecuteTool_Failure(t *testing.T) {
 		t.Fatalf("failed to write fail tool script: %v", err)
 	}
 
-	out, err := executeTool(context.Background(), agentDir, "fail_tool.sh", toolPath, ExecToolArgs{}, nil)
+	out, _, err := executeTool(context.Background(), agentDir, "fail_tool.sh", toolPath, ExecToolArgs{}, nil)
 
 	if err == nil {
 		t.Fatalf("expected an error, got nil")
@@ -254,7 +254,7 @@ func TestExecuteTool_RelativePath(t *testing.T) {
 		t.Fatalf("failed to write tool.sh: %v", err)
 	}
 
-	out, err := executeTool(context.Background(), relAgentDir, "tool.sh", toolPath, ExecToolArgs{}, nil)
+	out, _, err := executeTool(context.Background(), relAgentDir, "tool.sh", toolPath, ExecToolArgs{}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestExecuteTool_Timeout(t *testing.T) {
 		t.Fatalf("failed to write tool script: %v", err)
 	}
 
-	out, err := executeTool(context.Background(), agentDir, "sleep_tool.sh", toolPath, ExecToolArgs{}, nil, 1)
+	out, _, err := executeTool(context.Background(), agentDir, "sleep_tool.sh", toolPath, ExecToolArgs{}, nil, 1)
 	if err == nil {
 		t.Fatalf("expected timeout error, got nil")
 	}
@@ -477,7 +477,7 @@ func TestExecuteTool_ProcessGroupKill(t *testing.T) {
 		t.Fatalf("failed to write tool script: %v", err)
 	}
 
-	_, err := executeTool(context.Background(), agentDir, "bg_spawn.sh", toolPath, ExecToolArgs{}, nil, 1)
+	_, _, err := executeTool(context.Background(), agentDir, "bg_spawn.sh", toolPath, ExecToolArgs{}, nil, 1)
 	if err == nil {
 		t.Fatalf("expected timeout error, got nil")
 	}
@@ -516,7 +516,7 @@ func TestExecuteTool_TimeoutDisabled(t *testing.T) {
 	}
 
 	// timeout = -1 disables timeout wrapping
-	out, err := executeTool(context.Background(), agentDir, "quick.sh", toolPath, ExecToolArgs{}, nil, -1)
+	out, _, err := executeTool(context.Background(), agentDir, "quick.sh", toolPath, ExecToolArgs{}, nil, -1)
 	if err != nil {
 		t.Fatalf("unexpected error with timeout disabled (-1): %v", err)
 	}
@@ -757,7 +757,7 @@ func TestExecuteTool_CapturePath_NonExistentMacroDoesNotFail(t *testing.T) {
 		t.Fatalf("failed to write script: %v", err)
 	}
 
-	out, err := executeTool(context.Background(), agentDir, "large_macro.sh", toolPath, ExecToolArgs{}, nil)
+	out, _, err := executeTool(context.Background(), agentDir, "large_macro.sh", toolPath, ExecToolArgs{}, nil)
 	if err != nil {
 		t.Fatalf("expected executeTool to succeed without expanding macro, got error: %v", err)
 	}
@@ -799,7 +799,7 @@ func TestExecuteTool_CapturePath_LiveMacroDoesNotSplice(t *testing.T) {
 		t.Fatalf("failed to write script: %v", err)
 	}
 
-	out, err := executeTool(context.Background(), agentDir, "live_macro.sh", toolPath, ExecToolArgs{}, nil)
+	out, _, err := executeTool(context.Background(), agentDir, "live_macro.sh", toolPath, ExecToolArgs{}, nil)
 	if err != nil {
 		t.Fatalf("expected executeTool to succeed, got error: %v", err)
 	}
@@ -848,7 +848,7 @@ func TestExecuteTool_FailureOverThreshold_PreservedInScratchpad(t *testing.T) {
 		t.Fatalf("failed to write script: %v", err)
 	}
 
-	out, err := executeTool(context.Background(), agentDir, "fail_large.sh", toolPath, ExecToolArgs{}, nil)
+	out, _, err := executeTool(context.Background(), agentDir, "fail_large.sh", toolPath, ExecToolArgs{}, nil)
 	if err == nil {
 		t.Fatalf("expected error from failing tool, got nil")
 	}

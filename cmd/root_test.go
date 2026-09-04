@@ -379,3 +379,63 @@ func TestSignalCtx(t *testing.T) {
 		t.Fatal("expected cancelled context after calling stop()")
 	}
 }
+
+func TestD90_CLI_ScratchpadCreate_WarningOnStderr(t *testing.T) {
+	wsDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(wsDir, adkAgent.RootMarkerFile), []byte(""), 0644)
+
+	agentID := "testagent"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir agent: %v", err)
+	}
+
+	origCwd, _ := os.Getwd()
+	if err := os.Chdir(wsDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origCwd)
+
+	t.Run("non-escaped missing id emits warning on stderr and creates entry", func(t *testing.T) {
+		errBuf := new(bytes.Buffer)
+		RootCmd.SetErr(errBuf)
+		defer RootCmd.SetErr(os.Stderr)
+
+		RootCmd.SetArgs([]string{"--ws", wsDir, "agent", agentID, "scratchpad", "create", `<SCRATCHPAD_DATA id="no99" />`})
+		if err := RootCmd.Execute(); err != nil {
+			t.Fatalf("scratchpad create failed: %v", err)
+		}
+
+		if !strings.Contains(errBuf.String(), `warning: scratchpad entry "no99" not found; macro passed through literally`) {
+			t.Errorf("expected warning on stderr, got: %q", errBuf.String())
+		}
+
+		// Verify entry was stored literally
+		items, count, _, err := adkAgent.ListScratchpads(agentDir)
+		if err != nil || count != 1 {
+			t.Fatalf("expected 1 scratchpad entry, got count=%d, err=%v", count, err)
+		}
+		content, err := adkAgent.GetScratchpad(agentDir, items[0].ID, nil, nil)
+		if err != nil {
+			t.Fatalf("GetScratchpad failed: %v", err)
+		}
+		if content != `<SCRATCHPAD_DATA id="no99" />` {
+			t.Errorf("expected content to be literal macro, got: %q", content)
+		}
+	})
+
+	t.Run("backslash-escaped macro emits no warning on stderr", func(t *testing.T) {
+		errBuf := new(bytes.Buffer)
+		RootCmd.SetErr(errBuf)
+		defer RootCmd.SetErr(os.Stderr)
+
+		RootCmd.SetArgs([]string{"--ws", wsDir, "agent", agentID, "scratchpad", "create", `\<SCRATCHPAD_DATA id="no99" />`})
+		if err := RootCmd.Execute(); err != nil {
+			t.Fatalf("scratchpad create failed: %v", err)
+		}
+
+		if errBuf.Len() > 0 {
+			t.Errorf("expected no warning on stderr for escaped macro, got: %q", errBuf.String())
+		}
+	})
+}

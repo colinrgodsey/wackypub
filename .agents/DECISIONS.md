@@ -1693,7 +1693,7 @@ In the works (2026-09-03). Open questions below pending Colin's answers. Touches
 
 ## D90: Macro expansion only fires for entries that exist; literal otherwise (escape hatch for authoring)
 
-Not yet implemented. Touches `pkg/agent/scratchpad.go` (`ExpandScratchpadMacros`, `scratchpadMacroRegex`, the D81 id-validation path).
+Implemented in `pkg/agent/scratchpad.go` (`scratchpadMacroRegex` leading backslash capture; `ExpandScratchpadMacros` returning warnings and passing through nonexistent IDs literally; `CreateScratchpad` attaching warnings to `ScratchpadEntry`), `pkg/agent/agent_folder.go` (`executeTool` returning warnings separately `(string, []string, error)`, `run_command`/`run_skill_script` populating `RunCommandResult.Warning`, `create_scratchpad` tool returning `CreateScratchpadResult.Warning`), and `cmd/agent.go` (`scratchpadCreateCmd` printing warnings to stderr). Commit `f502b9b`.
 
 **Problem.** D80 stopped expanding captured tool output on ingest, but `run_command` still expands macro-reference tags the AGENT authored in args and stdin. Agents cannot author examples containing macro syntax (examples self-expand to live content or abort); the workaround is string-splitting hacks. This decision closes D80's explicitly-flagged residual gap (the false-positive case where legitimate content merely quotes macro syntax, flagged "worth addressing deliberately later").
 

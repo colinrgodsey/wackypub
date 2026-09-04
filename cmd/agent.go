@@ -664,6 +664,12 @@ Atomic and collision-safe across processes. Automatically evicts the entry with 
 			return err
 		}
 
+		if len(entry.Warnings) > 0 {
+			for _, w := range entry.Warnings {
+				cmd.PrintErrln(w)
+			}
+		}
+
 		fmt.Printf("Created scratchpad entry %q (%d bytes) for agent %q.\n", entry.ID, entry.Size, agentID)
 		return nil
 	},
