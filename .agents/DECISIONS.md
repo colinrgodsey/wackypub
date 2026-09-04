@@ -1619,3 +1619,81 @@ This is the general "No way to cancel an in-flight agent task" TODO brought forw
 
 **Rejected.** Scoping `/stop` to wackydiscord alone with surface-specific plumbing, which leaves the CLI and every future consumer without the same capability; and polling/flags to "request" cancellation, which cannot interrupt a blocked model call. Context is the existing idiomatic transport and the SDK already parses it.
 
+## D86: `files-rw` gains a `symlink` command and `list` shows symlinks
+
+Not yet implemented. Touches `tools/files-rw/filesrw/ops.go` (`ListDir` rewrite), `tools/files-rw/main.go` (`symlink` command), and `.agents/SECURITY_TESTING.md` (the new command ships with a swarm-testing entry).
+
+**Problem.** Agent workspaces are built on symlinks (runtime.json -> ../runtimes/<name>.json, symlinked tools/ and skills/), but the primary file tool cannot create a link and `list` reports links indistinguishably from regular files with no target shown. `ListDir` (ops.go:303) is a thin `exec.Command("ls", ...)` wrapper with zero structured type awareness; recovering a raw target would require text-scraping `ls -l`'s `->` suffix, the brittle pattern this tool's design avoids everywhere else.
+
+**Fix.**
+- `ListDir` rewritten native: an `os.ReadDir`/`os.Lstat`/`os.Readlink` walk replaces the `ls` shell-out (same flag semantics). Symlink entries gain structured fields: `type=symlink`, `target=` (raw), and `resolved=` with three states: (a) target missing/dangling, (b) target present but outside every granted root — reported as `resolved="blocked"`, never the actual path — (c) present and reachable. The JSON field contract is the stable format downstream tooling parses; non-JSON output adds a human `-> target` suffix.
+- `files-rw symlink <link> <target>` creates a symlink; target stored verbatim (relative stays relative); `--force` overwrites an existing link.
+- **Creation-time confinement by files-rw ACL (Colin, 2026-09-03).** `symlink` succeeds only when the caller has write access at the source (the link's own path) AND read access at the destination (the target path lies inside a read-granted root). Coverage-based, not existence-based, so dangling links remain creatable inside read-covered roots (forward creation for runtime.json-style links). This closes the path-existence oracle: an agent with no read grant at `<dir>` can no longer probe `<dir>/file` by creating a link to it and observing dangling-vs-blocked, because the target must be inside a root the caller can already read.
+- Dereference follows links transparently (already true today: `Access.Resolve`/`OpenFile` resolve via `filepath.EvalSymlinks` before root checks, confirmed by `access_test.go`, so this is existing behavior, not new scope). Chains: max 8 hops then error; cycles detected by the same hop cap. `delete` on a symlink removes only the link, never the target. `write`/`patch` through a dangling link errors (no auto-vivify).
+
+**Rejected.** A generic fs/link-repair super-command; refusing writes through symlinks entirely (breaks the workspace's own link-built layout); existence-based target validation at create-time (kills legitimate forward/dangling links).
+
+## D87: Git-style hook scripts as turn-lifecycle injection points (date, RAG, A2A)
+
+Not yet implemented. Touches `pkg/agent/agent_folder.go` (`RenderAgentSystemPrompt` insertion point), `pkg/agent/sdk.go` (A2A send path), and the agent scaffold (`hooks/`).
+
+**Problem.** No operator extension point between "user message arrives" and "model request is built." Anything dynamic must be hand-edited by a human. Drivers (Colin, 2026-09-03): agents have no notion of today's date and must shell out to `date` to name daily memory files; RAG wants retrieved context injected pre-turn; A2A wants outbound peer messages amended.
+
+**Fix.** A `hooks/` directory in the agent workspace. No hooks ship by default; examples live in the repo (a scaffold example `00-date` echoes today's date). Agent-writable subject to the files-rw ACL — the same trust domain as the tool files; per Colin, an agent with bash can already do anything, so the hook channel adds no privilege beyond existing tool access.
+- **Events, v1:** `pre-receive` (before the model request is built for an incoming turn) and `pre-send` (before an outbound A2A message). More events can be defined later.
+- **Ordering:** scripts are named `NN-<event>` (e.g. `00-pre-send`, `01-pre-send`); all scripts for an event run in ascending numeric order.
+- `pre-receive`: each script's stdout is appended verbatim to the system prompt as a `[hook output]` section. Insertion point stated explicitly: `RenderAgentSystemPrompt` (macro.go:26-53), called once per turn build immediately before `BuildADKAgentWithConfigAndTracker` — the hook must run there, before the model-facing agent is constructed, or its output never reaches the model.
+- `pre-send`: each script receives the outgoing A2A message JSON on stdin and may return amended JSON. Scope: the message-carrying A2A calls (`agent prompt`/`agent add`); cross-agent scratchpad deposits have no message and are out of scope. Amended JSON is schema-validated and field-allowlisted (message body/headers only; `to`/`id`/trace metadata immutable). Non-zero exit or malformed output sends the message ORIGINAL and unamended, with an explicit warning payload to the caller (fail-closed would block agent-to-agent messaging on a hook bug; the warning is the compromise).
+- **Failure policy:** non-zero exit or timeout => proceed, omit output, warn loudly (stderr for CLI; through the tool response where no stderr exists). Opt-out per call: `WACKYPUB_HOOKS=0`.
+
+**Rejected.** Built-in RAG subsystems (a pre-receive hook shelling to whatever retrieval exists covers it with zero framework); prompt side-channel editing outside the sanctioned hook surface; a workspace-root hook fallback merged with per-agent hooks (per-agent only, v1).
+
+## D88: Queued image loads (and compact-bail) auto-trigger the follow-up turn
+
+In the works — punted (Colin, 2026-09-03: "gah, i really want this but its the thorniest one... lets punt for now, can come back to it."). Touches the SDK turn loop (`pkg/agent/adk_agent.go`, `agent_folder.go`) and the mid-turn compaction bail (D77).
+
+**Problem.** The image pipeline costs two turns: queueing an image only surfaces it on the NEXT user turn, so the agent must end its turn just to see it. The mid-turn compaction bail (D77) has the same shape: the harness stops and asks for a "continue" message. Both are instances of "this turn needs a follow-up to complete itself."
+
+**Fix (draft, not adopted).** A multi-turn completion pattern: a turn may end in `needs-followup` (queued images pending, and/or stopped-for-compaction) and the harness immediately spawns a synthetic continuation turn with no user input. Precedence when both conditions hold: compact first, then continue (the continuation must not re-trip the budget guard that caused the bail). Budget: max 2 auto-followups per user turn, resetting on the next real user turn, with an explicit incomplete-state response at the cap (never a silent 2-and-done). Continuation turns carry an explicit session.jsonl marker, co-designed with D89's watcher. Per-turn token budget applies, capped at the interrupted turn's remaining budget. D77 interaction: the continuation turn is NOT force-compacted at start (D77's skip rule preserved on the interrupted turn); the ordinary unforced pre-turn compaction check fires inside the continuation — the "organically, next time generation is invoked" behavior D77 wanted, with zero wall-clock gap.
+
+**Open questions (deferred with the decision).**
+1. Does the auto-continue honor D77's explicit rejection of automatic post-interruption behavior ("fundamentally brittle" per user), or does the family as a whole now want a re-read?
+2. Precedence when both conditions hold (queued images AND stopped-for-compaction).
+3. Max-2-with-reset and the incomplete-state fallback at cap.
+4. Continuation-turn marker format (co-design with D89).
+5. Token budget on continuation turns.
+
+**Rejected (at this point).** A one-off image-wakeup hack or compact-continue hack (the duplication D74's shelving warned against); polling loops.
+
+## D89: wackydiscord renders verbose output from the session.jsonl watch (single source of truth)
+
+In the works (2026-09-03). Open questions below pending Colin's answers. Touches `tools/wackydiscord/bot/watcher.go` (SessionWatcher), `tools/wackydiscord/bot/handlers.go` (live chunk posting), and one deliberate `pkg/agent` surface addition.
+
+**Problem.** Verbose mode appends tool calls after the turn ended instead of interleaving them as they happen; the push-based stream render path batches tool events late. `AppendEvent` -> `AppendSessionContent` writes every session event to session.jsonl incrementally and in append order, so a tailing watcher gets correct ordering for free.
+
+**Fix (draft, not adopted).**
+- The watcher already exists: `SessionWatcher` (bot/watcher.go) tails session.jsonl via fsnotify, debounces, and drives `SyncAgentToChannels` -> `autoFillUnsyncedTurns`, deliberately suppressed during Discord-originated turns via the `IsGenerating` flag. This decision does NOT "add a watcher" — it makes the watcher the PRIMARY renderer for live Discord turns and demotes `AddAndGenerateTurnStream`'s per-chunk posting (handlers.go:139-148) to input-only (turn start, cancel). This supersedes/amends D76's mutual-exclusion machinery (see Q1).
+- Debounce fix, not just cadence: today's `debounceAgentSync` restarts the timer on every write (no leading edge, no max wait), which under a chatty long turn means zero visible output until it goes quiet. As primary renderer, switch to leading-edge debounce (emit first event immediately, then coalesce until quiet with a max-wait cap).
+- Dedup of the user's own Discord turn: `AppendSessionContent` persists `genai.Content` (Role/Parts; no metadata field), so origin tagging is a session.jsonl schema change via a new `AddUserTurnFromDiscord` entry point that writes a tagged part; existing `PendingUserHash`/`PendingUserText` stays as interop fallback for pre-tag logs. Suppression is idempotent per turn id (restart-safe).
+- `AddAndGenerateTurnStream` stays as-is for all other consumers (CLI etc.); wackydiscord moves to `AddUserTurnFromDiscord` + a non-streamed (or discarded-stream) generate call. Explicitly scoped so no silent contract change.
+
+**Rejected.** Reordering patch in the push renderer (a second ordering implementation, separate truth from the log); per-event Discord HTTP fanout (rate-limit risk).
+
+**Open questions (Colin, 2026-09-03, unanswered).**
+1. OK to supersede/amend D76's locking model (watcher primary while `IsGenerating` suppression flips to the live-path demotion)? D76 took four review rounds to get right; this touches that machinery.
+2. OK with the session.jsonl schema change (origin-tagged parts) vs. keeping hash-based dedup only?
+3. Drop the verbose toggle entirely (always log-rendered) or keep both modes?
+
+## D90: Macro expansion only fires for entries that exist; literal otherwise (escape hatch for authoring)
+
+Not yet implemented. Touches `pkg/agent/scratchpad.go` (`ExpandScratchpadMacros`, `scratchpadMacroRegex`, the D81 id-validation path).
+
+**Problem.** D80 stopped expanding captured tool output on ingest, but `run_command` still expands macro-reference tags the AGENT authored in args and stdin. Agents cannot author examples containing macro syntax (examples self-expand to live content or abort); the workaround is string-splitting hacks. This decision closes D80's explicitly-flagged residual gap (the false-positive case where legitimate content merely quotes macro syntax, flagged "worth addressing deliberately later").
+
+**Fix.**
+- Contract change: expand only macros whose entry ID EXISTS; missing-ID text passes through literally. Verified against the code: malformed-shape ids (D81's `^[0-9a-z]{4}$` via `validateScratchpadID` -> `findScratchpadFile` -> `readScratchpadRaw`) and well-formed-but-nonexistent ids already collapse to the same generic "not found" error before the macro handler, so leaving the text in place on that path covers placeholder/example ids (`id="EXAMPLE_ID"`) for free.
+- **Warning surface: routed through the tool response, not literal stderr.** `ExpandScratchpadMacros` is a pure string transform; for the in-process ADK tool path there is no OS stderr an agent ever sees. Warning text accompanies the tool's returned output (matching D80's "surface through the channel the caller reads" reasoning). Escaped literals never warn; missing-ID non-escaped macros warn always.
+- **Backslash escape ships in v1 (default ON):** a backslash before the opening bracket renders literally even when the ID exists — closes the collision hazard where an example ID later becomes real. Expansion is evaluated fresh at every `run_command`; previously-literal text can start expanding if an ID appears later, and the escape is the stability mechanism.
+
+**Rejected.** A global opt-out flag (breaks existing genuine macro use everywhere); a separate marker token (same authoring burden as the current hack, formalized).
+

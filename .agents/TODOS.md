@@ -629,9 +629,13 @@ usage vs a combination), and whether the agent should be able to ask itself.
 
 ## `files-rw` lacks a symlink command and does not show symlinks in `list`
 
+**Decision: D86 (not yet implemented).**
+
 Agent workspaces are built on symlinks (`runtime.json` -> `../runtimes/<name>.json`, and the symlinked `tools/`/`skills/` layouts), but `files-rw` can neither create links nor see them: there is no subcommand for it, and `list` reports symlinks indistinguishably from regular files with no target shown. Agents currently have to drop to shell for link creation and cannot introspect link topology through their primary file tool at all. Add a `symlink` command (link path + target; settle relative-vs-absolute default behavior) and make `list` mark symlinks with their resolved targets.
 
 ## Git-style hook scripts as injection points (date, RAG, A2A headers)
+
+**Decision: D87 (not yet implemented).**
 
 There is no per-turn extension point where an operator can inject content without editing prompts. Proposal (Colin, 2026-09-03): git-hook-like scripts that run at defined lifecycle points. Concrete drivers:
 
@@ -643,12 +647,18 @@ Design surface: the event set (turn-start / pre-request-build / a2a-send / ...),
 
 ## Queued image loads should auto-trigger a follow-up turn
 
+**Decision: D88 (in the works — punted 2026-09-03).**
+
 The image pipeline is currently two turns: an image loaded into a scratchpad entry surfaces only on the NEXT turn, so an agent must deliberately end a turn just to see it (load, describe, wait). Proposal: when image loads are pending at end-of-turn, auto-trigger a follow-up turn carrying them instead of idling until the user pings. This is one more instance of the "turn that needs a follow-up to complete" pattern already gathering TODOs (compact-on-bail, deferred image queueing) - design it as part of that multi-turn pattern rather than ad-hoc.
 
 ## wackydiscord: verbose tool output lands after the turn; consider rendering from the session.jsonl watch
 
+**Decision: D89 (in the works — questions pending).**
+
 Verbose mode appends tool calls at the END, after the agent has finished its turn, instead of interleaving them in the order they happened. Question (Colin, 2026-09-03): does wackydiscord need a fundamental change - going back to rendering Discord output based ENTIRELY on the session.jsonl watch (the earlier design)? Under watch-based rendering the one hard case is deduplication of the user turn: the user's Discord message also appears in the watched session, so the watcher must suppress re-echoing it. Weigh push-based stream rendering (current) vs watch-based rendering (ordering falls out for free, single source of truth) before touching the display order.
 
 ## Agents cannot write examples containing macro syntax: expansion also fires on agent-authored stdin/args
+
+**Decision: D90 (not yet implemented).**
 
 D80 stopped macro-expanding captured tool output on ingest, but `run_command` still expands macro references found in agent-authored args and stdin. Consequence: an agent literally cannot write documentation, skills, or test fixtures containing example macro syntax - the example self-expands (or aborts the command) at authoring time. Workaround today is token-splitting sed tricks, which are awkward and burn context. Proposal: an escape hatch for literal macro text (an escape sequence, or a literal-form marker token) while keeping server-side expansion for genuine references.
