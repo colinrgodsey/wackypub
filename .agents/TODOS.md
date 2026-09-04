@@ -656,9 +656,3 @@ The image pipeline is currently two turns: an image loaded into a scratchpad ent
 **Decision: D89 (in the works — questions pending).**
 
 Verbose mode appends tool calls at the END, after the agent has finished its turn, instead of interleaving them in the order they happened. Question (Colin, 2026-09-03): does wackydiscord need a fundamental change - going back to rendering Discord output based ENTIRELY on the session.jsonl watch (the earlier design)? Under watch-based rendering the one hard case is deduplication of the user turn: the user's Discord message also appears in the watched session, so the watcher must suppress re-echoing it. Weigh push-based stream rendering (current) vs watch-based rendering (ordering falls out for free, single source of truth) before touching the display order.
-
-## Agents cannot write examples containing macro syntax: expansion also fires on agent-authored stdin/args
-
-**Decision: D90 (not yet implemented).**
-
-D80 stopped macro-expanding captured tool output on ingest, but `run_command` still expands macro references found in agent-authored args and stdin. Consequence: an agent literally cannot write documentation, skills, or test fixtures containing example macro syntax - the example self-expands (or aborts the command) at authoring time. Workaround today is token-splitting sed tricks, which are awkward and burn context. Proposal: an escape hatch for literal macro text (an escape sequence, or a literal-form marker token) while keeping server-side expansion for genuine references.
