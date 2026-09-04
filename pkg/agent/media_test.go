@@ -164,7 +164,7 @@ func TestExecuteTool_BinaryScratchpadPipingAndRestrictions(t *testing.T) {
 	badArgs := ExecToolArgs{
 		Args: []string{"<SCRATCHPAD_DATA id=\"" + spEntry.ID + "\" />"},
 	}
-	_, err = executeTool(ctx, agentDir, "cat_stdin.sh", filepath.Join(toolsDir, "cat_stdin.sh"), badArgs, nil)
+	_, _, err = executeTool(ctx, agentDir, "cat_stdin.sh", filepath.Join(toolsDir, "cat_stdin.sh"), badArgs, nil)
 	if err == nil {
 		t.Fatal("expected error passing binary scratchpad in args, got nil")
 	}
@@ -173,7 +173,7 @@ func TestExecuteTool_BinaryScratchpadPipingAndRestrictions(t *testing.T) {
 	mixedStdin := ExecToolArgs{
 		Stdin: "prefix <SCRATCHPAD_DATA id=\"" + spEntry.ID + "\" />",
 	}
-	_, err = executeTool(ctx, agentDir, "cat_stdin.sh", filepath.Join(toolsDir, "cat_stdin.sh"), mixedStdin, nil)
+	_, _, err = executeTool(ctx, agentDir, "cat_stdin.sh", filepath.Join(toolsDir, "cat_stdin.sh"), mixedStdin, nil)
 	if err == nil {
 		t.Fatal("expected error mixing binary scratchpad with text in stdin, got nil")
 	}
@@ -182,7 +182,7 @@ func TestExecuteTool_BinaryScratchpadPipingAndRestrictions(t *testing.T) {
 	exactStdin := ExecToolArgs{
 		Stdin: "<SCRATCHPAD_DATA id=\"" + spEntry.ID + "\" />",
 	}
-	out, err := executeTool(ctx, agentDir, "cat_stdin.sh", filepath.Join(toolsDir, "cat_stdin.sh"), exactStdin, nil)
+	out, _, err := executeTool(ctx, agentDir, "cat_stdin.sh", filepath.Join(toolsDir, "cat_stdin.sh"), exactStdin, nil)
 	if err != nil {
 		t.Fatalf("exact binary stdin piping failed: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestExecuteTool_BinaryScratchpadPipingAndRestrictions(t *testing.T) {
 	skipStdin := ExecToolArgs{
 		Stdin: "<SCRATCHPAD_DATA id=\"" + spEntry.ID + "\" skip_lines=\"2\" />",
 	}
-	_, err = executeTool(ctx, agentDir, "cat_stdin.sh", filepath.Join(toolsDir, "cat_stdin.sh"), skipStdin, nil)
+	_, _, err = executeTool(ctx, agentDir, "cat_stdin.sh", filepath.Join(toolsDir, "cat_stdin.sh"), skipStdin, nil)
 	if err == nil {
 		t.Fatal("expected error using skip_lines on binary scratchpad in stdin, got nil")
 	}
@@ -203,7 +203,7 @@ func TestExecuteTool_BinaryScratchpadPipingAndRestrictions(t *testing.T) {
 	numStdin := ExecToolArgs{
 		Stdin: "<SCRATCHPAD_DATA id=\"" + spEntry.ID + "\" num_lines=\"5\" />",
 	}
-	_, err = executeTool(ctx, agentDir, "cat_stdin.sh", filepath.Join(toolsDir, "cat_stdin.sh"), numStdin, nil)
+	_, _, err = executeTool(ctx, agentDir, "cat_stdin.sh", filepath.Join(toolsDir, "cat_stdin.sh"), numStdin, nil)
 	if err == nil {
 		t.Fatal("expected error using num_lines on binary scratchpad in stdin, got nil")
 	}
@@ -211,7 +211,7 @@ func TestExecuteTool_BinaryScratchpadPipingAndRestrictions(t *testing.T) {
 	jsonStdin := ExecToolArgs{
 		Stdin: "<SCRATCHPAD_DATA id=\"" + spEntry.ID + "\" json_escape=\"true\" />",
 	}
-	_, err = executeTool(ctx, agentDir, "cat_stdin.sh", filepath.Join(toolsDir, "cat_stdin.sh"), jsonStdin, nil)
+	_, _, err = executeTool(ctx, agentDir, "cat_stdin.sh", filepath.Join(toolsDir, "cat_stdin.sh"), jsonStdin, nil)
 	if err == nil {
 		t.Fatal("expected error using json_escape on binary scratchpad in stdin, got nil")
 	}

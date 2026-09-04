@@ -35,8 +35,10 @@ type CreateScratchpadArgs struct {
 }
 
 type CreateScratchpadResult struct {
-	ID   string `json:"id"`
-	Size int    `json:"size"`
+	ID       string   `json:"id"`
+	Size     int      `json:"size"`
+	Warning  string   `json:"warning,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type GetScratchpadArgs struct {
@@ -89,7 +91,9 @@ type RunCommandArgs struct {
 }
 
 type RunCommandResult struct {
-	Output string `json:"output"`
+	Output   string   `json:"output"`
+	Warning  string   `json:"warning,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type LoadSkillArgs struct {
@@ -129,7 +133,9 @@ type RunSkillScriptArgs struct {
 }
 
 type RunSkillScriptResult struct {
-	Output string `json:"output"`
+	Output   string   `json:"output"`
+	Warning  string   `json:"warning,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // BuildFolderAgentTools constructs ADK functiontool instances for built-in tools (create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad)
@@ -167,8 +173,10 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 			return CreateScratchpadResult{}, fmt.Errorf("failed to create scratchpad entry: %w", err)
 		}
 		return CreateScratchpadResult{
-			ID:   entry.ID,
-			Size: entry.Size,
+			ID:       entry.ID,
+			Size:     entry.Size,
+			Warning:  entry.Warning,
+			Warnings: entry.Warnings,
 		}, nil
 	})
 	if err != nil {
@@ -325,21 +333,7 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 		Description: runCmdDesc,
 		InputSchema: runCmdInputSchema,
 	}, func(ctx agent.Context, args RunCommandArgs) (RunCommandResult, error) {
-		toolPath, ok := discoveredMap[args.Command]
-		if !ok {
-			return RunCommandResult{}, fmt.Errorf("unknown command %q. See the tool description for the list of available commands", args.Command)
-		}
-
-		execArgs := ExecToolArgs{
-			Args:  args.Args,
-			Env:   args.Env,
-			Stdin: args.Stdin,
-		}
-		out, err := executeTool(ctx, agentDir, args.Command, toolPath, execArgs, a2aMeta, timeoutSeconds)
-		if err != nil {
-			return RunCommandResult{Output: out}, err
-		}
-		return RunCommandResult{Output: out}, nil
+		return executeRunCommand(ctx, agentDir, discoveredMap, a2aMeta, timeoutSeconds, args)
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create run_command tool: %w", err)
@@ -470,35 +464,7 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 		Name:        "run_skill_script",
 		Description: runSkillScriptDesc,
 	}, func(ctx agent.Context, args RunSkillScriptArgs) (RunSkillScriptResult, error) {
-		sk, ok := skillsMap[args.SkillName]
-		if !ok {
-			return RunSkillScriptResult{}, fmt.Errorf("unknown skill %q", args.SkillName)
-		}
-		skillDir := filepath.Dir(sk.Path)
-		targetPath, err := ResolveSkillRelativePath(skillDir, args.RelativePath)
-		if err != nil {
-			return RunSkillScriptResult{}, err
-		}
-		info, err := os.Stat(targetPath)
-		if err != nil {
-			return RunSkillScriptResult{}, fmt.Errorf("failed to stat script %q: %w", args.RelativePath, err)
-		}
-		if info.IsDir() {
-			return RunSkillScriptResult{}, fmt.Errorf("%q is a directory, not an executable script", args.RelativePath)
-		}
-		if info.Mode()&0111 == 0 {
-			return RunSkillScriptResult{}, fmt.Errorf("script %q is not marked executable (mode %s)", args.RelativePath, info.Mode())
-		}
-		execArgs := ExecToolArgs{
-			Args:  args.Args,
-			Env:   args.Env,
-			Stdin: args.Stdin,
-		}
-		out, err := executeTool(ctx, agentDir, filepath.Base(targetPath), targetPath, execArgs, a2aMeta, timeoutSeconds)
-		if err != nil {
-			return RunSkillScriptResult{}, err
-		}
-		return RunSkillScriptResult{Output: out}, nil
+		return runSkillScriptToolHandler(ctx, agentDir, skillsMap, a2aMeta, timeoutSeconds, args)
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create run_skill_script tool: %w", err)
@@ -508,35 +474,103 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 	return toolMap, decls, nil
 }
 
-func executeTool(ctx context.Context, agentDir string, toolName string, toolPath string, args ExecToolArgs, a2aMeta *A2AMetadata, timeoutSeconds ...int) (string, error) {
+func executeRunCommand(ctx context.Context, agentDir string, discoveredMap map[string]string, a2aMeta *A2AMetadata, timeoutSeconds int, args RunCommandArgs) (RunCommandResult, error) {
+	toolPath, ok := discoveredMap[args.Command]
+	if !ok {
+		return RunCommandResult{}, fmt.Errorf("unknown command %q. See the tool description for the list of available commands", args.Command)
+	}
+
+	execArgs := ExecToolArgs{
+		Args:  args.Args,
+		Env:   args.Env,
+		Stdin: args.Stdin,
+	}
+	out, warnings, err := executeTool(ctx, agentDir, args.Command, toolPath, execArgs, a2aMeta, timeoutSeconds)
+	var warnStr string
+	if len(warnings) > 0 {
+		warnStr = strings.Join(warnings, "\n")
+	}
+	return RunCommandResult{Output: out, Warning: warnStr, Warnings: warnings}, err
+}
+
+func runSkillScriptToolHandler(ctx context.Context, agentDir string, skillsMap map[string]*Skill, a2aMeta *A2AMetadata, timeoutSeconds int, args RunSkillScriptArgs) (RunSkillScriptResult, error) {
+	sk, ok := skillsMap[args.SkillName]
+	if !ok {
+		return RunSkillScriptResult{}, fmt.Errorf("unknown skill %q", args.SkillName)
+	}
+	skillDir := filepath.Dir(sk.Path)
+	targetPath, err := ResolveSkillRelativePath(skillDir, args.RelativePath)
+	if err != nil {
+		return RunSkillScriptResult{}, err
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		return RunSkillScriptResult{}, fmt.Errorf("failed to stat script %q: %w", args.RelativePath, err)
+	}
+	if info.IsDir() {
+		return RunSkillScriptResult{}, fmt.Errorf("%q is a directory, not an executable script", args.RelativePath)
+	}
+	if info.Mode()&0111 == 0 {
+		return RunSkillScriptResult{}, fmt.Errorf("script %q is not marked executable (mode %s)", args.RelativePath, info.Mode())
+	}
+	execArgs := ExecToolArgs{
+		Args:  args.Args,
+		Env:   args.Env,
+		Stdin: args.Stdin,
+	}
+	out, warnings, err := executeTool(ctx, agentDir, filepath.Base(targetPath), targetPath, execArgs, a2aMeta, timeoutSeconds)
+	var warnStr string
+	if len(warnings) > 0 {
+		warnStr = strings.Join(warnings, "\n")
+	}
+	return RunSkillScriptResult{Output: out, Warning: warnStr, Warnings: warnings}, err
+}
+
+func executeTool(ctx context.Context, agentDir string, toolName string, toolPath string, args ExecToolArgs, a2aMeta *A2AMetadata, timeoutSeconds ...int) (string, []string, error) {
 	timeout := DefaultCommandTimeoutSeconds
 	if len(timeoutSeconds) > 0 {
 		timeout = timeoutSeconds[0]
 	}
 
+	var warnings []string
 	cmdArgs := make([]string, len(args.Args))
 	for i, rawArg := range args.Args {
 		// Check for binary scratchpad references in args (D48: args reject .dat entries outright)
 		if strings.Contains(rawArg, "<SCRATCHPAD_DATA") {
 			matches := scratchpadMacroRegex.FindAllString(rawArg, -1)
 			for _, m := range matches {
+				if strings.HasPrefix(m, "\\") {
+					continue
+				}
 				idMatch := macroIDRegex.FindStringSubmatch(m)
 				if len(idMatch) >= 2 {
 					id := idMatch[1]
 					_, _, isBinary, err := findScratchpadFile(agentDir, id)
 					if err == nil && isBinary {
-						return "", fmt.Errorf("cannot pass binary scratchpad entry %q in command args", id)
+						return "", nil, fmt.Errorf("cannot pass binary scratchpad entry %q in command args", id)
 					}
 				}
 			}
 		}
 
-		expanded, err := ExpandScratchpadMacros(agentDir, rawArg)
+		expanded, w, err := ExpandScratchpadMacros(agentDir, rawArg)
 		if err != nil {
-			return "", err
+			return "", nil, err
+		}
+		for _, warn := range w {
+			found := false
+			for _, existing := range warnings {
+				if existing == warn {
+					found = true
+					break
+				}
+			}
+			if !found {
+				warnings = append(warnings, warn)
+			}
 		}
 		if len(expanded) > MaxExpandedArgBytes {
-			return "", fmt.Errorf("expanded argument exceeds 500000 bytes (was %d) - use stdin/stdout scratchpad redirection instead", len(expanded))
+			return "", nil, fmt.Errorf("expanded argument exceeds 500000 bytes (was %d) - use stdin/stdout scratchpad redirection instead", len(expanded))
 		}
 		cmdArgs[i] = expanded
 	}
@@ -582,7 +616,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 
 	dotEnv, err := LoadAgentDotEnv(agentDir)
 	if err != nil {
-		return "", fmt.Errorf("failed to load agent .env: %w", err)
+		return "", nil, fmt.Errorf("failed to load agent .env: %w", err)
 	}
 	for k, v := range dotEnv {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
@@ -602,6 +636,9 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 			var binaryID string
 			matches := scratchpadMacroRegex.FindAllString(trimmedStdin, -1)
 			for _, m := range matches {
+				if strings.HasPrefix(m, "\\") {
+					continue
+				}
 				idMatch := macroIDRegex.FindStringSubmatch(m)
 				if len(idMatch) >= 2 {
 					id := idMatch[1]
@@ -621,21 +658,21 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 				}
 
 				if !isExact {
-					return "", fmt.Errorf("cannot mix binary scratchpad entry %q with text in stdin", binaryID)
+					return "", nil, fmt.Errorf("cannot mix binary scratchpad entry %q with text in stdin", binaryID)
 				}
 
 				// Check for pagination/escaping attributes on binary reference per D48
 				if macroSkipLinesRegex.MatchString(trimmedStdin) || macroNumLinesRegex.MatchString(trimmedStdin) || macroJsonEscapeRegex.MatchString(trimmedStdin) {
-					return "", fmt.Errorf("cannot use pagination or escaping attributes (skip_lines, num_lines, json_escape) with binary scratchpad entry %q", binaryID)
+					return "", nil, fmt.Errorf("cannot use pagination or escaping attributes (skip_lines, num_lines, json_escape) with binary scratchpad entry %q", binaryID)
 				}
 
 				filePath, _, _, err := findScratchpadFile(agentDir, binaryID)
 				if err != nil {
-					return "", err
+					return "", nil, err
 				}
 				f, err := os.Open(filePath)
 				if err != nil {
-					return "", fmt.Errorf("failed to open binary scratchpad entry %q: %w", binaryID, err)
+					return "", nil, fmt.Errorf("failed to open binary scratchpad entry %q: %w", binaryID, err)
 				}
 				stdinFile = f
 				cmd.Stdin = stdinFile
@@ -643,9 +680,21 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		}
 
 		if stdinFile == nil {
-			expandedStdin, err := ExpandScratchpadMacros(agentDir, args.Stdin)
+			expandedStdin, w, err := ExpandScratchpadMacros(agentDir, args.Stdin)
 			if err != nil {
-				return "", err
+				return "", nil, err
+			}
+			for _, warn := range w {
+				found := false
+				for _, existing := range warnings {
+					if existing == warn {
+						found = true
+						break
+					}
+				}
+				if !found {
+					warnings = append(warnings, warn)
+				}
 			}
 			cmd.Stdin = strings.NewReader(expandedStdin)
 		}
@@ -683,9 +732,9 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	output, buildErr := buildOutputBlocks(agentDir, stdoutBytes, stderrBytes)
 	if buildErr != nil {
 		if err != nil {
-			return "", fmt.Errorf("tool %s failed: %v (failed to process output: %w)", toolName, err, buildErr)
+			return "", warnings, fmt.Errorf("tool %s failed: %v (failed to process output: %w)", toolName, err, buildErr)
 		}
-		return "", buildErr
+		return "", warnings, buildErr
 	}
 
 	if err != nil {
@@ -696,13 +745,19 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 			headline = fmt.Sprintf("tool %s failed: %s", toolName, err.Error())
 		}
 
-		if len(stdoutBytes) > 0 || len(stderrBytes) > 0 {
-			return output, fmt.Errorf("%s\n%s", headline, output)
+		errOut := output
+		if len(warnings) > 0 {
+			warningBlock := fmt.Sprintf("<WARNING>\n%s\n</WARNING>", strings.Join(warnings, "\n"))
+			errOut = warningBlock + errOut
 		}
-		return output, fmt.Errorf("%s", headline)
+
+		if len(stdoutBytes) > 0 || len(stderrBytes) > 0 || len(warnings) > 0 {
+			return output, warnings, fmt.Errorf("%s\n%s", headline, errOut)
+		}
+		return output, warnings, fmt.Errorf("%s", headline)
 	}
 
-	return output, nil
+	return output, warnings, nil
 }
 
 // buildOutputBlocks formats captured stdout and stderr into blocks (<STDOUT>, <STDERR>).
