@@ -18,6 +18,8 @@ type AgentSDK struct {
 	WorkspaceDir          string
 	MaxToolTurns          int
 	CommandTimeoutSeconds int
+	lastHookEnvMu         sync.Mutex
+	lastHookEnv           map[string]map[string]string
 }
 
 // NewSDK creates an SDK instance bound to a workspace directory.
@@ -29,7 +31,40 @@ func NewSDK(workspaceDir string) *AgentSDK {
 		WorkspaceDir:          workspaceDir,
 		MaxToolTurns:          DefaultMaxToolTurns,
 		CommandTimeoutSeconds: DefaultCommandTimeoutSeconds,
+		lastHookEnv:           make(map[string]map[string]string),
 	}
+}
+
+// UserTurnResult contains the stored session content, final text, and any hook warnings from AddUserTurn.
+type UserTurnResult struct {
+	Content  *genai.Content `json:"content,omitempty"`
+	Text     string         `json:"text"`
+	Warnings []string       `json:"warnings,omitempty"`
+}
+
+// Note: setLastHookEnv stores only the most recent turn's hook env per agentID (D87 single-last-env design; queued turns overwrite).
+func (s *AgentSDK) setLastHookEnv(agentID string, hookEnv map[string]string) {
+	s.lastHookEnvMu.Lock()
+	defer s.lastHookEnvMu.Unlock()
+	if s.lastHookEnv == nil {
+		s.lastHookEnv = make(map[string]map[string]string)
+	}
+	if len(hookEnv) == 0 {
+		delete(s.lastHookEnv, agentID)
+	} else {
+		s.lastHookEnv[agentID] = hookEnv
+	}
+}
+
+func (s *AgentSDK) popLastHookEnv(agentID string) map[string]string {
+	s.lastHookEnvMu.Lock()
+	defer s.lastHookEnvMu.Unlock()
+	if s.lastHookEnv == nil {
+		return nil
+	}
+	env := s.lastHookEnv[agentID]
+	delete(s.lastHookEnv, agentID)
+	return env
 }
 
 // AgentDir returns the absolute or relative path for an agent folder (<ws_dir>/<agent_id>).
@@ -39,35 +74,45 @@ func (s *AgentSDK) AgentDir(agentID string) string {
 
 // AddUserTurn appends a user message to <ws_dir>/<agent_id>/session.jsonl.
 // Creates the agent directory automatically if it does not exist yet.
-func (s *AgentSDK) AddUserTurn(agentID string, message string) error {
+// Surfaces any hook execution warnings on the returned UserTurnResult.
+func (s *AgentSDK) AddUserTurn(agentID string, message string) (*UserTurnResult, error) {
 	if agentID == "" {
-		return fmt.Errorf("agentID cannot be empty")
+		return nil, fmt.Errorf("agentID cannot be empty")
 	}
 	if message == "" {
-		return fmt.Errorf("message cannot be empty")
+		return nil, fmt.Errorf("message cannot be empty")
 	}
 
 	if _, err := ValidateAgentTarget(agentID); err != nil {
-		return err
+		return nil, err
 	}
 
 	agentDir := s.AgentDir(agentID)
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		return fmt.Errorf("failed to create agent directory %s: %w", agentDir, err)
+		return nil, fmt.Errorf("failed to create agent directory %s: %w", agentDir, err)
 	}
 
 	lock, err := AcquireSessionLock(agentDir)
 	if err != nil {
-		return fmt.Errorf("failed to acquire session lock: %w", err)
+		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
 	}
 	defer lock.Release()
 
-	if err := AppendSessionTurn(agentDir, "user", message); err != nil {
-		return err
+	finalMsg, hookEnv, warnings, _ := RunUserMessageHooks(agentDir, message)
+
+	content := genai.NewContentFromText(finalMsg, "user")
+	if err := AppendSessionContent(agentDir, content); err != nil {
+		return nil, err
 	}
 
+	s.setLastHookEnv(agentID, hookEnv)
+
 	_ = CommitWorkspaceEvent(s.WorkspaceDir, agentID, "user")
-	return nil
+	return &UserTurnResult{
+		Content:  content,
+		Text:     finalMsg,
+		Warnings: warnings,
+	}, nil
 }
 
 // AddMedia appends a normalized, resized JPEG image turn read from reader to
@@ -203,7 +248,8 @@ func (s *AgentSDK) GenerateTurnStream(ctx context.Context, agentID string) iter.
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer registerInFlightTurn(agentID, cancel)()
 
-		fa, err := LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
+		hookEnv := s.popLastHookEnv(agentID)
+		fa, err := LoadFolderAgentWithHookEnv(s.WorkspaceDir, agentID, a2aMeta, hookEnv, s.MaxToolTurns, s.CommandTimeoutSeconds)
 		if err != nil {
 			yield("", fmt.Errorf("failed to load agent %q: %w", agentID, err))
 			return
@@ -280,14 +326,28 @@ func (s *AgentSDK) AddAndGenerateTurnStream(ctx context.Context, agentID string,
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer registerInFlightTurn(agentID, cancel)()
 
+		// Run hooks on userMessage
+		finalMsg, hookEnv, warnings, _ := RunUserMessageHooksWithContext(turnCtx, agentDir, userMessage)
+
+		for _, w := range warnings {
+			if !yield(w, nil) {
+				return
+			}
+		}
+
+		if turnCtx.Err() != nil {
+			yield("", turnCtx.Err())
+			return
+		}
+
 		// 1. Append User Turn
-		if err := AppendSessionTurn(agentDir, "user", userMessage); err != nil {
+		if err := AppendSessionTurn(agentDir, "user", finalMsg); err != nil {
 			yield("", fmt.Errorf("failed to append user turn: %w", err))
 			return
 		}
 
 		// 2. Load Folder Agent & Stream Assistant Turn
-		fa, err := LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
+		fa, err := LoadFolderAgentWithHookEnv(s.WorkspaceDir, agentID, a2aMeta, hookEnv, s.MaxToolTurns, s.CommandTimeoutSeconds)
 		if err != nil {
 			yield("", fmt.Errorf("failed to load agent %q: %w", agentID, err))
 			return

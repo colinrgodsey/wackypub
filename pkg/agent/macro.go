@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -23,7 +24,9 @@ func ExpandMacros(content string, agentDir string) (string, error) {
 // LoadFolderAgent) and expands @<FILE_PATH> macros. Unlike LoadFolderAgent,
 // it does not touch runtime.json and does not construct a model - useful for
 // validating AGENTS.md/macro output independently of backend configuration.
-func RenderAgentSystemPrompt(wsDir, agentID string) (string, error) {
+// If hookEnv is provided and contains mutated environment variables, they are
+// rendered into a model-visible [hook env] section.
+func RenderAgentSystemPrompt(wsDir, agentID string, hookEnv ...map[string]string) (string, error) {
 	agentDir := filepath.Join(wsDir, agentID)
 	agentsPath := filepath.Join(agentDir, "AGENTS.md")
 
@@ -47,6 +50,22 @@ func RenderAgentSystemPrompt(wsDir, agentID string) (string, error) {
 	}
 	if autoloadBlock != "" {
 		expanded = expanded + "\n\n" + autoloadBlock
+	}
+
+	if len(hookEnv) > 0 && len(hookEnv[0]) > 0 {
+		envMap := hookEnv[0]
+		keys := make([]string, 0, len(envMap))
+		for k := range envMap {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+
+		var sb strings.Builder
+		sb.WriteString("[hook env]")
+		for _, k := range keys {
+			sb.WriteString(fmt.Sprintf("\n%s=%s", k, envMap[k]))
+		}
+		expanded = expanded + "\n\n" + sb.String()
 	}
 
 	return expanded, nil

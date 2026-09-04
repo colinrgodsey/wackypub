@@ -35,7 +35,7 @@ func TestSDKAddUserTurnAndReadSession(t *testing.T) {
 	}
 	defer os.Chdir(origCwd)
 
-	if err := sdk.AddUserTurn(agentID, "What is your quest?"); err != nil {
+	if _, err := sdk.AddUserTurn(agentID, "What is your quest?"); err != nil {
 		t.Fatalf("failed to add user turn via SDK: %v", err)
 	}
 

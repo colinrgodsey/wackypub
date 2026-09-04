@@ -527,8 +527,8 @@ sdk.CommandTimeoutSeconds = 900 // Optional tool command execution timeout in se
 
 ### SDK Methods
 ```go
-// Add a user message turn to session.jsonl (acquires session lock)
-err := sdk.AddUserTurn("wizard", "Greetings! Tell me a rumor.")
+// Add a user message turn to session.jsonl (acquires session lock, returns *UserTurnResult with any hook warnings)
+res, err := sdk.AddUserTurn("wizard", "Greetings! Tell me a rumor.")
 
 // Generate the agent's turn response (acquires session lock, evaluates compaction & runs tool execution loop)
 respText, err := sdk.GenerateTurn(ctx, "wizard")

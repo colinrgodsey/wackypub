@@ -1,0 +1,8 @@
+#!/bin/sh
+# Example on-user-message hook showing the hook contract.
+# Sets TODAY in the environment.
+# Input: current env in process environment, message text on stdin.
+# Output: JSON on stdout with env mutations and/or altered text.
+
+TODAY="${TODAY:-$(date +%Y-%m-%d)}"
+printf '{"env":{"TODAY":"%s"}}\n' "$TODAY"

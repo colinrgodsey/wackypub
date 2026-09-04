@@ -94,8 +94,12 @@ does not already exist.`,
 			return fmt.Errorf("user message is required. Provide via argument, --message flag, or stdin pipe")
 		}
 
-		if err := sdk.AddUserTurn(agentID, userMsg); err != nil {
+		turnRes, err := sdk.AddUserTurn(agentID, userMsg)
+		if err != nil {
 			return err
+		}
+		for _, w := range turnRes.Warnings {
+			cmd.PrintErrln(w)
 		}
 
 		fmt.Printf("Added user message to agent %q session (%s/session.jsonl).\n", agentID, sdk.AgentDir(agentID))
