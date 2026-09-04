@@ -627,12 +627,6 @@ surface (CLI `wackypub agent <id> context`? SDK method? tool?), the source (esti
 usage vs a combination), and whether the agent should be able to ask itself.
 
 
-## `files-rw` lacks a symlink command and does not show symlinks in `list`
-
-**Decision: D86 (not yet implemented).**
-
-Agent workspaces are built on symlinks (`runtime.json` -> `../runtimes/<name>.json`, and the symlinked `tools/`/`skills/` layouts), but `files-rw` can neither create links nor see them: there is no subcommand for it, and `list` reports symlinks indistinguishably from regular files with no target shown. Agents currently have to drop to shell for link creation and cannot introspect link topology through their primary file tool at all. Add a `symlink` command (link path + target; settle relative-vs-absolute default behavior) and make `list` mark symlinks with their resolved targets.
-
 ## Git-style hook scripts as injection points (date, RAG, A2A headers)
 
 **Decision: D87 (not yet implemented).**
