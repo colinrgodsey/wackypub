@@ -168,8 +168,8 @@ func TestStreamingAndMultiPartTextPreservation(t *testing.T) {
 		t.Fatalf("AddAndGenerateTurn failed: %v", err)
 	}
 	expectedFull := "Let me check that for you.\n\nThe result is 42."
-	if fullResp != expectedFull {
-		t.Errorf("expected joined response %q, got %q (narration dropped!)", expectedFull, fullResp)
+	if fullResp.Text != expectedFull {
+		t.Errorf("expected joined response %q, got %q (narration dropped!)", expectedFull, fullResp.Text)
 	}
 }
 
@@ -232,8 +232,8 @@ func TestStreamingEarlyBreakReleasesLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subsequent call failed (lock held?): %v", err)
 	}
-	if resp != "Chunk 2" {
-		t.Errorf("expected 'Chunk 2', got %q", resp)
+	if resp.Text != "Chunk 2" {
+		t.Errorf("expected 'Chunk 2', got %q", resp.Text)
 	}
 }
 

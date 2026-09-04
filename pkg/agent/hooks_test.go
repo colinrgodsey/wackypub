@@ -328,8 +328,8 @@ printf '{"text":"What is your secret quest?","env":{"TODAY":"2026-09-03"}}\n'
 	if err != nil {
 		t.Fatalf("AddAndGenerateTurn failed: %v", err)
 	}
-	if resp != "Model response to altered turn" {
-		t.Errorf("unexpected response: %q", resp)
+	if resp.Text != "Model response to altered turn" {
+		t.Errorf("unexpected response: %q", resp.Text)
 	}
 
 	if !strings.Contains(capturedUserMessage, "What is your secret quest?") {
@@ -670,7 +670,7 @@ exit 1
 	}
 }
 
-// 13. Test failing hook warning surfaced at start of AddAndGenerateTurnStream
+// 13. Test failing hook warning surfaced out-of-band in AddAndGenerateTurnStream and AddAndGenerateTurn
 func TestHookFailureWarningSurfacedInAddAndGenerateTurnStream(t *testing.T) {
 	wsDir := t.TempDir()
 	agentID := "stream_warn_agent"
@@ -725,8 +725,13 @@ echo "corrupt json output"
 `)
 
 	sdk := NewSDK(wsDir)
+
+	// Test 1: AddAndGenerateTurnStream yields ONLY model chunks; warnings arrive via onWarning callback
+	var capturedWarnings []string
 	var chunks []string
-	for chunk, err := range sdk.AddAndGenerateTurnStream(context.Background(), agentID, "test prompt") {
+	for chunk, err := range sdk.AddAndGenerateTurnStream(context.Background(), agentID, "test prompt", func(w string) {
+		capturedWarnings = append(capturedWarnings, w)
+	}) {
 		if err != nil {
 			t.Fatalf("unexpected stream error: %v", err)
 		}
@@ -735,16 +740,33 @@ echo "corrupt json output"
 		}
 	}
 
-	if len(chunks) < 2 {
-		t.Fatalf("expected at least 2 chunks (warning + model reply), got %d: %v", len(chunks), chunks)
+	// Warnings must arrive out-of-band via callback
+	if len(capturedWarnings) == 0 {
+		t.Fatalf("expected warnings via onWarning callback, got none")
+	}
+	if !strings.HasPrefix(capturedWarnings[0], "Warning: hook ") || !strings.Contains(capturedWarnings[0], "malformed JSON") {
+		t.Errorf("expected hook warning via callback, got %q", capturedWarnings[0])
 	}
 
-	// First chunk must be the hook warning
-	if !strings.HasPrefix(chunks[0], "Warning: hook ") || !strings.Contains(chunks[0], "malformed JSON") {
-		t.Errorf("expected first chunk to be hook warning, got %q", chunks[0])
+	// Stream chunks must contain ONLY model speech, never hook warnings
+	for _, chunk := range chunks {
+		if strings.HasPrefix(chunk, "Warning: ") {
+			t.Errorf("stream chunk contained hook warning! Chunks must only contain model speech: %q", chunk)
+		}
 	}
-	// Subsequent chunk must be the assistant reply
-	if !strings.Contains(chunks[1], "agent reply") {
-		t.Errorf("expected second chunk to be assistant reply, got %q", chunks[1])
+	if len(chunks) != 1 || !strings.Contains(chunks[0], "agent reply") {
+		t.Errorf("expected stream to contain only model reply, got %v", chunks)
+	}
+
+	// Test 2: AddAndGenerateTurn captures warnings on GenerateTurnResult without polluting response text
+	res, err := sdk.AddAndGenerateTurn(context.Background(), agentID, "another turn")
+	if err != nil {
+		t.Fatalf("AddAndGenerateTurn failed: %v", err)
+	}
+	if len(res.Warnings) == 0 {
+		t.Errorf("expected warnings on GenerateTurnResult, got none")
+	}
+	if res.Text != "agent reply" {
+		t.Errorf("expected clean model response 'agent reply', got %q", res.Text)
 	}
 }

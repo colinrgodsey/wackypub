@@ -533,8 +533,8 @@ res, err := sdk.AddUserTurn("wizard", "Greetings! Tell me a rumor.")
 // Generate the agent's turn response (acquires session lock, evaluates compaction & runs tool execution loop)
 respText, err := sdk.GenerateTurn(ctx, "wizard")
 
-// Atomically add user message + generate assistant response under a single lock (recommended)
-respText, err := sdk.AddAndGenerateTurn(ctx, "wizard", "Greetings! Tell me a rumor.")
+// Atomically add user message + generate assistant response under a single lock (returns *GenerateTurnResult with Text and any hook Warnings)
+resp, err := sdk.AddAndGenerateTurn(ctx, "wizard", "Greetings! Tell me a rumor.")
 
 // Read session history as []*genai.Content (acquires session lock)
 turns, err := sdk.ReadSession("wizard")

@@ -293,7 +293,8 @@ func (s *AgentSDK) GenerateTurn(ctx context.Context, agentID string) (string, er
 }
 
 // AddAndGenerateTurnStream atomically appends a user message and yields assistant response chunks as they arrive under a single lock.
-func (s *AgentSDK) AddAndGenerateTurnStream(ctx context.Context, agentID string, userMessage string) iter.Seq2[string, error] {
+// Any hook execution warnings are surfaced out-of-band via optional onWarning callback(s) rather than emitted into the text stream.
+func (s *AgentSDK) AddAndGenerateTurnStream(ctx context.Context, agentID string, userMessage string, onWarning ...func(string)) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		if agentID == "" {
 			yield("", fmt.Errorf("agentID cannot be empty"))
@@ -330,8 +331,10 @@ func (s *AgentSDK) AddAndGenerateTurnStream(ctx context.Context, agentID string,
 		finalMsg, hookEnv, warnings, _ := RunUserMessageHooksWithContext(turnCtx, agentDir, userMessage)
 
 		for _, w := range warnings {
-			if !yield(w, nil) {
-				return
+			for _, fn := range onWarning {
+				if fn != nil {
+					fn(w)
+				}
 			}
 		}
 
@@ -372,21 +375,34 @@ func (s *AgentSDK) AddAndGenerateTurnStream(ctx context.Context, agentID string,
 	}
 }
 
+// GenerateTurnResult contains the assistant response text and any hook warnings (D87).
+type GenerateTurnResult struct {
+	Text     string   `json:"text"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
 // AddAndGenerateTurn atomically appends a user message and generates the assistant response under a single lock.
-func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, agentID string, userMessage string) (string, error) {
+// Any hook execution warnings are collected out-of-band and returned on GenerateTurnResult.
+func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, agentID string, userMessage string) (*GenerateTurnResult, error) {
+	var warnings []string
 	var chunks []string
-	for chunk, err := range s.AddAndGenerateTurnStream(ctx, agentID, userMessage) {
+	for chunk, err := range s.AddAndGenerateTurnStream(ctx, agentID, userMessage, func(w string) {
+		warnings = append(warnings, w)
+	}) {
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		if chunk != "" {
 			chunks = append(chunks, chunk)
 		}
 	}
 	if len(chunks) == 0 {
-		return "", fmt.Errorf("received empty response from agent")
+		return nil, fmt.Errorf("received empty response from agent")
 	}
-	return strings.Join(chunks, "\n\n"), nil
+	return &GenerateTurnResult{
+		Text:     strings.Join(chunks, "\n\n"),
+		Warnings: warnings,
+	}, nil
 }
 
 // GetAgent loads and returns the FolderAgent object for low-level ADK runner interactions.

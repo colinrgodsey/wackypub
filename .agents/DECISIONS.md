@@ -1635,7 +1635,7 @@ Implemented in `tools/files-rw/filesrw/ops.go` (`ListDir` rewrite), `tools/files
 
 ## D87: Run-parts hook scripts on user-message transform env and turn text (date, RAG)
 
-Implemented in `pkg/agent/hooks.go` (`DiscoverHooks`, `RunHookChain`, `RunUserMessageHooks`), `pkg/agent/macro.go` (`RenderAgentSystemPrompt` `[hook env]` rendering), `pkg/agent/agent_folder.go` (`LoadFolderAgentWithHookEnv`), `pkg/agent/sdk.go` (`AddUserTurn`, `AddAndGenerateTurnStream`), and scaffold example `hooks/on-user-message/00-date`.
+Implemented in `pkg/agent/hooks.go` (`DiscoverHooks`, `RunHookChain`, `RunUserMessageHooks`), `pkg/agent/macro.go` (`RenderAgentSystemPrompt` `[hook env]` rendering), `pkg/agent/agent_folder.go` (`LoadFolderAgentWithHookEnv`), `pkg/agent/sdk.go` (`AddUserTurn`, `AddAndGenerateTurnStream`, `AddAndGenerateTurn`), and scaffold example `hooks/on-user-message/00-date`.
 
 **Problem.** No operator extension point between "user message arrives" and "model request is built." Anything dynamic must be hand-edited by a human. Drivers (Colin, 2026-09-03): agents have no notion of today's date and must shell out to `date` to name daily memory files; RAG wants retrieved context injected pre-turn; A2A peer messages (which arrive as user turns) want the same injection. **Outbound was deliberately dropped for v1** (Colin, 2026-09-03: "I can't really think of a case for outbound messages right now") — a send-side event (e.g. `on-message-send`) shares the same contract and can be added later cheaply.
 
