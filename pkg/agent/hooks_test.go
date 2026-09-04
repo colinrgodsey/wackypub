@@ -599,14 +599,17 @@ func TestScaffoldExample00Date(t *testing.T) {
 		t.Fatalf("RunHookChain failed with scaffold: %v", err)
 	}
 
-	todayVal, ok := res.MutatedEnv["TODAY"]
-	if !ok || todayVal == "" {
-		t.Fatalf("expected TODAY to be set by scaffold hook, got: %v", res.MutatedEnv)
+	// Scaffold prepends a datetime preamble to the message text (per Colin: no env var).
+	scaffoldText := res.Text
+	prefix := "[Current datetime: "
+	if !strings.HasPrefix(scaffoldText, prefix) {
+		t.Errorf("expected text to start with %q preamble, got %q", prefix, scaffoldText)
 	}
-
-	// Should match YYYY-MM-DD
-	if len(todayVal) != 10 || todayVal[4] != '-' || todayVal[7] != '-' {
-		t.Errorf("expected TODAY in YYYY-MM-DD format, got %q", todayVal)
+	if !strings.HasSuffix(scaffoldText, "hello") {
+		t.Errorf("expected original message text to be preserved, got %q", scaffoldText)
+	}
+	if res.MutatedEnv != nil {
+		t.Errorf("scaffold should set no env vars, got: %v", res.MutatedEnv)
 	}
 }
 
