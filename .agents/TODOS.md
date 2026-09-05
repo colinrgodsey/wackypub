@@ -1,5 +1,9 @@
 # TODOS.md
 
+> **Notice (2026-09-05):** Active task and known-gap tracking has migrated to **GitKB** (`git-kb board` / `git-kb list --type task`).
+> All 27 active and backlog tasks are managed under `tasks/` in the GitKB store (`.kb/workspaces/main/tasks/`).
+> This file is maintained for historical context and completed decision cross-references.
+
 Deferred work and known gaps. Not a backlog of feature ideas - only things
 that are already known to be incomplete, fragile, or blocked on something
 external.
@@ -347,7 +351,7 @@ urgent - each entry is small and this doesn't affect correctness - but
 worth a `prune` command (or an eviction policy on `run`, mirroring
 `EvictOldestScratchpad`) before `wackyproc` sees heavy real-world use.
 
-## No automatic follow-up turn after a deferred scratchpad image is queued
+## ~~No automatic follow-up turn after a deferred scratchpad image is queued~~ (closed D88)
 
 Confirmed live (via `wackydiscord`, D70's investigation): when `get_scratchpad`
 defers a binary/image entry (D49), the canned response says "It will be
@@ -505,7 +509,7 @@ store, routing "system" to the root repo deliberately, dropping the snapshot com
 the reviewer's broader recommendation, falling back to the `git` CLI when go-git fails, which is the
 one change that addresses go-git's narrower config/validation rather than patching symptoms.
 
-## Mid-turn short-circuit should compact instead of requiring a "continue" turn
+## ~~Mid-turn short-circuit should compact instead of requiring a "continue" turn~~ (closed D88)
 
 When accumulated tool context crosses the compaction threshold mid-turn, the harness returns a
 synthetic response telling the model to send another message to proceed (`adk_agent.go:187-215`,
@@ -615,7 +619,7 @@ to figure out the context count for a current agent session — questions to set
 surface (CLI `wackypub agent <id> context`? SDK method? tool?), the source (estimate vs provider
 usage vs a combination), and whether the agent should be able to ask itself.
 
-## Queued image loads should auto-trigger a follow-up turn
+## ~~Queued image loads should auto-trigger a follow-up turn~~ (closed D88)
 
 **Decision: D88 (in the works — punted 2026-09-03).**
 
