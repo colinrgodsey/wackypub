@@ -1,0 +1,23 @@
+#!/bin/sh
+# Example on-user-message hook (receiver-side A2A annotator):
+# flags inbound agent-to-agent turns that are missing the
+# "[Message from agent: <id>]" self-announcement preamble.
+#
+# NOTE: this is a DIAGNOSTIC, not enforcement. The announce convention is
+# sender-side (the sending agent prepends the preamble); on-user-message
+# hooks fire on the receiving side and cannot enforce outbound behavior.
+# Input: message text on stdin. Output: unchanged message on stdout;
+# a diagnostic warning on stderr when an unannounced A2A turn is detected.
+
+TEXT=$(cat)
+
+case "$TEXT" in
+	*"[Message from agent:"*)
+		# Announced A2A turn (or text that merely quotes the convention) - pass through.
+		;;
+	*)
+		printf 'Warning: inbound turn has no "[Message from agent: <id>]" preamble - if this was sent by an agent, it did not announce itself.\n' >&2
+		;;
+esac
+
+printf '%s' "$TEXT"

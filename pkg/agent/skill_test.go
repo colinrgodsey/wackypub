@@ -112,7 +112,7 @@ Never run rm -rf /
 	if !strings.Contains(autoloadBlock, "<AUTOLOADED_SKILLS>") {
 		t.Errorf("expected autoload block to contain <AUTOLOADED_SKILLS>, got: %s", autoloadBlock)
 	}
-	if !strings.Contains(autoloadBlock, `<SKILL name="safety-rules">`) {
+	if !strings.Contains(autoloadBlock, `<SKILL name="safety-rules" description="Critical safety directives">`) {
 		t.Errorf("expected autoload block to contain <SKILL name=\"safety-rules\">, got: %s", autoloadBlock)
 	}
 	if !strings.Contains(autoloadBlock, "Never run rm -rf /") {
@@ -571,5 +571,66 @@ Use load_skill_extra and run_skill_script for extras.
 	}
 	if !foundImageTurn {
 		t.Errorf("expected deferred image user turn in session turns: %+v", turns)
+	}
+}
+
+func TestRenderAutoloadedSkills_DescriptionSanitized(t *testing.T) {
+	wsDir := t.TempDir()
+	skillDir := filepath.Join(wsDir, "testbot", "skills", "danger-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: danger-skill\ndescription: \"Uses \\\"quotes\\\" and <brackets>;\n  spans multiple lines\"\nalways_load: true\n---\n\nBody line.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	block, err := RenderAutoloadedSkills(filepath.Join(wsDir, "testbot"))
+	if err != nil {
+		t.Fatalf("RenderAutoloadedSkills failed: %v", err)
+	}
+	if strings.Contains(block, "\"\"") && strings.Contains(block, "description=\"\"") {
+		t.Errorf("expected quotes stripped from description attribute")
+	}
+	if strings.Contains(block, "<brackets>") {
+		t.Errorf("expected angle brackets stripped from description")
+	}
+	if !strings.Contains(block, `description="Uses quotes and brackets; spans multiple lines"`) {
+		t.Errorf("expected sanitized single-line description, got: %s", block)
+	}
+}
+
+func TestRenderAutoloadedSkills_DefaultDescriptionEmitted(t *testing.T) {
+	wsDir := t.TempDir()
+	skillDir := filepath.Join(wsDir, "testbot", "skills", "plain-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: plain-skill\nalways_load: true\n---\n\nBody only.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	block, err := RenderAutoloadedSkills(filepath.Join(wsDir, "testbot"))
+	if err != nil {
+		t.Fatalf("RenderAutoloadedSkills failed: %v", err)
+	}
+	// ParseSkillFile fills a default description ("Skill <name>") when frontmatter omits it,
+	// so the attribute is still emitted - just with the default value.
+	if !strings.Contains(block, `<SKILL name="plain-skill" description="Skill plain-skill">`) {
+		t.Errorf("expected default description attribute, got: %s", block)
+	}
+}
+
+func TestFormatLoadedSkill_RealNewlines(t *testing.T) {
+	result := FormatLoadedSkill("test-skill", "body content")
+	if strings.Contains(result, "\\n") {
+		t.Errorf("expected real newlines, not literal backslash-n, got: %q", result)
+	}
+	if !strings.Contains(result, "body content") {
+		t.Errorf("expected body content, got: %q", result)
+	}
+	if !strings.Contains(result, `name="test-skill"`) {
+		t.Errorf("expected name attribute, got: %q", result)
 	}
 }
