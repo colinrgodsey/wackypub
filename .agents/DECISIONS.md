@@ -1655,20 +1655,22 @@ Implemented in `pkg/agent/hooks.go` (`DiscoverHooks`, `RunHookChain`, `RunUserMe
 
 ## D88: Queued image loads (and compact-bail) auto-trigger the follow-up turn
 
-In the works — punted (Colin, 2026-09-03: "gah, i really want this but its the thorniest one... lets punt for now, can come back to it."). Touches the SDK turn loop (`pkg/agent/adk_agent.go`, `agent_folder.go`) and the mid-turn compaction bail (D77).
+Implemented in `pkg/agent/agent_folder.go` (`GenerateTurnStream` sequential turn loop, coincidence ordering, post-turn compaction on mid-turn bail, emergency cold-start pre-turn valve), `pkg/agent/adk_agent.go` (`TurnUsageTracker.DisableAutoContinuation`, synthetic message continuation hint omission, budget check before image deferral), `pkg/agent/runtime.go` (`MaxAutoContinuations`, `DisableAutoContinuation`), `pkg/agent/continuation_test.go`, and `tools/wackydiscord/bot/handlers.go` (`DiffUnsyncedTurns`).
 
-**Problem.** The image pipeline costs two turns: queueing an image only surfaces it on the NEXT user turn, so the agent must end its turn just to see it. The mid-turn compaction bail (D77) has the same shape: the harness stops and asks for a "continue" message. Both are instances of "this turn needs a follow-up to complete itself."
+**Problem.** The image pipeline cost two turns: queueing an image only surfaced it on the NEXT user turn, so the agent had to end its turn just to see it. The mid-turn compaction bail (D77) had the same shape: the harness stopped and asked for a "continue" message. Both required human intervention for operations that should complete autonomously.
 
-**Fix (draft, not adopted).** A multi-turn completion pattern: a turn may end in `needs-followup` (queued images pending, and/or stopped-for-compaction) and the harness immediately spawns a synthetic continuation turn with no user input. Precedence when both conditions hold: compact first, then continue (the continuation must not re-trip the budget guard that caused the bail). Budget: max 2 auto-followups per user turn, resetting on the next real user turn, with an explicit incomplete-state response at the cap (never a silent 2-and-done). Continuation turns carry an explicit session.jsonl marker, co-designed with D89's watcher. Per-turn token budget applies, capped at the interrupted turn's remaining budget. D77 interaction: the continuation turn is NOT force-compacted at start (D77's skip rule preserved on the interrupted turn); the ordinary unforced pre-turn compaction check fires inside the continuation — the "organically, next time generation is invoked" behavior D77 wanted, with zero wall-clock gap.
+**Fix.** A multi-turn sequential completion loop in `FolderAgent.GenerateTurnStream`:
+- **Compaction Engine Rules**: Compaction is strictly post-turn, driven by real provider token counts (`UsageMetadata`). When a turn completes normally and real tokens >= threshold, compact post-turn. When a turn bails mid-turn (`StoppedEarlyForCompaction = true`), post-turn compaction executes immediately in the turn's cleanup block using the real `LastPromptTokens` that triggered the bail (superseding D77's skip). A fail-safe abort terminates auto-continuation with an incomplete status if compaction produces no reduction. An emergency cold-start valve runs with `force: true` before call 1 on an existing session that starts above threshold (`EstimateTokens >= threshold`).
+- **Sequential Turn Loop**: Turn execution runs in an explicit loop (`continuationCount <= maxContinuations`) without Go `defer` traps. Each iteration calls `fa.UsageTracker.Reset()` to clear previous turn metrics, instantiates a fresh runner (`runner.New`) against disk session state, and emits `CommitWorkspaceEvent` at each turn boundary. Session locks and cancellation context (`turnCtx`, D85) are held continuously across continuation streams.
+- **Generic Auto-Continuation Pattern**:
+  - `ContinuationDeferredImage`: queue deferred images as `<IMAGE>` user turns and trigger immediate analysis.
+  - `ContinuationCompactedBail`: mid-turn bail compacts session, appends synthetic user prompt `<CONTINUATION reason="post-compaction">Session context was compacted. Resume and complete your task from where you left off, referencing any updated persistent memory.</CONTINUATION>`, and resumes execution.
+  - *Coincidence ordering*: When both image deferral and compaction bail occur in one turn, compaction runs first, the deferred `<IMAGE>` user turn is appended second, and exactly one continuation turn triggers (the image turn drives resumption with no redundant sentinel).
+  - *Image re-inflation guard*: If an image blob re-inflates context past budget on continuation, auto-continuation aborts with an incomplete status rather than looping.
+- **Prompt & Memory Freshness**: When `MEMORY.md` is rewritten by compaction, `RenderAgentSystemPrompt` re-renders and the ADK agent is rebuilt before creating the fresh runner for the continuation turn.
+- **Guards & Continuity**: Budget cap is `MaxAutoContinuations = 2` standard, and `1` for A2A (`A2AMeta != nil`). If runaway loops hit the cap, an explicit incomplete status response is yielded. Output chunks stream seamlessly through the caller's iterator. The synthetic stopping message omits "Send another message (e.g. \"continue\") to proceed" when auto-continuation is enabled. `tools/wackydiscord/bot/handlers.go` uses `DiffUnsyncedTurns` for verbose tool diffing.
 
-**Open questions (deferred with the decision).**
-1. Does the auto-continue honor D77's explicit rejection of automatic post-interruption behavior ("fundamentally brittle" per user), or does the family as a whole now want a re-read?
-2. Precedence when both conditions hold (queued images AND stopped-for-compaction).
-3. Max-2-with-reset and the incomplete-state fallback at cap.
-4. Continuation-turn marker format (co-design with D89).
-5. Token budget on continuation turns.
-
-**Rejected (at this point).** A one-off image-wakeup hack or compact-continue hack (the duplication D74's shelving warned against); polling loops.
+**Rejected.** A one-off image-wakeup hack or compact-continue hack; polling loops; Go defer for turn continuation; skipping post-turn compaction on mid-turn bail.
 
 ## D89: wackydiscord renders verbose output from the session.jsonl watch (single source of truth)
 
