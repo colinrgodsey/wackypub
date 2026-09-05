@@ -2,18 +2,18 @@
 
 Agent guidelines for working in the `WackyPub` repository.
 
-> Companion docs in `.agents/`: [DECISIONS.md](./DECISIONS.md) (design
-> decisions and their rationale - read before changing session storage,
-> the OpenAI adapter, or reasoning handling: several behaviors there are
-> deliberate and load-bearing), [TODOS.md](./TODOS.md) (deferred work and
-> open gaps), [LOCAL_TESTING.md](./LOCAL_TESTING.md) (how to actually
+> Companion docs in `.agents/`: [LOCAL_TESTING.md](./LOCAL_TESTING.md) (how to actually
 > run and verify changes - there's no mocked LLM backend, so this is the
 > workflow that's been used instead), and
 > [SECURITY_TESTING.md](./SECURITY_TESTING.md) (checklist of tools that
 > enforce a security boundary and whether that boundary has actually been
 > pen/escape-tested via [docs/SWARM_TESTING.md](../docs/SWARM_TESTING.md)'s
 > swarm process - **reset a tool there to `?` and delete its report the
-> moment its enforcement logic changes**). Also read [README.md](../README.md)
+> moment its enforcement logic changes**). Design decisions and deferred work
+> live in the project wiki: [Decisions index](https://github.com/colinrgodsey/wackypub/wiki/Decisions) - read
+> before changing session storage, the OpenAI adapter, or reasoning handling:
+> several behaviors there are deliberate and load-bearing.
+> Also read [README.md](../README.md)
 > at the repository root for the high-level philosophy and conceptual foundation.
 > For the full architecture deep-dive (directory specs, lifecycle diagrams,
 > compaction mechanics, file schemas), see [docs/agents.md](../docs/agents.md) -
@@ -28,7 +28,9 @@ Agent guidelines for working in the `WackyPub` repository.
 - Have fun! Hell, be funny even.
 - Do not co-author git commits. No mention of your model or harness.
 - Don't jump straight to the implementation. If we decided on something new,
-  write a DECISION, and see if it closes out any TODOs.
+  record the decision - use GitKB (git-kb) if it's available in your environment,
+  otherwise explain the decision fully (problem, options considered, rationale)
+  in the PR description so it is preserved for reviewers and future contributors.
 
 ## Project Overview
 
@@ -44,7 +46,7 @@ for it just parses args and calls that method. This isn't incidental
 structure - the primary consumers of the CLI are expected to be *other agent
 platforms*, and specifically a tool that runs a single `wackypub` subcommand
 per call (not a shell, not a hand-authored tool schema wrapping `AgentSDK`
-methods - see DECISIONS.md D13 for why). That means command help text needs
+methods - see [D13](https://github.com/colinrgodsey/wackypub/wiki/d13-an-agents-tool-for-using) for why). That means command help text needs
 to be complete and unambiguous enough for an LLM to use correctly from
 `--help` output alone (full description, every argument explained, no
 assumed context) - it's the only documentation that caller ever sees.
@@ -93,7 +95,7 @@ make tidy    # Runs go mod tidy across wackypub and all submodule tools
 There's no mocked LLM backend in this repo - correctness of the OpenAI
 adapter wiring (reasoning egress modes, `extraBody`, etc.) has so far been
 verified by pointing the built binary at a real workspace and either a real
-backend or a local `httptest` server, not by automated tests (see TODOS.md).
+backend or a local `httptest` server, not by automated tests (see the testing gaps tracked in the [wiki roadmap](https://github.com/colinrgodsey/wackypub/wiki/Roadmap)).
 See [LOCAL_TESTING.md](./LOCAL_TESTING.md) for the full workflow: how
 `testws/` (gitignored scratch) and `test_agents/` (committed, safe example)
 are structured and when to use each, the `runtime.json` symlink pattern for
@@ -225,7 +227,7 @@ directory at all."
 ### `session.jsonl` is `genai.Content`, not a custom struct
 
 Every line is a serialized `genai.Content` (`{"role": "user"|"model",
-"parts": [...]}`- see DECISIONS.md D1. This is what gives multi-part
+"parts": [...]}`- see [D1](https://github.com/colinrgodsey/wackypub/wiki/d01-session-jsonl-stores-genai-content). This is what gives multi-part
 messages (text + thinking + eventually images) native support with no lossy
 round-trip. Never add a parallel/custom turn struct for this; extend the
 `genai.Content`/`genai.Part` usage instead.
@@ -237,11 +239,11 @@ round-trip. Never add a parallel/custom turn struct for this; extend the
   directly. No ADK `LLMAgent`/`Runner` involved.
 - **Alternate path** (`FolderAgent.RunWithRunner`, built via
   `BuildADKAgent`/`llmagent.New`): routes through ADK's actual
-  `LLMAgent`/`Runner`. Not used by any CLI command today (see TODOS.md).
+  `LLMAgent`/`Runner`. Not used by any CLI command today (tracked as cleanup work in the [wiki roadmap](https://github.com/colinrgodsey/wackypub/wiki/Roadmap)).
 
 Don't assume `AGENTS.md`'s `Instruction` field reaches the model on the
 primary path - it doesn't; `GenerateTurn` builds its own first turn
-(system prompt + `<PERSISTENT_MEMORY>`) independently. See DECISIONS.md D2.
+(system prompt + `<PERSISTENT_MEMORY>`) independently. See [D2](https://github.com/colinrgodsey/wackypub/wiki/d02-compaction-window-determination).
 
 ### `runtime.json` knobs are additive and provider-specific
 
@@ -270,7 +272,7 @@ should describe the same operation with the same argument semantics - not
 two independently-drifting descriptions of "roughly the same thing."
 
 This matters beyond code reuse: an agent platform's tool is constrained to
-running one `wackypub` subcommand per call (see DECISIONS.md D13) - it never
+running one `wackypub` subcommand per call (see [D13](https://github.com/colinrgodsey/wackypub/wiki/d13-an-agents-tool-for-using)) - it never
 sees `AgentSDK` directly, and `--help` is the only documentation it ever
 gets. So the CLI has to be self-documenting enough to drive correctly from
 `wackypub agent <cmd> --help` alone, with no separate tool schema to fall
@@ -353,7 +355,7 @@ Encrypted/signed `reasoning_details` blocks are tied to the specific backend
 endpoint that produced them. `"auto"` routing can pick a different endpoint
 on the next request, and OpenRouter rejects the replayed block with a 404.
 Only enable `supportsReasoningDetails` with a pinned `model`. See
-DECISIONS.md D6 and `ADK_UTILS_GO_REASONING_EGRESS_BUG.md` at the repo root.
+[D6](https://github.com/colinrgodsey/wackypub/wiki/d06-openai-adapter-reasoning-egress) and `ADK_UTILS_GO_REASONING_EGRESS_BUG.md` at the repo root.
 
 ### The `adk-utils-go` dependency tracks upstream `achetronic/adk-utils-go`
 
