@@ -335,3 +335,85 @@ func TestSDK_CancelTurn_ConcurrentSafety(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestD93_InspectSessionContext(t *testing.T) {
+	wsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	sdk := NewSDK(wsDir)
+	agentDir := filepath.Join(wsDir, "testbot")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	runtimeJSON := `{"model":"deepseek-chat","contextWindow":100000}`
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(runtimeJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("You are a helpful test agent."), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "MEMORY.md"), []byte("# Long term memory notes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Initial report without session
+	rep, err := sdk.InspectSessionContext("testbot")
+	if err != nil {
+		t.Fatalf("InspectSessionContext failed: %v", err)
+	}
+	if rep.AgentID != "testbot" || rep.Model != "deepseek-chat" {
+		t.Errorf("unexpected report meta: %+v", rep)
+	}
+	if rep.ContextWindow != 100000 || rep.CompactionThreshold != 80000 {
+		t.Errorf("unexpected window/threshold: %d / %d", rep.ContextWindow, rep.CompactionThreshold)
+	}
+	if rep.PromptTokensEstimate == 0 || rep.MemoryTokensEstimate == 0 {
+		t.Errorf("expected nonzero prompt/memory tokens: prompt=%d mem=%d", rep.PromptTokensEstimate, rep.MemoryTokensEstimate)
+	}
+
+	// 2. Add turns
+	_ = AppendSessionTurn(agentDir, "user", "Hello world from user")
+	_ = AppendSessionTurn(agentDir, "model", "Hello back from model")
+
+	rep2, err := sdk.InspectSessionContext("testbot")
+	if err != nil {
+		t.Fatalf("InspectSessionContext failed: %v", err)
+	}
+	if rep2.TurnCount != 2 || rep2.SessionTurnsTokens == 0 {
+		t.Errorf("expected turns counted: turns=%d tokens=%d", rep2.TurnCount, rep2.SessionTurnsTokens)
+	}
+
+	// 3. Write .last_usage.json sidecar
+	lastUsage := &LastUsageRecord{
+		PromptTokens:     1500,
+		CandidatesTokens: 250,
+		TotalTokens:      1750,
+		Timestamp:        time.Now(),
+	}
+	if err := WriteLastUsage(agentDir, lastUsage); err != nil {
+		t.Fatalf("WriteLastUsage failed: %v", err)
+	}
+
+	rep3, err := sdk.InspectSessionContext("testbot")
+	if err != nil {
+		t.Fatalf("InspectSessionContext failed: %v", err)
+	}
+	if rep3.LastTotalTokens != 1750 || rep3.LastPromptTokens != 1500 {
+		t.Errorf("expected last usage reflected: %+v", rep3)
+	}
+
+	// 4. Invalidate on compaction
+	if err := InvalidateLastUsage(agentDir); err != nil {
+		t.Fatalf("InvalidateLastUsage failed: %v", err)
+	}
+	rep4, err := sdk.InspectSessionContext("testbot")
+	if err != nil {
+		t.Fatalf("InspectSessionContext failed: %v", err)
+	}
+	if !rep4.Compacted || rep4.LastTotalTokens != 0 {
+		t.Errorf("expected compacted invalidation reflected: %+v", rep4)
+	}
+}

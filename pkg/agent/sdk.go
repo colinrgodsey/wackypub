@@ -734,3 +734,94 @@ func (s *AgentSDK) Trace(agentID string, commitSpec string, traceID string, opts
 	}
 	return nil, fmt.Errorf("must specify either agentID and commitSpec, or traceID")
 }
+
+type SessionContextReport struct {
+	AgentID               string  `json:"agent_id"`
+	Model                 string  `json:"model"`
+	ContextWindow         int     `json:"context_window"`
+	CompactionThreshold   int     `json:"compaction_threshold"`
+	CompactionOverheadPct float64 `json:"compaction_overhead_pct"`
+	EstimatedTotalTokens  int     `json:"estimated_total_tokens"`
+	SessionTurnsTokens    int     `json:"session_turns_tokens"`
+	PromptTokensEstimate  int     `json:"prompt_tokens_estimate"`
+	MemoryTokensEstimate  int     `json:"memory_tokens_estimate"`
+	PercentToThreshold    float64 `json:"percent_to_threshold"`
+	PercentToWindow       float64 `json:"percent_to_window"`
+	TurnCount             int     `json:"turn_count"`
+	Compacted             bool    `json:"compacted,omitempty"`
+	LastPromptTokens      int32   `json:"last_prompt_tokens,omitempty"`
+	LastCandidatesTokens  int32   `json:"last_candidates_tokens,omitempty"`
+	LastTotalTokens       int32   `json:"last_total_tokens,omitempty"`
+}
+
+// InspectSessionContext calculates the current token usage, limits, and compaction headroom for an agent (D93).
+func (s *AgentSDK) InspectSessionContext(agentID string) (*SessionContextReport, error) {
+	agentDir := s.AgentDir(agentID)
+	runtimeCfg, err := LoadRuntimeConfig(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load runtime config for %s: %w", agentID, err)
+	}
+
+	compactCfg, err := LoadCompactConfig(agentDir)
+	overheadPct := DefaultCompactionOverheadPct
+	if err == nil && compactCfg != nil {
+		if compactCfg.CompactOverheadPct >= 0 && compactCfg.CompactOverheadPct < 100 {
+			overheadPct = compactCfg.CompactOverheadPct
+		}
+	}
+
+	contextWindow := runtimeCfg.ContextWindow
+	threshold := int(float64(contextWindow) * (1.0 - (overheadPct / 100.0)))
+
+	turns, _ := ReadSessionTurns(agentDir)
+	turnCount := len(turns)
+	sessionTokens := 0
+	if turnCount > 0 {
+		sessionTokens = EstimateTokens(turns, runtimeCfg.PreserveThinking)
+	}
+
+	promptTokens := 0
+	if prompt, err := RenderAgentSystemPrompt(s.WorkspaceDir, agentID); err == nil && prompt != "" {
+		promptTokens = len(prompt) / 4
+	}
+
+	memTokens := 0
+	if memPath := filepath.Join(agentDir, "MEMORY.md"); pathExists(memPath) {
+		if data, err := os.ReadFile(memPath); err == nil {
+			memTokens = len(data) / 4
+		}
+	}
+
+	estimatedTotal := sessionTokens + promptTokens
+
+	report := &SessionContextReport{
+		AgentID:               agentID,
+		Model:                 runtimeCfg.Model,
+		ContextWindow:         contextWindow,
+		CompactionThreshold:   threshold,
+		CompactionOverheadPct: overheadPct,
+		EstimatedTotalTokens:  estimatedTotal,
+		SessionTurnsTokens:    sessionTokens,
+		PromptTokensEstimate:  promptTokens,
+		MemoryTokensEstimate:  memTokens,
+		TurnCount:             turnCount,
+	}
+
+	if threshold > 0 {
+		report.PercentToThreshold = (float64(estimatedTotal) / float64(threshold)) * 100.0
+	}
+	if contextWindow > 0 {
+		report.PercentToWindow = (float64(estimatedTotal) / float64(contextWindow)) * 100.0
+	}
+
+	if lastUsage, err := ReadLastUsage(agentDir); err == nil && lastUsage != nil {
+		report.Compacted = lastUsage.Compacted
+		if !lastUsage.Compacted {
+			report.LastPromptTokens = lastUsage.PromptTokens
+			report.LastCandidatesTokens = lastUsage.CandidatesTokens
+			report.LastTotalTokens = lastUsage.TotalTokens
+		}
+	}
+
+	return report, nil
+}

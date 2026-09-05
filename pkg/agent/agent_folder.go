@@ -1056,6 +1056,13 @@ func (fa *FolderAgent) checkPostTurnCompaction(ctx context.Context, wsDir string
 			} else {
 				usedTokens = int(fa.UsageTracker.LastPromptTokens)
 			}
+			// D93: Persist real turn usage for context inspection and cold-start compaction
+			_ = WriteLastUsage(fa.AgentDir, &LastUsageRecord{
+				PromptTokens:     fa.UsageTracker.LastPromptTokens,
+				CandidatesTokens: fa.UsageTracker.LastCandidatesTokens,
+				TotalTokens:      fa.UsageTracker.LastTotalTokens,
+				Timestamp:        time.Now(),
+			})
 		} else {
 			if curTurns, err := ReadSessionTurns(fa.AgentDir); err == nil {
 				usedTokens = EstimateTokens(curTurns, fa.RuntimeConfig.PreserveThinking)

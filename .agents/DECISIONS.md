@@ -1764,3 +1764,20 @@ Because `agentID` was passed as `"system"`, `ResolveGitRepoDir` resolved `<wsDir
 
 **Rejected.**
 - Broad `git add -A` on root workspace repo (breaks agent repository isolation).
+
+## D93: Session context inspection CLI command, SDK method, and usage sidecar
+
+Implemented (2026-09-05). Touches `pkg/agent/usage.go`, `pkg/agent/sdk.go`, `pkg/agent/agent_folder.go`, `pkg/agent/compaction.go`, `cmd/agent.go`.
+
+**Problem.**
+There was no programmatic or operator command to inspect an agent's context window usage, limits, and compaction headroom without manual inspection. Furthermore, real provider token counts lived only in memory on `TurnUsageTracker` and read as 0 from fresh CLI invocations.
+
+**Fix.**
+1. **Turn Usage Persistence (`<agentDir>/.last_usage.json`):**
+   - Atomically serializes `UsageMetadata` (`prompt_tokens`, `candidates_tokens`, `total_tokens`, `timestamp`) to `.last_usage.json` at model turn completion.
+   - `CheckAndCompactSession` invalidates `.last_usage.json` (`compacted: true`) upon compaction, preventing false-positive cold-start compactions.
+2. **Honest Footprint Estimation:**
+   - Reports `estimated_total_tokens = EstimateTokens(turns) + EstimateTokens(renderedPrompt) + toolSchemaTokens` plus `MEMORY.md` footprint.
+3. **SDK & CLI:**
+   - `AgentSDK.InspectSessionContext(agentID)` returns `SessionContextReport`.
+   - CLI command `wackypub agent [agent_id] context [--json]` (supports both `agent context <id>` and `agent <id> context`).
