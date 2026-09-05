@@ -574,7 +574,7 @@ printf '{"text":"intercepted-by-hook","env":{"INTERCEPTED":"true"}}\n'
 	})
 }
 
-// 11. Test the committed scaffold example hooks/on-user-message/00-date
+// 11. Test the committed scaffold example examples/hooks/on-user-message/00-date
 func TestScaffoldExample00Date(t *testing.T) {
 	agentDir := t.TempDir()
 	hookDir := filepath.Join(agentDir, "hooks", EventOnUserMessage)
@@ -583,7 +583,7 @@ func TestScaffoldExample00Date(t *testing.T) {
 	}
 
 	// Read scaffold file from repo root
-	scaffoldPath := filepath.Join("..", "..", "hooks", EventOnUserMessage, "00-date")
+	scaffoldPath := filepath.Join("..", "..", "examples", "hooks", EventOnUserMessage, "00-date")
 	data, err := os.ReadFile(scaffoldPath)
 	if err != nil {
 		t.Fatalf("failed to read scaffold file at %s: %v", scaffoldPath, err)
