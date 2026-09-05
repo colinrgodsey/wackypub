@@ -1743,3 +1743,24 @@ Implemented in `pkg/agent/macro.go` (`macroRegex` boundary delimiter and escape 
 - *Whole-match replacement without re-emitting Group 1:* Consumes the leading space or punctuation before `@include`.
 
 
+
+## D94: Workspace root snapshot commits route cleanly to root git repo
+
+Implemented (2026-09-05). Touches `pkg/agent/git.go`, `pkg/agent/git_test.go`.
+
+**Problem.**
+In Decision D35, `CreateWorkspaceSnapshot` was designed to snapshot the workspace manifest and root files by calling `CommitWorkspaceEvent(wsDir, "system", "snapshot")`.
+Because `agentID` was passed as `"system"`, `ResolveGitRepoDir` resolved `<wsDir>/system/.git`. No such repository has ever existed, causing workspace-root snapshot commits to silently fail and no-op since D35.
+
+**Fix.**
+1. **Direct Root Routing (`agentID == ""`):**
+   - Updated `CreateWorkspaceSnapshot` to pass `agentID = ""` routing directly to `<wsDir>/.git`.
+   - If the workspace root is not initialized as a git repository (`!IsWorkspaceGitRepo(wsDir)`), returns `nil` cleanly without error.
+2. **Strict Manifest Staging Scope:**
+   - When committing the root repository (`repoDir == wsDir`), explicitly stages *only* existing root manifest files: `WACKYPUB_ROOT`, `MANIFEST.md`, and `.gitignore` (stat-guarded).
+   - Never runs `worktree.AddWithOptions(&git.AddOptions{All: true})` on the root workspace, preventing accidental staging of untracked agent files or nested git repositories.
+3. **Default Tagger Signature:**
+   - In `TagWorkspaceAndAgents`, explicitly sets `Tagger` signature (`system@<DefaultWorkspaceDomain>`) on `git.CreateTagOptions` to prevent failures in CI environments with unconfigured git user names.
+
+**Rejected.**
+- Broad `git add -A` on root workspace repo (breaks agent repository isolation).

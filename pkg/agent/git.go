@@ -213,12 +213,6 @@ func CommitWorkspaceEvent(wsDir, agentID, eventType string) error {
 
 // commitWorkspaceEvent is the D35 commit itself, error-only for callers that decide how loudly to fail.
 func commitWorkspaceEvent(wsDir, repoDir, agentID, eventType string) error {
-	if repoDir == wsDir {
-		_ = EnsureWorkspaceGitignore(repoDir)
-	} else {
-		_ = EnsureAgentGitignore(repoDir)
-	}
-
 	repo, err := git.PlainOpen(repoDir)
 	if err != nil {
 		return fmt.Errorf("failed to open git repo at %s: %w", repoDir, err)
@@ -229,22 +223,36 @@ func commitWorkspaceEvent(wsDir, repoDir, agentID, eventType string) error {
 		return fmt.Errorf("failed to get git worktree for %s: %w", repoDir, err)
 	}
 
-	// Exclude gitlink (submodule) entries from index so staging doesn't fail on directories
-	if idx, err := repo.Storer.Index(); err == nil {
-		for _, e := range idx.Entries {
-			if e.Mode == filemode.Submodule {
-				// Gitlink names containing glob metacharacters are not escaped (rare, accepted).
-				worktree.Excludes = append(worktree.Excludes,
-					gitignore.ParsePattern(e.Name, nil),
-					gitignore.ParsePattern(e.Name+"/**", nil),
-				)
+	if repoDir == wsDir {
+		_ = EnsureWorkspaceGitignore(repoDir)
+		// D94: Explicitly stage only root manifest and configuration files if present
+		for _, manifestFile := range []string{RootMarkerFile, "MANIFEST.md", ".gitignore"} {
+			filePath := filepath.Join(repoDir, manifestFile)
+			if _, statErr := os.Stat(filePath); statErr == nil {
+				if _, addErr := worktree.Add(manifestFile); addErr != nil {
+					return fmt.Errorf("failed to stage %s: %w", manifestFile, addErr)
+				}
 			}
 		}
-	}
+	} else {
+		_ = EnsureAgentGitignore(repoDir)
+		// Exclude gitlink (submodule) entries from index so staging doesn't fail on directories
+		if idx, err := repo.Storer.Index(); err == nil {
+			for _, e := range idx.Entries {
+				if e.Mode == filemode.Submodule {
+					// Gitlink names containing glob metacharacters are not escaped (rare, accepted).
+					worktree.Excludes = append(worktree.Excludes,
+						gitignore.ParsePattern(e.Name, nil),
+						gitignore.ParsePattern(e.Name+"/**", nil),
+					)
+				}
+			}
+		}
 
-	// Stage all workspace/agent changes
-	if err := worktree.AddWithOptions(&git.AddOptions{All: true}); err != nil {
-		return fmt.Errorf("failed to stage workspace files: %w", err)
+		// Stage all agent changes
+		if err := worktree.AddWithOptions(&git.AddOptions{All: true}); err != nil {
+			return fmt.Errorf("failed to stage workspace files: %w", err)
+		}
 	}
 
 	// Read current A2A metadata & update workspace_revision with HEAD before commit
@@ -269,13 +277,14 @@ func commitWorkspaceEvent(wsDir, repoDir, agentID, eventType string) error {
 
 	commitMsg := fmt.Sprintf("%s\nAGENT2AGENT: %s", eventType, a2aJSON)
 
-	if agentID == "" {
-		agentID = "system"
+	authorName := agentID
+	if authorName == "" {
+		authorName = "system"
 	}
-	authorEmail := fmt.Sprintf("%s@%s", agentID, DefaultWorkspaceDomain)
+	authorEmail := fmt.Sprintf("%s@%s", authorName, DefaultWorkspaceDomain)
 
 	sig := &object.Signature{
-		Name:  agentID,
+		Name:  authorName,
 		Email: authorEmail,
 		When:  time.Now(),
 	}
@@ -327,7 +336,10 @@ func CreateWorkspaceSnapshot(wsDir string) (string, error) {
 	}
 
 	if IsWorkspaceGitRepo(wsDir) {
-		_ = CommitWorkspaceEvent(wsDir, "system", "snapshot")
+		// D94: Pass agentID="" to route directly to workspace root repository
+		if err := CommitWorkspaceEvent(wsDir, "", "snapshot"); err != nil {
+			return manifestPath, fmt.Errorf("failed to commit workspace snapshot: %w", err)
+		}
 	}
 
 	return manifestPath, nil
@@ -350,12 +362,13 @@ func TagWorkspaceAndAgents(wsDir, tagName string) error {
 		} else {
 			head, err := repo.Head()
 			if err == nil {
+				sig := &object.Signature{
+					Name:  "system",
+					Email: fmt.Sprintf("system@%s", DefaultWorkspaceDomain),
+					When:  time.Now(),
+				}
 				_, err = repo.CreateTag(tagName, head.Hash(), &git.CreateTagOptions{
-					Tagger: &object.Signature{
-						Name:  "system",
-						Email: fmt.Sprintf("system@%s", DefaultWorkspaceDomain),
-						When:  time.Now(),
-					},
+					Tagger:  sig,
 					Message: fmt.Sprintf("Workspace tag %s", tagName),
 				})
 				if err != nil && err != git.ErrTagExists {
@@ -386,12 +399,13 @@ func TagWorkspaceAndAgents(wsDir, tagName string) error {
 				continue
 			}
 			agentTagName := fmt.Sprintf("tag-%s", agentID)
+			sig := &object.Signature{
+				Name:  agentID,
+				Email: fmt.Sprintf("%s@%s", agentID, DefaultWorkspaceDomain),
+				When:  time.Now(),
+			}
 			_, err = repo.CreateTag(agentTagName, head.Hash(), &git.CreateTagOptions{
-				Tagger: &object.Signature{
-					Name:  agentID,
-					Email: fmt.Sprintf("%s@%s", agentID, DefaultWorkspaceDomain),
-					When:  time.Now(),
-				},
+				Tagger:  sig,
 				Message: fmt.Sprintf("Agent tag %s for %s", agentTagName, agentID),
 			})
 			if err != nil && err != git.ErrTagExists {

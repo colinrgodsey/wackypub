@@ -271,6 +271,26 @@ func TestWorkspaceSnapshotTagAndPush(t *testing.T) {
 		t.Errorf("expected MANIFEST.md to contain clerk, got: %s", string(content))
 	}
 
+	// D94: Assert workspace root repo actually has a snapshot commit created
+	rootHeadSHA, err := GetWorkspaceHeadCommit(wsDir)
+	if err != nil || rootHeadSHA == "" {
+		t.Fatalf("expected workspace root commit for snapshot, got sha=%q err=%v", rootHeadSHA, err)
+	}
+	rootRepo, err := git.PlainOpen(wsDir)
+	if err != nil {
+		t.Fatalf("failed to open root repo: %v", err)
+	}
+	rootCommit, err := rootRepo.CommitObject(plumbing.NewHash(rootHeadSHA))
+	if err != nil {
+		t.Fatalf("failed to get root commit object: %v", err)
+	}
+	if !strings.Contains(rootCommit.Message, "snapshot") {
+		t.Errorf("expected root commit message to contain 'snapshot', got %q", rootCommit.Message)
+	}
+	if rootCommit.Author.Name != "system" {
+		t.Errorf("expected root commit author 'system', got %q", rootCommit.Author.Name)
+	}
+
 	// 2. Tag
 	if err := TagWorkspaceAndAgents(wsDir, "v1.0.0"); err != nil {
 		t.Fatalf("TagWorkspaceAndAgents failed: %v", err)
