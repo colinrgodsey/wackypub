@@ -351,6 +351,11 @@ func TagWorkspaceAndAgents(wsDir, tagName string) error {
 			head, err := repo.Head()
 			if err == nil {
 				_, err = repo.CreateTag(tagName, head.Hash(), &git.CreateTagOptions{
+					Tagger: &object.Signature{
+						Name:  "system",
+						Email: fmt.Sprintf("system@%s", DefaultWorkspaceDomain),
+						When:  time.Now(),
+					},
 					Message: fmt.Sprintf("Workspace tag %s", tagName),
 				})
 				if err != nil && err != git.ErrTagExists {
@@ -382,6 +387,11 @@ func TagWorkspaceAndAgents(wsDir, tagName string) error {
 			}
 			agentTagName := fmt.Sprintf("tag-%s", agentID)
 			_, err = repo.CreateTag(agentTagName, head.Hash(), &git.CreateTagOptions{
+				Tagger: &object.Signature{
+					Name:  agentID,
+					Email: fmt.Sprintf("%s@%s", agentID, DefaultWorkspaceDomain),
+					When:  time.Now(),
+				},
 				Message: fmt.Sprintf("Agent tag %s for %s", agentTagName, agentID),
 			})
 			if err != nil && err != git.ErrTagExists {
