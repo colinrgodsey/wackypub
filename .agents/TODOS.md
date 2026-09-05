@@ -592,7 +592,7 @@ override only swaps contextWindow/PreserveThinking/model for this run.
 
 **Decision: D84 (implemented, `9dd2a19`). Note the corrected shape: the override must build a disposable agent from the runtime, not just swap `runtimeCfg`, because the summarizer model comes from the agent, not the config parameter (see D84).**
 
-## `@` macro expansion in the AGENTS.md include chain mangles email addresses and @-handles
+## ~~`@` macro expansion in the AGENTS.md include chain mangles email addresses and @-handles~~ (closed: resolved by D91)
 
 `RenderAgentSystemPrompt` expands `@<FILE_PATH>` recursively over AGENTS.md and every file it
 includes (`macroRegex = @([a-zA-Z0-9_\-./]+)`, `macro.go:12`). Any email address or @-handle in an
@@ -600,11 +600,9 @@ included file (IDENTITY.md, SOUL.md, USER.md, TOOLS.md, etc.) matches the regex 
 file path, producing `<-- Error reading macro file <token>: ... -->` markers (`macro.go:73`) that
 destroy the original text. Live evidence in Dranbo's own rendered prompt: `dranbofieldston@agentmail.to`
 became `dranbofieldston<!-- Error reading macro file agentmail.to: ... -->`, and `@DranboF` became a
-marker too. Same class as the D80 residuals note about first-class false positives: expansion that is
-happy to eat prose. Fix options are a design choice, pending Colin: an escape convention (`@@` or
-backslash), only expand when the target file actually exists (typo'd macros then fail silently instead
-of loudly), or a narrower regex (e.g. require a known extension or a path containing `/`). Note the
-include chain itself must keep working.
+marker too.
+
+**Decision: D91 (implemented). Left-boundary delimiter matching, workspace containment, existence gating, \@/@@ escaping, and stack-scoped cycles.**
 
 ## No way to ask how much context an agent session is using
 

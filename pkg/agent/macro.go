@@ -10,13 +10,33 @@ import (
 )
 
 // MacroRegex matches @<FILE_PATH> patterns where FILE_PATH is a relative path.
-var macroRegex = regexp.MustCompile(`@([a-zA-Z0-9_\-./]+)`)
+var macroRegex = regexp.MustCompile(`(^|[\s(\[{<"']|` + "`" + `)(\\?|@?)@([a-zA-Z0-9_\-./]*[a-zA-Z0-9_\-/])`)
+
+// isContained checks whether targetPath resides within baseDir.
+func isContained(baseDir, targetPath string) bool {
+	rel, err := filepath.Rel(baseDir, targetPath)
+	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return false
+	}
+	return true
+}
 
 // ExpandMacros processes text content and replaces any @<FILE_PATH> directives
 // with the content of the referenced file relative to agentDir.
 func ExpandMacros(content string, agentDir string) (string, error) {
+	if agentDir == "" {
+		agentDir = "."
+	}
+	if abs, err := filepath.Abs(agentDir); err == nil {
+		agentDir = abs
+	}
+	wsDir := FindWorkspaceRootDir(agentDir)
+	realWsDir := wsDir
+	if evaluated, err := filepath.EvalSymlinks(wsDir); err == nil {
+		realWsDir = evaluated
+	}
 	visited := make(map[string]bool)
-	return expandMacrosRecursive(content, agentDir, visited, 0)
+	return expandMacrosRecursive(content, agentDir, wsDir, realWsDir, visited, 0)
 }
 
 // RenderAgentSystemPrompt reads <wsDir>/<agentID>/AGENTS.md (falling back to
@@ -71,34 +91,77 @@ func RenderAgentSystemPrompt(wsDir, agentID string, hookEnv ...map[string]string
 	return expanded, nil
 }
 
-func expandMacrosRecursive(content string, agentDir string, visited map[string]bool, depth int) (string, error) {
+func expandMacrosRecursive(content string, agentDir string, wsDir string, realWsDir string, visited map[string]bool, depth int) (string, error) {
 	if depth > 10 {
-		return content, fmt.Errorf("macro expansion depth exceeded limit of 10")
+		return "", fmt.Errorf("macro expansion depth exceeded limit of 10")
 	}
 
+	var firstErr error
+
 	result := macroRegex.ReplaceAllStringFunc(content, func(match string) string {
-		relPath := strings.TrimPrefix(match, "@")
-		absPath := filepath.Join(agentDir, relPath)
-
-		// Prevent circular imports
-		if visited[absPath] {
-			return fmt.Sprintf("<!-- Circular macro import omitted: %s -->", relPath)
+		if firstErr != nil {
+			return match
 		}
-		visited[absPath] = true
 
-		data, err := os.ReadFile(absPath)
+		submatches := macroRegex.FindStringSubmatch(match)
+		if len(submatches) < 4 {
+			return match
+		}
+
+		boundary := submatches[1]
+		escape := submatches[2]
+		target := submatches[3]
+
+		// Escapes handling: \@path or @@path emits literal boundary + "@" + target
+		if escape == "\\" || escape == "@" {
+			return boundary + "@" + target
+		}
+
+		// Workspace Root Containment (Security Traversal Defense)
+		cleanPath := filepath.Clean(filepath.Join(agentDir, target))
+		if !isContained(wsDir, cleanPath) {
+			return boundary + "@" + target
+		}
+
+		// Existence Check & Symlink Verification (D90 Parity)
+		fi, err := os.Stat(cleanPath)
+		if err != nil || fi.IsDir() {
+			return boundary + "@" + target
+		}
+
+		realPath, err := filepath.EvalSymlinks(cleanPath)
 		if err != nil {
-			// If referenced file is missing, leave macro unexpanded or comment error
-			return fmt.Sprintf("<!-- Error reading macro file %s: %v -->", relPath, err)
+			return boundary + "@" + target
+		}
+		if !isContained(wsDir, realPath) && !isContained(realWsDir, realPath) {
+			return boundary + "@" + target
+		}
+
+		// Stack-Scoped Cycle Guard
+		if visited[realPath] {
+			return boundary + fmt.Sprintf("<!-- Circular macro import omitted: %s -->", target)
+		}
+		visited[realPath] = true
+		defer delete(visited, realPath)
+
+		data, err := os.ReadFile(realPath)
+		if err != nil {
+			firstErr = fmt.Errorf("failed to read macro file %s: %w", target, err)
+			return match
 		}
 
 		// Recursively expand macros in the included content
-		expanded, err := expandMacrosRecursive(string(data), agentDir, visited, depth+1)
+		expanded, err := expandMacrosRecursive(string(data), agentDir, wsDir, realWsDir, visited, depth+1)
 		if err != nil {
-			return string(data)
+			firstErr = err
+			return match
 		}
-		return expanded
+		return boundary + expanded
 	})
+
+	if firstErr != nil {
+		return "", firstErr
+	}
 
 	return result, nil
 }
