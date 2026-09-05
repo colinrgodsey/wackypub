@@ -888,6 +888,8 @@ func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 			return agentRenderPromptCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "compact" {
 			return agentCompactCmd.RunE(cmd, []string{agentID})
+		} else if subCmd == "context" {
+			return agentContextCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "scratchpad" {
 			if len(args) < 3 {
 				return scratchpadCmd.Help()
@@ -953,6 +955,55 @@ func init() {
 	agentCmd.AddCommand(agentRenderPromptCmd)
 	agentCmd.AddCommand(agentCompactCmd)
 	agentCmd.AddCommand(scratchpadCmd)
+	agentContextCmd.Flags().BoolVar(&agentContextJSONFlag, "json", false, "Output report as JSON")
+	agentCmd.AddCommand(agentContextCmd)
 
 	RootCmd.AddCommand(agentCmd)
+}
+
+var agentContextJSONFlag bool
+
+var agentContextCmd = &cobra.Command{
+	Use:   "context [agent_id]",
+	Short: "Inspect session context usage, limits, and token headroom",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var agentID string
+		if len(args) > 0 {
+			agentID = args[0]
+		}
+		if agentID == "" {
+			return fmt.Errorf("agent ID is required")
+		}
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
+		report, err := sdk.InspectSessionContext(agentID)
+		if err != nil {
+			return err
+		}
+		if agentContextJSONFlag {
+			data, _ := json.MarshalIndent(report, "", "  ")
+			fmt.Println(string(data))
+			return nil
+		}
+
+		fmt.Printf("Agent:       %s\n", report.AgentID)
+		fmt.Printf("Model:       %s\n", report.Model)
+		fmt.Printf("Context:     %d tokens (Threshold: %d / %.0f%% overhead)\n",
+			report.ContextWindow, report.CompactionThreshold, report.CompactionOverheadPct)
+		fmt.Printf("Estimated:   %d total tokens (%.1f%% of threshold, %.1f%% of window)\n",
+			report.EstimatedTotalTokens, report.PercentToThreshold, report.PercentToWindow)
+		fmt.Printf("Breakdown:   %d turns tokens + %d prompt tokens + %d memory tokens\n",
+			report.SessionTurnsTokens, report.PromptTokensEstimate, report.MemoryTokensEstimate)
+		fmt.Printf("Session:     %d turns\n", report.TurnCount)
+		if report.Compacted {
+			fmt.Printf("Compacted:   yes (session compacted, provider tokens reset)\n")
+		} else if report.LastTotalTokens > 0 {
+			fmt.Printf("Last Call:   %d prompt + %d candidates = %d total tokens\n",
+				report.LastPromptTokens, report.LastCandidatesTokens, report.LastTotalTokens)
+		}
+		return nil
+	},
 }

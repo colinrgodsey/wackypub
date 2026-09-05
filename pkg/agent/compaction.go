@@ -361,6 +361,7 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 
 	wsDir := filepath.Dir(agentDir)
 	_ = CommitWorkspaceEvent(wsDir, agentID, "compact")
+	_ = InvalidateLastUsage(agentDir)
 
 	return true, nil
 }
