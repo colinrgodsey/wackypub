@@ -562,8 +562,14 @@ Use load_skill_extra and run_skill_script for extras.
 	}
 
 	turns, _ = ReadSessionTurns(agentDir)
-	lastTurn := turns[len(turns)-1]
-	if lastTurn.Role != "user" || len(lastTurn.Parts) != 2 || lastTurn.Parts[1].InlineData == nil {
-		t.Errorf("expected deferred image user turn at end of session, got: %+v", lastTurn)
+	var foundImageTurn bool
+	for _, t := range turns {
+		if t.Role == "user" && len(t.Parts) == 2 && t.Parts[1].InlineData != nil {
+			foundImageTurn = true
+			break
+		}
+	}
+	if !foundImageTurn {
+		t.Errorf("expected deferred image user turn in session turns: %+v", turns)
 	}
 }

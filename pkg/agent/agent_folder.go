@@ -805,21 +805,38 @@ func buildOutputBlocks(agentDir string, stdoutBytes, stderrBytes []byte) (string
 	return stdoutBlock + stderrBlock, nil
 }
 
+// ContinuationReason defines the reason for an automatic continuation turn under D88.
+type ContinuationReason string
+
+const (
+	ContinuationNone          ContinuationReason = ""
+	ContinuationDeferredImage ContinuationReason = "deferred_image"
+	ContinuationCompactedBail ContinuationReason = "compacted_bail"
+
+	// DefaultMaxAutoContinuations is the budget guard cap (2) for standard sessions (D88).
+	DefaultMaxAutoContinuations = 2
+	// DefaultMaxAutoContinuationsA2A is the budget guard cap (1) for A2A sessions (D88).
+	DefaultMaxAutoContinuationsA2A = 1
+)
+
 // FolderAgent encapsulates an agent loaded from a folder environment (<ws_dir>/<agent_id>).
 type FolderAgent struct {
-	AgentID               string
-	AgentDir              string
-	DotEnv                map[string]string
-	RuntimeConfig         *RuntimeConfig
-	SystemPrompt          string
-	MemoryPrompt          string
-	Model                 model.LLM
-	ADKAgent              agent.Agent
-	MaxToolTurns          int
-	CommandTimeoutSeconds int
-	A2AMeta               *A2AMetadata
-	UsageTracker          *TurnUsageTracker
-	HookEnv               map[string]string
+	AgentID                 string
+	AgentDir                string
+	DotEnv                  map[string]string
+	RuntimeConfig           *RuntimeConfig
+	SystemPrompt            string
+	MemoryPrompt            string
+	Model                   model.LLM
+	ADKAgent                agent.Agent
+	MaxToolTurns            int
+	CommandTimeoutSeconds   int
+	A2AMeta                 *A2AMetadata
+	UsageTracker            *TurnUsageTracker
+	HookEnv                 map[string]string
+	Tools                   []tool.Tool
+	MaxAutoContinuations    *int
+	DisableAutoContinuation bool
 }
 
 // LoadFolderAgent loads and initializes an agent from <wsDir>/<agentID>.
@@ -899,34 +916,173 @@ func LoadFolderAgentWithHookEnv(wsDir string, agentID string, a2aMeta *A2AMetada
 		maxToolTurns = DefaultMaxToolTurns
 	}
 
+	var maxAutoCont *int
+	disableAutoCont := false
+	if runtimeCfg != nil {
+		if runtimeCfg.MaxAutoContinuations != nil {
+			maxAutoCont = runtimeCfg.MaxAutoContinuations
+		}
+		if runtimeCfg.DisableAutoContinuation {
+			disableAutoCont = true
+		}
+	}
+
 	// 6. Construct ADK llmagent with agentID, expanded prompt instruction, maxToolTurns cap, runtimeCfg, model, tracker, and tools
-	tracker := &TurnUsageTracker{}
+	tracker := &TurnUsageTracker{
+		DisableAutoContinuation: disableAutoCont,
+	}
 	ag, err := BuildADKAgentWithConfigAndTracker(agentID, expandedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, toolsList...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build ADK agent for folder agent %s: %w", agentID, err)
 	}
 
 	return &FolderAgent{
-		AgentID:               agentID,
-		AgentDir:              agentDir,
-		DotEnv:                dotEnv,
-		RuntimeConfig:         runtimeCfg,
-		SystemPrompt:          expandedPrompt,
-		MemoryPrompt:          memoryContent,
-		Model:                 llmModel,
-		ADKAgent:              ag,
-		MaxToolTurns:          maxToolTurns,
-		CommandTimeoutSeconds: resolvedTimeout,
-		A2AMeta:               a2aMeta,
-		UsageTracker:          tracker,
-		HookEnv:               hookEnv,
+		AgentID:                 agentID,
+		AgentDir:                agentDir,
+		DotEnv:                  dotEnv,
+		RuntimeConfig:           runtimeCfg,
+		SystemPrompt:            expandedPrompt,
+		MemoryPrompt:            memoryContent,
+		Model:                   llmModel,
+		ADKAgent:                ag,
+		MaxToolTurns:            maxToolTurns,
+		CommandTimeoutSeconds:   resolvedTimeout,
+		A2AMeta:                 a2aMeta,
+		UsageTracker:            tracker,
+		HookEnv:                 hookEnv,
+		Tools:                   toolsList,
+		MaxAutoContinuations:    maxAutoCont,
+		DisableAutoContinuation: disableAutoCont,
 	}, nil
 }
 
+// refreshSystemPromptAndAgent re-renders the agent's system prompt and rebuilds its ADKAgent
+// when MEMORY.md was rewritten during compaction (D88).
+func (fa *FolderAgent) refreshSystemPromptAndAgent() error {
+	wsDir := filepath.Dir(fa.AgentDir)
+	var hookEnvs []map[string]string
+	if fa.HookEnv != nil {
+		hookEnvs = append(hookEnvs, fa.HookEnv)
+	}
+	newPrompt, err := RenderAgentSystemPrompt(wsDir, fa.AgentID, hookEnvs...)
+	if err != nil {
+		return err
+	}
+	fa.SystemPrompt = newPrompt
+	if fa.Model != nil {
+		ag, err := BuildADKAgentWithConfigAndTracker(fa.AgentID, fa.SystemPrompt, fa.MaxToolTurns, fa.RuntimeConfig, fa.Model, fa.AgentDir, fa.UsageTracker, fa.Tools...)
+		if err != nil {
+			return err
+		}
+		fa.ADKAgent = ag
+	}
+	return nil
+}
+
+// appendDeferredImages decodes, normalizes, and appends deferred image user turns per D49/D88.
+// Returns the number of successfully appended <IMAGE> turns.
+func (fa *FolderAgent) appendDeferredImages(wsDir string, deferredScratchpadIDs []string) int {
+	if fa.RuntimeConfig == nil || fa.RuntimeConfig.MaxImageDimension <= 0 {
+		return 0
+	}
+	validCount := 0
+	for _, spID := range deferredScratchpadIDs {
+		filePath, _, isBinary, err := findScratchpadFile(fa.AgentDir, spID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to find deferred scratchpad %q for agent %q: %v\n", spID, fa.AgentID, err)
+			failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to load deferred image from scratchpad '%s': %v</IMAGE_ERROR>", spID, err), "user")
+			_ = AppendSessionContent(fa.AgentDir, failTurn)
+			_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image error)")
+			continue
+		}
+		if !isBinary {
+			fmt.Fprintf(os.Stderr, "Warning: deferred scratchpad %q for agent %q is not binary data\n", spID, fa.AgentID)
+			failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to load deferred image from scratchpad '%s': entry is not binary image data</IMAGE_ERROR>", spID), "user")
+			_ = AppendSessionContent(fa.AgentDir, failTurn)
+			_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image error)")
+			continue
+		}
+		imgData, err := os.ReadFile(filePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to read deferred scratchpad file %s for agent %q: %v\n", filePath, fa.AgentID, err)
+			failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to read deferred image from scratchpad '%s': %v</IMAGE_ERROR>", spID, err), "user")
+			_ = AppendSessionContent(fa.AgentDir, failTurn)
+			_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image error)")
+			continue
+		}
+		jpegBytes, mimeType, err := NormalizeAndResizeImage(bytes.NewReader(imgData), fa.RuntimeConfig.MaxImageDimension)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to decode/resize deferred image from scratchpad %q for agent %q: %v\n", spID, fa.AgentID, err)
+			failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to process deferred image from scratchpad '%s': %v</IMAGE_ERROR>", spID, err), "user")
+			_ = AppendSessionContent(fa.AgentDir, failTurn)
+			_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image error)")
+			continue
+		}
+		turn := &genai.Content{
+			Role: "user",
+			Parts: []*genai.Part{
+				{Text: fmt.Sprintf("<IMAGE>The following image is stored in scratchpad '%s'</IMAGE>", spID)},
+				{
+					InlineData: &genai.Blob{
+						MIMEType: mimeType,
+						Data:     jpegBytes,
+					},
+				},
+			},
+		}
+		_ = AppendSessionContent(fa.AgentDir, turn)
+		_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image)")
+		validCount++
+	}
+	return validCount
+}
+
+// checkPostTurnCompaction runs post-turn compaction if real token usage or estimated usage exceeds threshold (D68, D88).
+func (fa *FolderAgent) checkPostTurnCompaction(ctx context.Context, wsDir string) {
+	if fa.RuntimeConfig != nil && fa.RuntimeConfig.ContextWindow > 0 {
+		compactCfg, err := LoadCompactConfig(fa.AgentDir)
+		overheadPct := DefaultCompactionOverheadPct
+		if err == nil && compactCfg != nil {
+			if compactCfg.CompactOverheadPct >= 0 && compactCfg.CompactOverheadPct < 100 {
+				overheadPct = compactCfg.CompactOverheadPct
+			}
+		}
+		threshold := int(float64(fa.RuntimeConfig.ContextWindow) * (1.0 - (overheadPct / 100.0)))
+
+		var usedTokens int
+		if fa.UsageTracker != nil && (fa.UsageTracker.LastTotalTokens > 0 || fa.UsageTracker.LastPromptTokens > 0) {
+			if fa.UsageTracker.LastTotalTokens > 0 {
+				usedTokens = int(fa.UsageTracker.LastTotalTokens)
+			} else {
+				usedTokens = int(fa.UsageTracker.LastPromptTokens)
+			}
+		} else {
+			if curTurns, err := ReadSessionTurns(fa.AgentDir); err == nil {
+				usedTokens = EstimateTokens(curTurns, fa.RuntimeConfig.PreserveThinking)
+			}
+		}
+
+		if usedTokens >= threshold {
+			if fa.UsageTracker != nil {
+				fa.UsageTracker.Reset()
+			}
+			_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, true, nil)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: post-turn session compaction error: %v\n", err)
+			}
+		}
+	}
+}
+
 // GenerateTurnStream performs the agent generation turn yielding an iterator (iter.Seq2[string, error])
-// that produces each text chunk as it is generated by the model across tool events.
+// that produces each text chunk as it is generated by the model across tool events and auto-continuation turns (D88).
 func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
+		if ctx.Err() != nil {
+			yield("", ctx.Err())
+			return
+		}
+
 		// 0. The session must already end on a user turn - generating against a
 		// session that doesn't (empty, or already ends on a model turn) hands
 		// the model no new input to react to, which just produces a confused
@@ -942,162 +1098,255 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 			return
 		}
 
-		// 1. Check for context window compaction trigger before generating - never
-		// forced here, only wackypub agent compact / AgentSDK.CompactSession
-		// can force (D44, D68).
-		_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, false, nil)
-		if err != nil {
-			// Log compaction warning, but continue execution if possible
-			fmt.Fprintf(os.Stderr, "Warning: session compaction error: %v\n", err)
-		}
-
-		// Reset usage tracker for this generation turn
-		if fa.UsageTracker != nil {
-			fa.UsageTracker.Reset()
-		}
-
 		wsDir := filepath.Dir(fa.AgentDir)
 		sessionSvc := NewFileSessionService(wsDir)
+		lastMemory, _ := ReadMemoryFile(fa.AgentDir)
 
-		r, err := runner.New(runner.Config{
-			AppName:           "wackypub",
-			Agent:             fa.ADKAgent,
-			SessionService:    sessionSvc,
-			AutoCreateSession: true,
-		})
-		if err != nil {
-			yield("", fmt.Errorf("failed to create runner: %w", err))
+		// 1. Emergency Cold-Start Pre-Turn Guard: Retain a pre-turn check in GenerateTurnStream
+		// *only* as a defensive valve before call 1 for uncompacted cold-start sessions.
+		// When EstimateTokens(turns) >= threshold, it calls CheckAndCompactSession(..., force: true)
+		// so it forcefully shrinks the oversized session.
+		if fa.RuntimeConfig != nil && fa.RuntimeConfig.ContextWindow > 0 {
+			compactCfg, err := LoadCompactConfig(fa.AgentDir)
+			overheadPct := DefaultCompactionOverheadPct
+			if err == nil && compactCfg != nil {
+				if compactCfg.CompactOverheadPct >= 0 && compactCfg.CompactOverheadPct < 100 {
+					overheadPct = compactCfg.CompactOverheadPct
+				}
+			}
+			threshold := int(float64(fa.RuntimeConfig.ContextWindow) * (1.0 - (overheadPct / 100.0)))
+			if EstimateTokens(turns, fa.RuntimeConfig.PreserveThinking) >= threshold {
+				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, true, nil)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: cold-start session compaction error: %v\n", err)
+				} else if compacted {
+					if refreshed, err := ReadSessionTurns(fa.AgentDir); err == nil && len(refreshed) > 0 {
+						turns = refreshed
+					}
+					curMem, _ := ReadMemoryFile(fa.AgentDir)
+					if curMem != lastMemory {
+						lastMemory = curMem
+						_ = fa.refreshSystemPromptAndAgent()
+					}
+				}
+			}
+		}
+
+		if len(turns) == 0 || turns[len(turns)-1].Role != "user" {
+			yield("", fmt.Errorf("cannot generate: session for agent %q does not end on a user turn - add one first (\"wackypub agent add\") or use \"wackypub agent prompt\" to do both in one call", fa.AgentID))
 			return
 		}
 
-		var deferredScratchpadIDs []string
-		var yieldedAny bool
+		// Budget Guard: MaxAutoContinuations = 2 for standard sessions.
+		// For A2A-context turns (A2AMeta != nil), MaxAutoContinuations = 1 to prevent caller turn timeouts.
+		// Resets on every external user message.
+		maxContinuations := DefaultMaxAutoContinuations
+		if fa.A2AMeta != nil {
+			maxContinuations = DefaultMaxAutoContinuationsA2A
+		}
+		if fa.MaxAutoContinuations != nil {
+			maxContinuations = *fa.MaxAutoContinuations
+		}
+		if fa.DisableAutoContinuation {
+			maxContinuations = 0
+		}
 
-		defer func() {
-			// Append deferred image user turns per D49, gated by maxImageDimension
-			if fa.RuntimeConfig != nil && fa.RuntimeConfig.MaxImageDimension > 0 {
-				for _, spID := range deferredScratchpadIDs {
-					filePath, _, isBinary, err := findScratchpadFile(fa.AgentDir, spID)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: failed to find deferred scratchpad %q for agent %q: %v\n", spID, fa.AgentID, err)
-						failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to load deferred image from scratchpad '%s': %v</IMAGE_ERROR>", spID, err), "user")
-						_ = AppendSessionContent(fa.AgentDir, failTurn)
-						_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image error)")
-						continue
-					}
-					if !isBinary {
-						fmt.Fprintf(os.Stderr, "Warning: deferred scratchpad %q for agent %q is not binary data\n", spID, fa.AgentID)
-						failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to load deferred image from scratchpad '%s': entry is not binary image data</IMAGE_ERROR>", spID), "user")
-						_ = AppendSessionContent(fa.AgentDir, failTurn)
-						_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image error)")
-						continue
-					}
-					imgData, err := os.ReadFile(filePath)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: failed to read deferred scratchpad file %s for agent %q: %v\n", filePath, fa.AgentID, err)
-						failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to read deferred image from scratchpad '%s': %v</IMAGE_ERROR>", spID, err), "user")
-						_ = AppendSessionContent(fa.AgentDir, failTurn)
-						_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image error)")
-						continue
-					}
-					jpegBytes, mimeType, err := NormalizeAndResizeImage(bytes.NewReader(imgData), fa.RuntimeConfig.MaxImageDimension)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: failed to decode/resize deferred image from scratchpad %q for agent %q: %v\n", spID, fa.AgentID, err)
-						failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to process deferred image from scratchpad '%s': %v</IMAGE_ERROR>", spID, err), "user")
-						_ = AppendSessionContent(fa.AgentDir, failTurn)
-						_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image error)")
-						continue
-					}
-					turn := &genai.Content{
-						Role: "user",
-						Parts: []*genai.Part{
-							{Text: fmt.Sprintf("<IMAGE>The following image is stored in scratchpad '%s'</IMAGE>", spID)},
-							{
-								InlineData: &genai.Blob{
-									MIMEType: mimeType,
-									Data:     jpegBytes,
-								},
-							},
-						},
-					}
-					_ = AppendSessionContent(fa.AgentDir, turn)
-					_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image)")
-				}
-			}
+		continuationCount := 0
+		lastContinuationReason := ContinuationNone
 
-			// Post-turn compaction check using real provider usage data (D68.1)
-			if fa.RuntimeConfig != nil && fa.RuntimeConfig.ContextWindow > 0 {
-				compactCfg, err := LoadCompactConfig(fa.AgentDir)
-				overheadPct := DefaultCompactionOverheadPct
-				if err == nil && compactCfg != nil {
-					if compactCfg.CompactOverheadPct >= 0 && compactCfg.CompactOverheadPct < 100 {
-						overheadPct = compactCfg.CompactOverheadPct
-					}
-				}
-				threshold := int(float64(fa.RuntimeConfig.ContextWindow) * (1.0 - (overheadPct / 100.0)))
-
-				var usedTokens int
-				if fa.UsageTracker != nil && (fa.UsageTracker.LastTotalTokens > 0 || fa.UsageTracker.LastPromptTokens > 0) {
-					if fa.UsageTracker.LastTotalTokens > 0 {
-						usedTokens = int(fa.UsageTracker.LastTotalTokens)
-					} else {
-						usedTokens = int(fa.UsageTracker.LastPromptTokens)
-					}
-				} else {
-					if curTurns, err := ReadSessionTurns(fa.AgentDir); err == nil {
-						usedTokens = EstimateTokens(curTurns, fa.RuntimeConfig.PreserveThinking)
-					}
-				}
-
-				if usedTokens >= threshold && !(fa.UsageTracker != nil && fa.UsageTracker.StoppedEarlyForCompaction) {
-					// Reset tracker so compaction pass starts with clean call count and state
-					if fa.UsageTracker != nil {
-						fa.UsageTracker.Reset()
-					}
-					_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, true, nil)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: post-turn session compaction error: %v\n", err)
-					}
-				}
-			}
-
-			if yieldedAny {
-				_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "assistant")
-			}
-		}()
-
-		for event, err := range r.Run(ctx, "user", fa.AgentID, nil, agent.RunConfig{}) {
-			if err != nil {
-				yield("", fmt.Errorf("runner execution error: %w", err))
+		for {
+			if ctx.Err() != nil {
+				yield("", ctx.Err())
 				return
 			}
-			if event != nil {
-				if event.Content != nil {
-					for _, p := range event.Content.Parts {
-						if p != nil && p.FunctionResponse != nil && (p.FunctionResponse.Name == "get_scratchpad" || p.FunctionResponse.Name == "load_skill_extra") {
-							respMap := p.FunctionResponse.Response
-							if respMap != nil {
-								if def, ok := respMap["deferred"].(bool); ok && def {
-									if spID, ok := respMap["scratchpad_id"].(string); ok && spID != "" {
-										deferredScratchpadIDs = append(deferredScratchpadIDs, spID)
+
+			// Reset usage tracker for this generation turn so continuations do not inherit stale call counts or flags
+			if fa.UsageTracker != nil {
+				fa.UsageTracker.Reset()
+			}
+
+			// Prompt & Memory Freshness: If post-turn compaction rewrote MEMORY.md,
+			// the continuation turn re-renders the system prompt before building the runner
+			// so the model sees updated memory immediately.
+			curMem, _ := ReadMemoryFile(fa.AgentDir)
+			if curMem != lastMemory {
+				lastMemory = curMem
+				_ = fa.refreshSystemPromptAndAgent()
+			}
+
+			// Fresh runner per turn iteration (re-reads clean disk state from FileSessionService)
+			r, err := runner.New(runner.Config{
+				AppName:           "wackypub",
+				Agent:             fa.ADKAgent,
+				SessionService:    sessionSvc,
+				AutoCreateSession: true,
+			})
+			if err != nil {
+				yield("", fmt.Errorf("failed to create runner: %w", err))
+				return
+			}
+
+			var deferredScratchpadIDs []string
+			var turnYieldedAny bool
+
+			for event, err := range r.Run(ctx, "user", fa.AgentID, nil, agent.RunConfig{}) {
+				if err != nil {
+					if ctx.Err() != nil {
+						yield("", ctx.Err())
+					} else {
+						yield("", fmt.Errorf("runner execution error: %w", err))
+					}
+					return
+				}
+				if ctx.Err() != nil {
+					yield("", ctx.Err())
+					return
+				}
+				if event != nil {
+					if event.Content != nil {
+						for _, p := range event.Content.Parts {
+							if p != nil && p.FunctionResponse != nil && (p.FunctionResponse.Name == "get_scratchpad" || p.FunctionResponse.Name == "load_skill_extra") {
+								respMap := p.FunctionResponse.Response
+								if respMap != nil {
+									if def, ok := respMap["deferred"].(bool); ok && def {
+										if spID, ok := respMap["scratchpad_id"].(string); ok && spID != "" {
+											deferredScratchpadIDs = append(deferredScratchpadIDs, spID)
+										}
 									}
 								}
 							}
 						}
 					}
-				}
-				text := ExtractTextFromEvent(event)
-				if text != "" {
-					yieldedAny = true
-					if !yield(text, nil) {
-						return
+					text := ExtractTextFromEvent(event)
+					if text != "" {
+						turnYieldedAny = true
+						if !yield(text, nil) {
+							return
+						}
 					}
 				}
 			}
-		}
 
-		if !yieldedAny {
-			yield("", fmt.Errorf("received empty response from agent"))
+			if ctx.Err() != nil {
+				yield("", ctx.Err())
+				return
+			}
+
+			if !turnYieldedAny {
+				yield("", fmt.Errorf("received empty response from agent"))
+				return
+			}
+
+			// Commit workspace event per turn boundary ("assistant")
+			_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "assistant")
+
+			hasDeferredImages := fa.RuntimeConfig != nil && fa.RuntimeConfig.MaxImageDimension > 0 && len(deferredScratchpadIDs) > 0
+			hasCompactedBail := fa.UsageTracker != nil && fa.UsageTracker.StoppedEarlyForCompaction
+
+			// Image Re-inflation Edge Case:
+			// If an image blob re-inflates context past budget on the continuation turn,
+			// the continuation bails and reports an explicit incomplete status rather than looping.
+			if hasCompactedBail && lastContinuationReason == ContinuationDeferredImage {
+				yield("\n\n[Auto-continuation aborted: image re-inflated context past budget - incomplete status.]", nil)
+				return
+			}
+
+			if fa.DisableAutoContinuation {
+				fa.checkPostTurnCompaction(ctx, wsDir)
+				return
+			}
+
+			if hasCompactedBail || hasDeferredImages {
+				if continuationCount >= maxContinuations {
+					fa.checkPostTurnCompaction(ctx, wsDir)
+					yield(fmt.Sprintf("\n\n[Reached maximum auto-continuations (%d) - stopping with incomplete status.]", maxContinuations), nil)
+					return
+				}
+			}
+
+			// Coincidence Ordering (Image + Bail in same turn):
+			// If both conditions occur in the same turn:
+			// 1. Post-turn compaction runs first on the text/tool results to free headroom.
+			// 2. The deferred <IMAGE> user turn is appended second.
+			// 3. Exactly one continuation is triggered (ContinuationDeferredImage),
+			//    allowing the image turn to drive the resumption with maximum context headroom (no redundant compaction marker).
+			if hasCompactedBail && hasDeferredImages {
+				beforeTurns, _ := ReadSessionTurns(fa.AgentDir)
+				tokensBefore := EstimateTokens(beforeTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
+
+				if fa.UsageTracker != nil {
+					fa.UsageTracker.Reset()
+				}
+				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, true, nil)
+				afterTurns, _ := ReadSessionTurns(fa.AgentDir)
+				tokensAfter := EstimateTokens(afterTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
+
+				hasReduction := len(afterTurns) < len(beforeTurns) || tokensAfter < tokensBefore
+				if err != nil || !compacted || !hasReduction {
+					yield("\n\n[Auto-continuation aborted: session compaction produced no reduction - incomplete status.]", nil)
+					return
+				}
+
+				validImages := fa.appendDeferredImages(wsDir, deferredScratchpadIDs)
+				if validImages == 0 {
+					return
+				}
+
+				lastContinuationReason = ContinuationDeferredImage
+				continuationCount++
+				continue
+			}
+
+			// Mid-turn Bail only:
+			// When a turn bails mid-turn (StoppedEarlyForCompaction = true),
+			// post-turn compaction executes immediately in the turn's cleanup block
+			// using the real LastPromptTokens that triggered the bail (superseding D77's skip).
+			if hasCompactedBail {
+				beforeTurns, _ := ReadSessionTurns(fa.AgentDir)
+				tokensBefore := EstimateTokens(beforeTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
+
+				if fa.UsageTracker != nil {
+					fa.UsageTracker.Reset()
+				}
+				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, true, nil)
+				afterTurns, _ := ReadSessionTurns(fa.AgentDir)
+				tokensAfter := EstimateTokens(afterTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
+
+				hasReduction := len(afterTurns) < len(beforeTurns) || tokensAfter < tokensBefore
+				if err != nil || !compacted || !hasReduction {
+					// Fail-safe abort: If a mid-turn bail occurs but compaction fails or produces no reduction,
+					// auto-continuation aborts with an incomplete status rather than re-tripping the context budget in an infinite loop.
+					yield("\n\n[Auto-continuation aborted: session compaction produced no reduction - incomplete status.]", nil)
+					return
+				}
+
+				// The harness appends an imperative sentinel user turn
+				sentinelTurn := genai.NewContentFromText(`<CONTINUATION reason="post-compaction">Session context was compacted. Resume and complete your task from where you left off, referencing any updated persistent memory.</CONTINUATION>`, "user")
+				_ = AppendSessionContent(fa.AgentDir, sentinelTurn)
+				_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user")
+
+				lastContinuationReason = ContinuationCompactedBail
+				continuationCount++
+				continue
+			}
+
+			// Deferred Image only:
+			if hasDeferredImages {
+				// Post-turn compaction check if real tokens >= threshold before adding image
+				fa.checkPostTurnCompaction(ctx, wsDir)
+				validImages := fa.appendDeferredImages(wsDir, deferredScratchpadIDs)
+				if validImages == 0 {
+					return
+				}
+
+				lastContinuationReason = ContinuationDeferredImage
+				continuationCount++
+				continue
+			}
+
+			// Normal turn completion:
+			// When a turn completes normally and real tokens >= threshold, compact post-turn.
+			fa.checkPostTurnCompaction(ctx, wsDir)
 			return
 		}
 	}

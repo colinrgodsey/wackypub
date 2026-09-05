@@ -1005,9 +1005,9 @@ func TestCompactionGitTwoCommitsD73(t *testing.T) {
 	}
 }
 
-func TestGenerateTurn_MidTurnShortCircuit_NoImmediatePostTurnCompaction_D77(t *testing.T) {
+func TestGenerateTurn_MidTurnShortCircuit_TriggersPostTurnCompactionAndContinuation_D88(t *testing.T) {
 	wsDir := t.TempDir()
-	agentID := "d77-bot"
+	agentID := "d88-bot"
 	agentDir := filepath.Join(wsDir, agentID)
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
 		t.Fatalf("failed creating agent dir: %v", err)
@@ -1034,11 +1034,18 @@ func TestGenerateTurn_MidTurnShortCircuit_NoImmediatePostTurnCompaction_D77(t *t
 				"usage":{"prompt_tokens":90,"completion_tokens":10,"total_tokens":100}
 			}`
 			io.WriteString(w, toolCallJSON)
-		} else {
-			// If compaction were called, it would request a compaction directive prompt
+		} else if callCount == 2 {
+			// Compaction directive prompt
 			respJSON := `{
-				"choices":[{"message":{"role":"assistant","content":"- Unexpected compaction summary."},"finish_reason":"stop"}],
+				"choices":[{"message":{"role":"assistant","content":"- Compaction summary of prior work."},"finish_reason":"stop"}],
 				"usage":{"prompt_tokens":30,"completion_tokens":10,"total_tokens":40}
+			}`
+			io.WriteString(w, respJSON)
+		} else {
+			// Continuation turn response
+			respJSON := `{
+				"choices":[{"message":{"role":"assistant","content":"Task finished after compaction."},"finish_reason":"stop"}],
+				"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":30}
 			}`
 			io.WriteString(w, respJSON)
 		}
@@ -1076,38 +1083,43 @@ func TestGenerateTurn_MidTurnShortCircuit_NoImmediatePostTurnCompaction_D77(t *t
 		t.Fatalf("GenerateTurn failed: %v", err)
 	}
 
-	// Verify that the mid-turn short-circuit message was returned
+	// Verify that the mid-turn short-circuit message was returned along with continuation
 	if !strings.Contains(resp, "stopping turn early to allow session compaction") {
 		t.Errorf("expected mid-turn short-circuit message, got: %q", resp)
 	}
-
-	// D77: Verify that StoppedEarlyForCompaction was set to true
-	if fa.UsageTracker == nil || !fa.UsageTracker.StoppedEarlyForCompaction {
-		t.Errorf("expected fa.UsageTracker.StoppedEarlyForCompaction to be true")
+	if !strings.Contains(resp, "Task finished after compaction.") {
+		t.Errorf("expected continuation turn response, got: %q", resp)
 	}
 
-	// D77: Verify that immediate post-turn compaction was skipped:
-	// 1. Server callCount must be 1 (compaction generation was NOT called)
-	if callCount != 1 {
-		t.Errorf("expected server callCount to be 1 (no compaction call), got: %d", callCount)
+	// D88: Post-turn compaction was NOT skipped, and continuation turn ran without human intervention:
+	// 1. Server callCount must be 3 (tool call -> compaction -> continuation)
+	if callCount != 3 {
+		t.Errorf("expected server callCount to be 3 (tool call, compaction, continuation), got: %d", callCount)
 	}
 
-	// 2. MEMORY.md must NOT have been written
+	// 2. MEMORY.md was updated by compaction
 	mem, err := ReadMemoryFile(agentDir)
 	if err != nil {
 		t.Fatalf("ReadMemoryFile failed: %v", err)
 	}
-	if mem != "" {
-		t.Errorf("expected MEMORY.md to remain empty, got: %q", mem)
+	if !strings.Contains(mem, "Compaction summary of prior work.") {
+		t.Errorf("expected MEMORY.md to contain compaction summary, got: %q", mem)
 	}
 
-	// 3. session.jsonl should retain the interrupted turn and its tool call / synthetic stop message
+	// 3. session.jsonl contains the continuation sentinel turn and final response
 	turns, err := ReadSessionTurns(agentDir)
 	if err != nil {
 		t.Fatalf("ReadSessionTurns failed: %v", err)
 	}
-	if len(turns) < 3 {
-		t.Errorf("expected at least 3 turns (user, tool call, tool response/stop), got %d turns: %+v", len(turns), turns)
+	var foundSentinel bool
+	for _, t := range turns {
+		if strings.Contains(ContentText(t), `<CONTINUATION reason="post-compaction">`) {
+			foundSentinel = true
+			break
+		}
+	}
+	if !foundSentinel {
+		t.Errorf("expected session.jsonl to contain <CONTINUATION reason=\"post-compaction\"> sentinel, turns: %+v", turns)
 	}
 }
 

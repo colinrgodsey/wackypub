@@ -109,6 +109,7 @@ type TurnUsageTracker struct {
 	LastTotalTokens           int32
 	LastUsageMetadata         *genai.GenerateContentResponseUsageMetadata
 	StoppedEarlyForCompaction bool
+	DisableAutoContinuation   bool
 }
 
 // Reset clears turn usage and call count before starting a new turn or compaction pass.
@@ -170,20 +171,7 @@ func BuildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 						req.Config.ThinkingConfig = thinkingConfig
 					}
 				}
-				// Check for deferred image response from get_scratchpad per D49
-				if hasDef, deferredIDs := hasDeferredScratchpadResponse(req.Contents); hasDef {
-					idList := strings.Join(deferredIDs, ", ")
-					return &model.LLMResponse{
-						Content: &genai.Content{
-							Role: "model",
-							Parts: []*genai.Part{
-								{Text: fmt.Sprintf("Image from scratchpad %s has been queued. It will be available in your next turn. Send another message to continue.", idList)},
-							},
-						},
-					}, nil
-				}
-
-				// Mid-turn context budget check (D63, D68)
+				// Mid-turn context budget check (D63, D68, D88)
 				// If accumulated tool context reaches or exceeds contextWindow threshold on subsequent tool turns (ModelCalls > 1),
 				// short-circuit early with a synthetic response so the next top-level turn gets a chance to trigger compaction.
 				if tracker.ModelCalls > 1 && runtimeCfg != nil && runtimeCfg.ContextWindow > 0 {
@@ -207,15 +195,36 @@ func BuildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 					if tokens >= threshold {
 						tracker.StoppedEarlyForCompaction = true
 						fmt.Fprintf(os.Stderr, "Warning: agent %q accumulated ~%d tokens in mid-turn tool context, reaching compaction threshold (%d / %d contextWindow) - stopping early for compaction.\n", agentID, tokens, threshold, runtimeCfg.ContextWindow)
+						var continueHint string
+						if tracker.DisableAutoContinuation {
+							continueHint = " Send another message (e.g. \"continue\") to proceed."
+						}
 						return &model.LLMResponse{
 							Content: &genai.Content{
 								Role: "model",
 								Parts: []*genai.Part{
-									{Text: fmt.Sprintf("[Accumulated tool context reached ~%d tokens (exceeding %d budget threshold for %d contextWindow) - stopping turn early to allow session compaction. Send another message (e.g. \"continue\") to proceed.]", tokens, threshold, runtimeCfg.ContextWindow)},
+									{Text: fmt.Sprintf("[Accumulated tool context reached ~%d tokens (exceeding %d budget threshold for %d contextWindow) - stopping turn early to allow session compaction.%s]", tokens, threshold, runtimeCfg.ContextWindow, continueHint)},
 								},
 							},
 						}, nil
 					}
+				}
+
+				// Check for deferred image response from get_scratchpad per D49, D88
+				if hasDef, deferredIDs := hasDeferredScratchpadResponse(req.Contents); hasDef {
+					var continueHint string
+					if tracker.DisableAutoContinuation {
+						continueHint = " Send another message to continue."
+					}
+					idList := strings.Join(deferredIDs, ", ")
+					return &model.LLMResponse{
+						Content: &genai.Content{
+							Role: "model",
+							Parts: []*genai.Part{
+								{Text: fmt.Sprintf("Image from scratchpad %s has been queued. It will be available in your next turn.%s", idList, continueHint)},
+							},
+						},
+					}, nil
 				}
 
 				// First model call is initial prompt; subsequent model calls are tool loop turns.

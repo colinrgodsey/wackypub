@@ -72,6 +72,13 @@ type RuntimeConfig struct {
 	// upscaled). Absent or <= 0 means image attachments are rejected outright
 	// - image support is opt-in per agent, not on by default.
 	MaxImageDimension int `json:"maxImageDimension,omitempty"`
+
+	// MaxAutoContinuations limits auto-continuation turns for this agent (D88).
+	// When unset, defaults to DefaultMaxAutoContinuations (2) or DefaultMaxAutoContinuationsA2A (1) for A2A turns.
+	MaxAutoContinuations *int `json:"maxAutoContinuations,omitempty"`
+
+	// DisableAutoContinuation disables automatic continuation turns (D88).
+	DisableAutoContinuation bool `json:"disableAutoContinuation,omitempty"`
 }
 
 // DefaultRuntimeJSON holds examples/runtimes/openrouter-auto.json's content (D74).

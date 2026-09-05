@@ -353,7 +353,7 @@ func TestD49_DeferredImageScratchpad(t *testing.T) {
 		t.Errorf("expected response to mention queued image ID %q, got: %s", imgEntry.ID, respText)
 	}
 
-	// 4. Verify session.jsonl contains the deferred image turn at the very end
+	// 4. Verify session.jsonl contains the deferred image turn (D49, D88 follow-up)
 	turns, err := ReadSessionTurns(agentDir)
 	if err != nil {
 		t.Fatalf("ReadSessionTurns failed: %v", err)
@@ -363,22 +363,24 @@ func TestD49_DeferredImageScratchpad(t *testing.T) {
 		t.Fatalf("expected at least 3 turns in session.jsonl, got %d", len(turns))
 	}
 
-	lastTurn := turns[len(turns)-1]
-	if lastTurn.Role != "user" {
-		t.Errorf("expected last turn in session.jsonl to be role 'user', got %q", lastTurn.Role)
+	var imgTurn *genai.Content
+	for _, trn := range turns {
+		if trn.Role == "user" && len(trn.Parts) == 2 && trn.Parts[1].InlineData != nil {
+			imgTurn = trn
+			break
+		}
 	}
-
-	if len(lastTurn.Parts) != 2 {
-		t.Fatalf("expected last turn to have 2 parts (label text + image), got %d", len(lastTurn.Parts))
+	if imgTurn == nil {
+		t.Fatalf("expected session.jsonl to contain deferred image user turn")
 	}
 
 	expectedLabel := fmt.Sprintf("<IMAGE>The following image is stored in scratchpad '%s'</IMAGE>", imgEntry.ID)
-	if lastTurn.Parts[0].Text != expectedLabel {
-		t.Errorf("expected part[0].Text %q, got %q", expectedLabel, lastTurn.Parts[0].Text)
+	if imgTurn.Parts[0].Text != expectedLabel {
+		t.Errorf("expected part[0].Text %q, got %q", expectedLabel, imgTurn.Parts[0].Text)
 	}
 
-	if lastTurn.Parts[1].InlineData == nil || lastTurn.Parts[1].InlineData.MIMEType != "image/jpeg" {
-		t.Errorf("expected part[1].InlineData with image/jpeg, got %+v", lastTurn.Parts[1].InlineData)
+	if imgTurn.Parts[1].InlineData == nil || imgTurn.Parts[1].InlineData.MIMEType != "image/jpeg" {
+		t.Errorf("expected part[1].InlineData with image/jpeg, got %+v", imgTurn.Parts[1].InlineData)
 	}
 
 	// 5. Test hasDeferredScratchpadResponse helper directly
