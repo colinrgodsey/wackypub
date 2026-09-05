@@ -128,10 +128,12 @@ You are Ignis, an ancient wizard.
 ```
 
 #### Macro Resolution Rules:
-1. File paths after `@` are resolved relative to the agent's directory (`<ws_dir>/<agent_id>/`).
-2. Macro expansion works recursively (files included via `@` can themselves contain `@` macros).
-3. Circular imports (e.g., File A imports File B which imports File A) are detected and omitted safely.
-4. Maximum expansion recursion depth is capped at 10 to prevent stack overflow.
+1. **Boundary Matching**: An `@` include directive must be preceded by a boundary delimiter — start of line (`^`), whitespace, or enclosing punctuation (`(`, `[`, `{`, `<`, `"`, `'`, or `` ` ``) — and must end with an alphanumeric character or path separator (`[a-zA-Z0-9_\-/]`). Text without leading boundaries (such as email addresses like `user@agentmail.to` or `crgodsey@gmail.com`) is never matched or mangled. Trailing sentence punctuation (such as `.` or `,`) and closing brackets/parentheses are preserved.
+2. **Workspace Containment**: File paths after `@` are resolved relative to the agent's directory (`<ws_dir>/<agent_id>/`) and must remain contained within the workspace root (`wsDir`, identified by `WACKYPUB_ROOT` or defaulting to `filepath.Dir(agentDir)`). Path traversal attempts escaping the workspace root (e.g. `@../../../etc/passwd`) are rejected and left literal without reading. Cross-agent or shared includes staying within the workspace root (e.g. `@../shared/rules.md`) are permitted. Symlinks are evaluated and verified to remain within the workspace root.
+3. **Existence Gating (D90 Parity)**: Inclusion only fires if the resolved file actually exists and is not a directory. Missing files, directories, and social mentions (e.g. `@DranboF`, `@here`) pass through verbatim as literal text without generating error comments.
+4. **Escaping**: Prefixing with a backslash or double-at (`\@path` or `@@path`) bypasses expansion immediately and emits `@path` literally, stripping the escape marker.
+5. **Stack-Scoped Cycles & Recursion**: Macro expansion works recursively (files included via `@` can themselves contain `@` macros). Inclusions are tracked on an active call stack: repeated non-circular inclusions (e.g. `@rules.md ... @rules.md` or diamond includes) expand cleanly, while true circular import cycles (e.g., File A imports File B which imports File A) are detected while on the stack and omitted safely with `<!-- Circular macro import omitted: <path> -->`.
+6. **Depth Limit**: Maximum expansion recursion depth is capped at 10 to prevent runaway recursion or stack overflow, bubbling an error up to the caller if exceeded.
 
 ---
 

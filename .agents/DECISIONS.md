@@ -1704,3 +1704,42 @@ Implemented in `pkg/agent/scratchpad.go` (`scratchpadMacroRegex` leading backsla
 
 **Rejected.** A global opt-out flag (breaks existing genuine macro use everywhere); a separate marker token (same authoring burden as the current hack, formalized).
 
+## D91: Safe @ file-include macro expansion with workspace containment, boundary preservation, and stack-scoped cycles
+
+Implemented in `pkg/agent/macro.go` (`macroRegex` boundary delimiter and escape capture; `ExpandMacros` and `expandMacrosRecursive` with workspace root discovery, lexical and symlink containment, existence gating, boundary preservation, and stack-scoped cycle guard), `pkg/agent/macro_test.go`, and `docs/agents.md`.
+
+**Problem.** `ExpandMacros` in `pkg/agent/macro.go` matched `@([a-zA-Z0-9_\-./]+)` to include referenced workspace files during `RenderAgentSystemPrompt` (called when building prompt instructions from `AGENTS.md` and related agent files). An empirical audit uncovered five distinct defects:
+1. **Critical Path Traversal Leak:** `filepath.Join(agentDir, relPath)` did not enforce containment. An `@../../../etc/passwd` token resolved outside the workspace and spliced arbitrary filesystem files directly into the LLM system prompt.
+2. **Email Address Mangling:** Addresses like `dranbofieldston@agentmail.to` or `user@example.com` matched because `@` was matched without a left-boundary constraint. In Dranbo's live prompt, `**Email Authority:** Only directives from crgodsey@gmail.com` was mangled into `crgodsey<!-- Error reading macro file gmail.com: ... -->`, corrupting the live operator authority check.
+3. **Social Handles & Mentions:** Mentions like `@DranboF`, `@here`, or `@channel` triggered include resolution and emitted error comments when the target did not exist.
+4. **Punctuation Absorption:** The regex greedily absorbed trailing periods and punctuation into the path (`@rules.md.` tried to read `rules.md.`).
+5. **False-Positive Cycle Guard & Swallowed Errors:** The `visited` map was an immutable global seen-set instead of an active call stack. A legitimate second include of the same file in non-circular branches (e.g. `@rules.md ... @rules.md` or diamond includes) falsely triggered `<!-- Circular macro import omitted: rules.md -->`, and inner recursion errors were silently swallowed.
+
+**Fix.**
+1. **Left-Boundary Delimiter & Terminal Character Rules:**
+   - Preceding character must be line start (`^`), whitespace, or enclosing punctuation (`[\s(\[{<"']|` + "`" + `)` so preceding alphanumerics or email local parts (`[a-zA-Z0-9._%+-]`) fail the match immediately.
+   - The path regex must end on an alphanumeric or path separator `[a-zA-Z0-9_\-/]`, preserving sentence-ending punctuation (`.` or `,`) and closing parentheses without eating them into the filename.
+   - Regex: `(^|[\s(\[{<"']|` + "`" + `)(\\?|@?)@([a-zA-Z0-9_\-./]*[a-zA-Z0-9_\-/])`.
+2. **Boundary-Preserving Replacement & Escapes:**
+   - Group 1 captures the preceding boundary character and is re-emitted by the replacement logic so whitespace and punctuation preceding the include are never eaten.
+   - When Group 2 is `\` or `@` (`\@path` or `@@path`), expansion is bypassed immediately and emits `boundary + "@" + path` (stripping the escape marker).
+3. **Workspace Root Containment (Security Traversal Defense):**
+   - Candidate relative paths are joined against `agentDir` and cleaned (`cleanPath := filepath.Clean(filepath.Join(agentDir, target))`).
+   - Workspace root `wsDir` is discovered by walking up from `agentDir` looking for `WACKYPUB_ROOT`, defaulting to `filepath.Dir(agentDir)` if not found.
+   - If the cleaned path escapes `wsDir` lexically (`strings.HasPrefix(rel, "..") || filepath.IsAbs(rel)`), it is rejected immediately and passes through as literal `boundary + "@" + path` without reading.
+   - Cross-agent or shared includes (e.g. `@../rules/conduct.md` staying within `wsDir`) remain permitted.
+4. **Existence-Based Expansion Gating (D90 Parity):**
+   - If the file does not exist (`os.Stat` error) or is a directory (`fi.IsDir()`), bypass expansion and retain `boundary + "@" + path` verbatim without error comments. Handles like `@DranboF` or `@here` pass through untouched.
+   - If the file exists, symlinks are evaluated (`filepath.EvalSymlinks(cleanPath)`) and verified to also remain contained within `wsDir`. If the symlink escapes, it passes through literal.
+5. **Stack-Scoped Cycle Guard & Error Bubbling:**
+   - `visited[realPath] = true` is set when entering recursion and unmarked (`delete(visited, realPath)`) upon return.
+   - Legitimate diamond or repeated inclusions across different non-circular branches expand cleanly.
+   - True circular loops (A includes B includes A) are detected while on the stack and omitted with `<!-- Circular macro import omitted: <path> -->`.
+   - Inner errors and depth-limit (>10) failures bubble up cleanly to the caller.
+
+**Rejected.**
+- *Confining containment strictly to `agentDir`:* Silently breaks legitimate cross-agent shared includes (e.g. `@../rules/conduct.md`) supported across WackyPub workspaces.
+- *os.Stat gating alone without left-boundary check:* If a file named `agentmail.to` exists in the directory, `user@agentmail.to` would still be corrupted.
+- *Whole-match replacement without re-emitting Group 1:* Consumes the leading space or punctuation before `@include`.
+
+
