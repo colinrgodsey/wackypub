@@ -1029,6 +1029,7 @@ func TestD90_ToolResultLayer_MissingEntryWarningsNotDuplicatedInOutput(t *testin
 			t.Fatalf("failed to write bob echo.sh: %v", err)
 		}
 
+		_ = os.WriteFile(filepath.Join(bobDir, "runtime.json"), []byte("{\"endpoint\": \"http://127.0.0.1:1\"}"), 0644)
 		fa, err := LoadFolderAgent(wsDir, "bob", 1)
 		if err != nil {
 			t.Fatalf("LoadFolderAgent failed: %v", err)
