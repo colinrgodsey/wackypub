@@ -28,7 +28,11 @@ func ReadSessionTurns(agentDir string) ([]*genai.Content, error) {
 
 	var turns []*genai.Content
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB max line size for large parts
+	// Max line size for large parts: a single model turn can legitimately carry
+	// megabytes of accumulated tool context (observed 1.7MB live), so the cap must
+	// sit well above the bufio.Scanner 64KB default. 16MB is far beyond any
+	// context window while still bounding runaway files.
+	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {

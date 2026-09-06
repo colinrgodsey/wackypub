@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"google.golang.org/genai"
@@ -384,5 +385,29 @@ func TestAppendSessionContentNormalCase(t *testing.T) {
 		if got := ContentText(turns[i]); got != want {
 			t.Errorf("turns[%d]: got %q, want %q", i, got, want)
 		}
+	}
+}
+
+func TestReadSessionTurns_LargeLineOverOldCap(t *testing.T) {
+	agentDir := t.TempDir()
+	// 1.5MB single-turn line: exceeds the historical 1MB cap, well under 16MB.
+	big := strings.Repeat("x", 1500*1024)
+	line, err := json.Marshal(genai.NewContentFromText(big, "model"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "session.jsonl"), append(line, '\n'), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	turns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed on a >1MB line: %v", err)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("expected 1 turn, got %d", len(turns))
+	}
+	if got := len(turns[0].Parts[0].Text); got != 1500*1024 {
+		t.Errorf("expected %d chars, got %d", 1500*1024, got)
 	}
 }
