@@ -1278,18 +1278,34 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 			// 3. Exactly one continuation is triggered (ContinuationDeferredImage),
 			//    allowing the image turn to drive the resumption with maximum context headroom (no redundant compaction marker).
 			if hasCompactedBail && hasDeferredImages {
-				beforeTurns, _ := ReadSessionTurns(fa.AgentDir)
+				beforeTurns, err := ReadSessionTurns(fa.AgentDir)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
+					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: failed to read session turns: %v - incomplete status.]", err), nil)
+					return
+				}
 				tokensBefore := EstimateTokens(beforeTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
 
 				if fa.UsageTracker != nil {
 					fa.UsageTracker.Reset()
 				}
 				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, true, nil)
-				afterTurns, _ := ReadSessionTurns(fa.AgentDir)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
+					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: session compaction error: %v - incomplete status.]", err), nil)
+					return
+				}
+				afterTurns, err := ReadSessionTurns(fa.AgentDir)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
+					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: failed to read session turns: %v - incomplete status.]", err), nil)
+					return
+				}
 				tokensAfter := EstimateTokens(afterTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
 
 				hasReduction := len(afterTurns) < len(beforeTurns) || tokensAfter < tokensBefore
-				if err != nil || !compacted || !hasReduction {
+				if !compacted || !hasReduction {
+					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction produced no reduction (session may exceed safe read limits)\n")
 					yield("\n\n[Auto-continuation aborted: session compaction produced no reduction - incomplete status.]", nil)
 					return
 				}
@@ -1309,20 +1325,36 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 			// post-turn compaction executes immediately in the turn's cleanup block
 			// using the real LastPromptTokens that triggered the bail (superseding D77's skip).
 			if hasCompactedBail {
-				beforeTurns, _ := ReadSessionTurns(fa.AgentDir)
+				beforeTurns, err := ReadSessionTurns(fa.AgentDir)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
+					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: failed to read session turns: %v - incomplete status.]", err), nil)
+					return
+				}
 				tokensBefore := EstimateTokens(beforeTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
 
 				if fa.UsageTracker != nil {
 					fa.UsageTracker.Reset()
 				}
 				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, true, nil)
-				afterTurns, _ := ReadSessionTurns(fa.AgentDir)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
+					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: session compaction error: %v - incomplete status.]", err), nil)
+					return
+				}
+				afterTurns, err := ReadSessionTurns(fa.AgentDir)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
+					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: failed to read session turns: %v - incomplete status.]", err), nil)
+					return
+				}
 				tokensAfter := EstimateTokens(afterTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
 
 				hasReduction := len(afterTurns) < len(beforeTurns) || tokensAfter < tokensBefore
-				if err != nil || !compacted || !hasReduction {
+				if !compacted || !hasReduction {
 					// Fail-safe abort: If a mid-turn bail occurs but compaction fails or produces no reduction,
 					// auto-continuation aborts with an incomplete status rather than re-tripping the context budget in an infinite loop.
+					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction produced no reduction (session may exceed safe read limits)\n")
 					yield("\n\n[Auto-continuation aborted: session compaction produced no reduction - incomplete status.]", nil)
 					return
 				}
