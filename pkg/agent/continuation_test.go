@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -814,5 +815,278 @@ func TestD88_ContextCancellationStopsContinuation(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for canceled continuation stream to terminate")
+	}
+}
+
+func captureStderr(f func()) string {
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		f()
+		return ""
+	}
+	os.Stderr = w
+
+	outChan := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		outChan <- buf.String()
+	}()
+
+	f()
+
+	w.Close()
+	os.Stderr = oldStderr
+	out := <-outChan
+	r.Close()
+	return out
+}
+
+func TestD101_ErrorTransparency_CompactionError(t *testing.T) {
+	wsDir := t.TempDir()
+	agentID := "d101-compaction-err"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed creating agent dir: %v", err)
+	}
+
+	toolsDir := filepath.Join(agentDir, "tools")
+	if err := os.MkdirAll(toolsDir, 0755); err != nil {
+		t.Fatalf("failed creating tools dir: %v", err)
+	}
+	toolScript := "#!/bin/sh\necho 'done'\n"
+	if err := os.WriteFile(filepath.Join(toolsDir, "test_tool.sh"), []byte(toolScript), 0755); err != nil {
+		t.Fatalf("failed creating tool script: %v", err)
+	}
+
+	var mu sync.Mutex
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		callCount++
+		c := callCount
+		mu.Unlock()
+
+		if c == 1 {
+			// Call 1: Tool call triggering mid-turn context bail
+			w.Header().Set("Content-Type", "application/json")
+			toolCallJSON := `{
+				"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"test_tool.sh","arguments":"{}"}}]},"finish_reason":"tool_calls"}],
+				"usage":{"prompt_tokens":90,"completion_tokens":10,"total_tokens":100}
+			}`
+			io.WriteString(w, toolCallJSON)
+		} else {
+			// Call 2: Compaction summarizer fails with HTTP 500
+			http.Error(w, "internal compaction failure", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("System prompt"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	if err := AppendSessionTurn(agentDir, "user", "Start task"); err != nil {
+		t.Fatalf("failed to write session.jsonl: %v", err)
+	}
+
+	runtimeCfg := &RuntimeConfig{
+		Provider:      "openai",
+		Model:         "test-model",
+		Endpoint:      srv.URL,
+		ContextWindow: 100, // 20% overhead -> threshold is 80. Real prompt_tokens is 90 >= 80
+	}
+	runtimeData, _ := json.Marshal(runtimeCfg)
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), runtimeData, 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+
+	fa, err := LoadFolderAgent(wsDir, agentID, DefaultMaxToolTurns)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+
+	var resp string
+	stderrOut := captureStderr(func() {
+		resp, err = fa.GenerateTurn(context.Background())
+	})
+	if err != nil {
+		t.Fatalf("GenerateTurn failed: %v", err)
+	}
+
+	if !strings.Contains(stderrOut, "Warning: auto-continuation compaction error:") {
+		t.Errorf("expected stderr to contain 'Warning: auto-continuation compaction error:', got: %q", stderrOut)
+	}
+	if !strings.Contains(resp, "[Auto-continuation aborted: session compaction error:") {
+		t.Errorf("expected response to contain '[Auto-continuation aborted: session compaction error:', got: %q", resp)
+	}
+}
+
+func TestD101_ErrorTransparency_NoReduction(t *testing.T) {
+	wsDir := t.TempDir()
+	agentID := "d101-no-reduction"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed creating agent dir: %v", err)
+	}
+
+	toolsDir := filepath.Join(agentDir, "tools")
+	if err := os.MkdirAll(toolsDir, 0755); err != nil {
+		t.Fatalf("failed creating tools dir: %v", err)
+	}
+	toolScript := "#!/bin/sh\necho 'done'\n"
+	if err := os.WriteFile(filepath.Join(toolsDir, "test_tool.sh"), []byte(toolScript), 0755); err != nil {
+		t.Fatalf("failed creating tool script: %v", err)
+	}
+
+	var mu sync.Mutex
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		callCount++
+		c := callCount
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if c == 1 {
+			// Call 1: Tool call triggering mid-turn context bail on next check
+			toolCallJSON := `{
+				"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"test_tool.sh","arguments":"{}"}}]},"finish_reason":"tool_calls"}],
+				"usage":{"prompt_tokens":90,"completion_tokens":10,"total_tokens":100}
+			}`
+			io.WriteString(w, toolCallJSON)
+		} else {
+			// Call 2: Compaction summarizer call
+			respJSON := `{
+				"choices":[{"message":{"role":"assistant","content":"Compacted summary."},"finish_reason":"stop"}],
+				"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+			}`
+			io.WriteString(w, respJSON)
+		}
+	}))
+	defer srv.Close()
+
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("System prompt"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	// COMPACT.md with compact-pct: 1 compacts only the initial model turn
+	compactConfig := "---\ncompact-pct: 1\ncompaction-notice: \"Session compacted.\"\n---\nSummarize prior turns.\n"
+	if err := os.WriteFile(filepath.Join(agentDir, "COMPACT.md"), []byte(compactConfig), 0644); err != nil {
+		t.Fatalf("failed to write COMPACT.md: %v", err)
+	}
+
+	// Starts with model turn, then user turn:
+	// Turn 0: model "a"
+	// Turn 1: user "Start task"
+	turns := []*genai.Content{
+		genai.NewContentFromText("a", "model"),
+		genai.NewContentFromText("Start task", "user"),
+	}
+	if err := WriteSessionTurns(agentDir, turns); err != nil {
+		t.Fatalf("WriteSessionTurns failed: %v", err)
+	}
+
+	runtimeCfg := &RuntimeConfig{
+		Provider:      "openai",
+		Model:         "test-model",
+		Endpoint:      srv.URL,
+		ContextWindow: 100,
+	}
+	runtimeData, _ := json.Marshal(runtimeCfg)
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), runtimeData, 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+
+	fa, err := LoadFolderAgent(wsDir, agentID, DefaultMaxToolTurns)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+
+	var resp string
+	stderrOut := captureStderr(func() {
+		resp, err = fa.GenerateTurn(context.Background())
+	})
+	if err != nil {
+		t.Fatalf("GenerateTurn failed: %v", err)
+	}
+
+	if !strings.Contains(stderrOut, "Warning: auto-continuation compaction produced no reduction (session may exceed safe read limits)") {
+		t.Errorf("expected stderr to contain 'Warning: auto-continuation compaction produced no reduction', got: %q", stderrOut)
+	}
+	if !strings.Contains(resp, "[Auto-continuation aborted: session compaction produced no reduction - incomplete status.]") {
+		t.Errorf("expected response to contain '[Auto-continuation aborted: session compaction produced no reduction - incomplete status.]', got: %q", resp)
+	}
+}
+
+func TestD101_ErrorTransparency_ReadSessionError(t *testing.T) {
+	wsDir := t.TempDir()
+	agentID := "d101-read-err"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed creating agent dir: %v", err)
+	}
+
+	toolsDir := filepath.Join(agentDir, "tools")
+	if err := os.MkdirAll(toolsDir, 0755); err != nil {
+		t.Fatalf("failed creating tools dir: %v", err)
+	}
+	// Tool script writes a 17MB line to session.jsonl to trigger scanner buffer overflow on post-turn read
+	toolScript := fmt.Sprintf("#!/bin/sh\npython3 -c 'print(\"x\" * 17000000)' >> %s/session.jsonl\necho 'done'\n", agentDir)
+	if err := os.WriteFile(filepath.Join(toolsDir, "corrupt_tool.sh"), []byte(toolScript), 0755); err != nil {
+		t.Fatalf("failed creating tool script: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		toolCallJSON := `{
+			"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"run_command","arguments":"{\"command\":\"corrupt_tool.sh\",\"args\":[]}"}}]},"finish_reason":"tool_calls"}],
+			"usage":{"prompt_tokens":90,"completion_tokens":10,"total_tokens":100}
+		}`
+		io.WriteString(w, toolCallJSON)
+	}))
+	defer srv.Close()
+
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("System prompt"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	if err := AppendSessionTurn(agentDir, "user", "Start task"); err != nil {
+		t.Fatalf("failed to write session.jsonl: %v", err)
+	}
+
+	runtimeCfg := &RuntimeConfig{
+		Provider:      "openai",
+		Model:         "test-model",
+		Endpoint:      srv.URL,
+		ContextWindow: 100,
+	}
+	runtimeData, _ := json.Marshal(runtimeCfg)
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), runtimeData, 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+
+	fa, err := LoadFolderAgent(wsDir, agentID, DefaultMaxToolTurns)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+
+	var resp string
+	stderrOut := captureStderr(func() {
+		resp, err = fa.GenerateTurn(context.Background())
+	})
+	if err != nil {
+		t.Fatalf("GenerateTurn failed: %v", err)
+	}
+
+	if !strings.Contains(stderrOut, "Warning: auto-continuation compaction error:") {
+		t.Errorf("expected stderr to contain 'Warning: auto-continuation compaction error:', got: %q", stderrOut)
+	}
+	if !strings.Contains(stderrOut, "token too long") {
+		t.Errorf("expected stderr to contain 'token too long', got: %q", stderrOut)
+	}
+	if !strings.Contains(resp, "[Auto-continuation aborted: failed to read session turns:") {
+		t.Errorf("expected response to contain '[Auto-continuation aborted: failed to read session turns:', got: %q", resp)
 	}
 }
