@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -183,6 +184,7 @@ func DiscoverAgentSkills(agentDir string) (map[string]*Skill, []*Skill, []*Skill
 }
 
 // RenderAutoloadedSkills formats always-loaded skills into the <AUTOLOADED_SKILLS> system prompt block.
+
 func RenderAutoloadedSkills(agentDir string) (string, error) {
 	_, _, alwaysLoaded, err := DiscoverAgentSkills(agentDir)
 	if err != nil || len(alwaysLoaded) == 0 {
@@ -192,14 +194,32 @@ func RenderAutoloadedSkills(agentDir string) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("<AUTOLOADED_SKILLS>\n")
 	for _, sk := range alwaysLoaded {
-		sb.WriteString(fmt.Sprintf(`<SKILL name="%s">\n%s\n</SKILL>\n`, sk.Name, sk.Body))
+		desc := sanitizeXMLAttr(sk.Description)
+		if desc != "" {
+			sb.WriteString(fmt.Sprintf("<SKILL name=\"%s\" description=\"%s\">\n%s\n</SKILL>\n", sk.Name, desc, sk.Body))
+		} else {
+			sb.WriteString(fmt.Sprintf("<SKILL name=\"%s\">\n%s\n</SKILL>\n", sk.Name, sk.Body))
+		}
 	}
 	sb.WriteString("</AUTOLOADED_SKILLS>")
 	return sb.String(), nil
 }
 
+// sanitizeXMLAttr collapses whitespace and strips special XML characters from a string
+// to make it safe for embedding in a double-quoted XML attribute value.
+func sanitizeXMLAttr(s string) string {
+	// Collapse whitespace/newlines to single spaces
+	re := regexp.MustCompile("\\s+")
+	cleaned := re.ReplaceAllString(strings.TrimSpace(s), " ")
+	// Strip characters that would break XML attribute syntax
+	cleaned = strings.ReplaceAll(cleaned, "\"", "")
+	cleaned = strings.ReplaceAll(cleaned, "<", "")
+	cleaned = strings.ReplaceAll(cleaned, ">", "")
+	return strings.TrimSpace(cleaned)
+}
+
 func FormatLoadedSkill(name, body string) string {
-	return fmt.Sprintf(`<SKILL name="%s" authority="STRICT">\n%s\n</SKILL>`, name, body)
+	return fmt.Sprintf("<SKILL name=\"%s\" authority=\"STRICT\">\n%s\n</SKILL>", name, body)
 }
 
 // ResolveSkillRelativePath resolves relativePath bounded inside skillDir, preventing path traversal.

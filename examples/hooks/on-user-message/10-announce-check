@@ -1,0 +1,62 @@
+#!/bin/sh
+# Example on-user-message hook (receiver-side A2A annotation):
+#
+# When an inbound turn originated from another agent, the wackypub call chain
+# propagates the AGENT2AGENT env var (D33): {"caller_id":..., "call_chain":...}.
+# This hook checks that header and, for agent-originated turns, prepends the
+# standard "[Message from agent: <caller_id>]" preamble to the turn text.
+# Human-originated turns (no AGENT2AGENT) pass through unchanged.
+#
+# With this hook installed, the announce convention is enforced mechanically
+# on the receiving side - senders no longer need to self-announce.
+#
+# Input: message text on stdin (hook processes inherit the agent process env).
+# Output: JSON on stdout: {"text": "<possibly annotated message>"}
+
+json_str() {
+	awk 'BEGIN{ORS=""} {gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); gsub(/\t/,"\\t"); gsub(/\r/,"\\r"); if(NR>1) printf "\\n"; printf "%s", $0}'
+}
+
+TEXT=$(cat)
+RAW=${AGENT2AGENT:-}
+
+# No A2A header means human-originated turn (or hook used outside an agent
+# runtime) - pass the text through untouched.
+if [ -z "$RAW" ]; then
+	printf '{"text":"'
+	printf '%s' "$TEXT" | json_str
+	printf '"}'
+	exit 0
+fi
+
+# Extract caller_id (or fall back to the last link of the call chain).
+# Agent IDs are workspace directory names, so a flat grep on the minified
+# JSON is sufficient for an example hook; malformed JSON fails open.
+CALLER=$(printf '%s' "$RAW" | grep -o '"caller_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+if [ -z "$CALLER" ]; then
+	CALLER=$(printf '%s' "$RAW" | grep -o '"call_chain":\[[^]]*\]' | grep -o '"[a-zA-Z0-9_-]*"' | tail -1 | tr -d '"')
+fi
+
+# Unknown caller (malformed header) - fail open, text unchanged.
+if [ -z "$CALLER" ]; then
+	printf '{"text":"'
+	printf '%s' "$TEXT" | json_str
+	printf '"}'
+	exit 0
+fi
+
+# Defensive: never double-stamp an already-announced turn.
+case "$TEXT" in
+	"[Message from agent: "*)
+		# Already announced (by this caller or an earlier chain link) - leave as-is.
+		;;
+	*)
+		TEXT="[Message from agent: $CALLER]
+
+$TEXT"
+		;;
+esac
+
+printf '{"text":"'
+printf '%s' "$TEXT" | json_str
+printf '"}'

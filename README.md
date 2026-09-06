@@ -123,6 +123,8 @@ A few tools worth linking into `tools/` for a real workspace, not just the demo:
 - **[ast-grep](https://github.com/ast-grep/ast-grep)** — structural code search and rewriting via AST matching instead of regex.
 - **[playwright-cli](https://github.com/microsoft/playwright-cli)** — a CLI-native wrapper around Playwright browser automation, built specifically for terminal coding agents.
 - **[mcporter](https://github.com/openclaw/mcporter)** — auto-discovers and invokes MCP tools directly from the command line. Since `tools/` will run anything that's an executable, this means the entire MCP ecosystem becomes usable here with zero wackypub-side integration work.
+- **[acpx](https://github.com/openclaw/acpx)** — runs headless ACP coding sessions from the CLI, so an agent can delegate whole coding tasks to another coding agent (Claude Code and friends) without a human in the loop.
+- **[GitKB](https://gitkb.com/)** — git-backed knowledge base for decision records and task tracking, with CLI integrity checking (`git-kb fsck`). This repo's internal decision log runs on it; recommended for contributors whose agents can use it. If you don't have GitKB, document your decisions fully in the PR description instead.
 - **[roller](https://github.com/dice-roller/cli)** — dice-notation CLI. Good for RP use cases, but also just genuine random decision-making in general, which LLMs can be surprisingly bad at on their own.
 
 All tools execute from the agent's own workspace directory as the CWD.
