@@ -6,11 +6,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"unicode/utf8"
 
 	"google.golang.org/genai"
 )
 
-const SessionFileName = "session.jsonl"
+const (
+	SessionFileName = "session.jsonl"
+
+	MaxPersistTextPartBytes = 256 * 1024
+	MaxPersistTurnBytes     = 512 * 1024
+	PersistTruncationHead   = 8192
+	PersistTruncationTail   = 8192
+)
 
 // ReadSessionTurns reads all turns from <agent_dir>/session.jsonl as genai.Content objects.
 // If the file does not exist, returns an empty list without error.
@@ -54,16 +62,143 @@ func ReadSessionTurns(agentDir string) ([]*genai.Content, error) {
 	return turns, nil
 }
 
+// isTextPart reports whether p is a plain text part (as opposed to structured/binary
+// tool calls, tool responses, or inline data which follow the existing D48 path).
+func isTextPart(p *genai.Part) bool {
+	return p != nil && p.Text != "" && p.FunctionCall == nil && p.FunctionResponse == nil && p.InlineData == nil && p.FileData == nil
+}
+
+// truncatePersistTextPart truncates a text part exceeding MaxPersistTextPartBytes to:
+// head(8192 chars) + "\n[...truncated - original part was N chars...]\n" + tail(8192 chars).
+func truncatePersistTextPart(text string) string {
+	origLen := len(text)
+	if origLen <= MaxPersistTextPartBytes {
+		return text
+	}
+	head := text[:PersistTruncationHead]
+	for len(head) > 0 && !utf8.RuneStart(text[len(head)]) {
+		head = text[:len(head)-1]
+	}
+	tailStart := origLen - PersistTruncationTail
+	for tailStart < origLen && !utf8.RuneStart(text[tailStart]) {
+		tailStart++
+	}
+	tail := text[tailStart:]
+	banner := fmt.Sprintf("\n[...truncated - original part was %d chars...]\n", origLen)
+	return head + banner + tail
+}
+
+// sanitizeContentForPersist caps oversized text parts and enforces the MaxPersistTurnBytes
+// hard cap before session.jsonl serialization (D101).
+func sanitizeContentForPersist(content *genai.Content) ([]byte, error) {
+	if content == nil {
+		return []byte("null"), nil
+	}
+
+	toPersist := *content
+	if len(content.Parts) > 0 {
+		toPersist.Parts = make([]*genai.Part, len(content.Parts))
+		for i, p := range content.Parts {
+			if isTextPart(p) && len(p.Text) > MaxPersistTextPartBytes {
+				cloned := *p
+				cloned.Text = truncatePersistTextPart(p.Text)
+				toPersist.Parts[i] = &cloned
+			} else {
+				toPersist.Parts[i] = p
+			}
+		}
+	}
+
+	data, err := json.Marshal(&toPersist)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal content: %w", err)
+	}
+
+	// Whole-content fallback: if marshaled JSON still exceeds MaxPersistTurnBytes (512KB),
+	// retain only the first text part (capped as above) plus a banner noting the drop.
+	if len(data) > MaxPersistTurnBytes {
+		var firstTextPart *genai.Part
+		for _, p := range toPersist.Parts {
+			if isTextPart(p) {
+				firstTextPart = p
+				break
+			}
+		}
+
+		var fallbackParts []*genai.Part
+		if firstTextPart != nil {
+			if len(firstTextPart.Text) > MaxPersistTextPartBytes {
+				cloned := *firstTextPart
+				cloned.Text = truncatePersistTextPart(firstTextPart.Text)
+				firstTextPart = &cloned
+			}
+			fallbackParts = append(fallbackParts, firstTextPart)
+			dropBanner := fmt.Sprintf("\n[...remaining content dropped - marshaled turn exceeded %d bytes limit...]\n", MaxPersistTurnBytes)
+			fallbackParts = append(fallbackParts, &genai.Part{Text: dropBanner})
+			toPersist.Parts = fallbackParts
+		}
+
+		data, err = json.Marshal(&toPersist)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal fallback content: %w", err)
+		}
+
+		// Hard invariant guarantee: no marshaled turn may exceed MaxPersistTurnBytes (512KB).
+		if len(data) > MaxPersistTurnBytes {
+			if len(fallbackParts) > 0 && fallbackParts[0] != nil {
+				cloned := *fallbackParts[0]
+				if len(cloned.Text) > PersistTruncationHead+PersistTruncationTail {
+					head := cloned.Text[:PersistTruncationHead]
+					tail := cloned.Text[len(cloned.Text)-PersistTruncationTail:]
+					cloned.Text = head + "\n[...truncated to fit turn limit...]\n" + tail
+				}
+				fallbackParts[0] = &cloned
+				toPersist.Parts = fallbackParts
+				data, err = json.Marshal(&toPersist)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal clamped content: %w", err)
+				}
+			}
+		}
+
+		if len(data) > MaxPersistTurnBytes {
+			finalBanner := fmt.Sprintf("[...turn truncated - content exceeded %d bytes limit...]", MaxPersistTurnBytes)
+			toPersist.Parts = []*genai.Part{{Text: finalBanner}}
+			data, err = json.Marshal(&toPersist)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal minimal content: %w", err)
+			}
+		}
+	}
+
+	return data, nil
+}
+
 // AppendSessionContent appends a genai.Content turn to <agent_dir>/session.jsonl.
 // If the file exists and its last byte is not a newline (e.g. from a hand-edit that
 // dropped the trailing newline), a healing '\n' is written first so the new turn lands
 // on its own line rather than being merged with the previous one. See D75.
+//
+// Size Guards (D101):
+// Enforces persist-time caps to prevent runaway model outputs from bricking the agent.
+// In the incident motivating D101, a model turn emitted 411 repeated tool-call markup blocks
+// totaling 1.55M characters; persisting that turn raw created a 1.7MB line in session.jsonl,
+// overflowing scanner buffer caps (bufio.Scanner: token too long) and causing subsequent
+// agent generation and session compaction to permanently fail.
+//
+// To guarantee safety:
+//  1. Text parts exceeding MaxPersistTextPartBytes (256KB) are truncated to
+//     head(8192) + banner + tail(8192).
+//  2. The whole marshaled Content is capped at MaxPersistTurnBytes (512KB); if exceeded,
+//     a fallback retains only the first (capped) text part plus a banner noting dropped content.
+//
+// Structured/binary parts (function calls, inline images) are left to the D48 path.
 func AppendSessionContent(agentDir string, content *genai.Content) error {
 	sessionPath := filepath.Join(agentDir, SessionFileName)
 
-	data, err := json.Marshal(content)
+	data, err := sanitizeContentForPersist(content)
 	if err != nil {
-		return fmt.Errorf("failed to marshal content: %w", err)
+		return err
 	}
 	data = append(data, '\n')
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -409,5 +410,144 @@ func TestReadSessionTurns_LargeLineOverOldCap(t *testing.T) {
 	}
 	if got := len(turns[0].Parts[0].Text); got != 1500*1024 {
 		t.Errorf("expected %d chars, got %d", 1500*1024, got)
+	}
+}
+
+func TestAppendSessionContent_TruncatesOversizedTextPart(t *testing.T) {
+	agentDir := t.TempDir()
+
+	origSize := 1500 * 1024 // 1.5MB
+	headPrefix := "HEAD_START_CONTENT_"
+	tailSuffix := "_TAIL_END_CONTENT"
+
+	var sb strings.Builder
+	sb.WriteString(headPrefix)
+	padding := strings.Repeat("M", origSize-len(headPrefix)-len(tailSuffix))
+	sb.WriteString(padding)
+	sb.WriteString(tailSuffix)
+	largeText := sb.String()
+
+	content := genai.NewContentFromText(largeText, "model")
+	if err := AppendSessionContent(agentDir, content); err != nil {
+		t.Fatalf("AppendSessionContent failed: %v", err)
+	}
+
+	turns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed: %v", err)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("expected 1 turn, got %d", len(turns))
+	}
+	if len(turns[0].Parts) != 1 {
+		t.Fatalf("expected 1 part, got %d", len(turns[0].Parts))
+	}
+
+	gotText := turns[0].Parts[0].Text
+
+	// Text length is bounded (~16KB + banner)
+	expectedBanner := fmt.Sprintf("\n[...truncated - original part was %d chars...]\n", origSize)
+	maxExpectedLen := PersistTruncationHead + PersistTruncationTail + len(expectedBanner) + 100
+	if len(gotText) > maxExpectedLen {
+		t.Errorf("text length %d exceeds expected bound %d", len(gotText), maxExpectedLen)
+	}
+
+	// Banner contains original size
+	if !strings.Contains(gotText, fmt.Sprintf("original part was %d chars", origSize)) {
+		t.Errorf("expected text to contain banner with original size %d, got: %q", origSize, gotText)
+	}
+
+	// Head and tail content present
+	if !strings.HasPrefix(gotText, headPrefix) {
+		t.Errorf("expected text to start with head prefix %q", headPrefix)
+	}
+	if !strings.HasSuffix(gotText, tailSuffix) {
+		t.Errorf("expected text to end with tail suffix %q", tailSuffix)
+	}
+}
+
+func TestAppendSessionContent_TruncationPreservesSmallParts(t *testing.T) {
+	agentDir := t.TempDir()
+
+	smallText := "This is a normal user turn with reasonable length."
+	content := genai.NewContentFromText(smallText, "user")
+
+	expectedData, err := json.Marshal(content)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	expectedData = append(expectedData, '\n')
+
+	if err := AppendSessionContent(agentDir, content); err != nil {
+		t.Fatalf("AppendSessionContent failed: %v", err)
+	}
+
+	rawFile, err := os.ReadFile(filepath.Join(agentDir, SessionFileName))
+	if err != nil {
+		t.Fatalf("os.ReadFile failed: %v", err)
+	}
+
+	if string(rawFile) != string(expectedData) {
+		t.Errorf("expected byte-identical output:\nwant: %s\ngot:  %s", string(expectedData), string(rawFile))
+	}
+
+	turns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed: %v", err)
+	}
+	if len(turns) != 1 || turns[0].Parts[0].Text != smallText {
+		t.Errorf("unexpected read turn: %+v", turns)
+	}
+}
+
+func TestAppendSessionContent_WholeContentFallback(t *testing.T) {
+	agentDir := t.TempDir()
+
+	// 3 text parts of 200KB each (total 600KB > 512KB MaxPersistTurnBytes).
+	// Each part is <= 256KB, so part-level capping does not trigger.
+	// Whole-content fallback must trigger and clamp total size to <= 512KB.
+	part1 := "PART1_" + strings.Repeat("a", 200*1024-6)
+	part2 := "PART2_" + strings.Repeat("b", 200*1024-6)
+	part3 := "PART3_" + strings.Repeat("c", 200*1024-6)
+
+	content := &genai.Content{
+		Role: "model",
+		Parts: []*genai.Part{
+			{Text: part1},
+			{Text: part2},
+			{Text: part3},
+		},
+	}
+
+	if err := AppendSessionContent(agentDir, content); err != nil {
+		t.Fatalf("AppendSessionContent failed: %v", err)
+	}
+
+	rawFile, err := os.ReadFile(filepath.Join(agentDir, SessionFileName))
+	if err != nil {
+		t.Fatalf("os.ReadFile failed: %v", err)
+	}
+
+	// Marshaled turn on disk must not exceed MaxPersistTurnBytes + newline
+	if len(rawFile) > MaxPersistTurnBytes+1 {
+		t.Errorf("persisted turn size %d exceeds MaxPersistTurnBytes %d", len(rawFile), MaxPersistTurnBytes)
+	}
+
+	turns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed: %v", err)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("expected 1 turn, got %d", len(turns))
+	}
+	// Fallback should keep only the first text part plus the drop banner
+	if len(turns[0].Parts) != 2 {
+		t.Fatalf("expected 2 parts (first text part + banner), got %d", len(turns[0].Parts))
+	}
+	if !strings.HasPrefix(turns[0].Parts[0].Text, "PART1_") {
+		t.Errorf("expected first part to be preserved, got: %q", turns[0].Parts[0].Text[:50])
+	}
+	if !strings.Contains(turns[0].Parts[1].Text, "remaining content dropped") {
+		t.Errorf("expected second part to be drop banner, got: %q", turns[0].Parts[1].Text)
 	}
 }
