@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -159,6 +160,117 @@ func FormatCompactionNotice(notice string) string {
 	return fmt.Sprintf("<COMPACTION_NOTICE>\n%s\n</COMPACTION_NOTICE>", strings.TrimSpace(notice))
 }
 
+// compactionSeedTokenFraction bounds the disposable compaction session's
+// seeded tokens to half the context window (D101 P1.3). Without it, one
+// megabyte-scale archived turn gets seeded verbatim into the compaction
+// runner and the provider rejects the request with a context-exceeded error,
+// wedging compaction - and therefore the whole session - permanently.
+const compactionSeedTokenFraction = 0.5
+
+// capSeedTokensForCompaction stubs oversized turns, oldest history turn first
+// and the persistent-memory turn at index 0 last, until the total seed
+// estimate fits maxTokens. Never mutates the input turns or parts: only the
+// disposable in-memory seed is affected, session.jsonl rewriting is untouched.
+// A turn that cannot fit even minimal stubs stays stubbed at the banner floor,
+// which keeps turn boundaries and role alternation intact.
+func capSeedTokensForCompaction(turns []*genai.Content, maxTokens int, includeThinking bool) []*genai.Content {
+	if len(turns) == 0 || maxTokens <= 0 {
+		return turns
+	}
+	if EstimateTokens(turns, includeThinking) <= maxTokens {
+		return turns
+	}
+
+	out := make([]*genai.Content, len(turns))
+	copy(out, turns)
+
+	order := make([]int, 0, len(out))
+	for i := 1; i < len(out); i++ {
+		order = append(order, i)
+	}
+	order = append(order, 0)
+
+	for share := maxTokens / len(out); share >= 8; share /= 2 {
+		for _, i := range order {
+			if EstimateTokens([]*genai.Content{out[i]}, includeThinking) <= share {
+				continue
+			}
+			out[i] = stubTurnForSeedShare(out[i], share)
+			if EstimateTokens(out, includeThinking) <= maxTokens {
+				fmt.Fprintf(os.Stderr, "Warning: compaction seed exceeded the %d token budget (D101) - stubbed oversized turn(s) before invoking the compaction runner.\n", maxTokens)
+				return out
+			}
+		}
+	}
+	fmt.Fprintf(os.Stderr, "Warning: compaction seed still exceeds the %d token budget after stubbing every turn (D101) - proceeding with minimal stubs.\n", maxTokens)
+	return out
+}
+
+// stubTurnForSeedShare returns a budget-fitting copy of a turn: TEXT parts are
+// truncated to an equal share of the budget with the same head/banner/tail
+// shape the D101 P0.2 persist cap writes, and non-text parts (tool calls,
+// tool responses, inline data) are replaced by a single drop marker so the
+// summarizing model can still see that they existed.
+func stubTurnForSeedShare(t *genai.Content, maxTurnTokens int) *genai.Content {
+	if t == nil {
+		return t
+	}
+	textCount := 0
+	for _, p := range t.Parts {
+		if isTextPart(p) {
+			textCount++
+		}
+	}
+	origTokens := EstimateTokens([]*genai.Content{t}, true)
+	nonText := len(t.Parts) - textCount
+	if textCount == 0 || maxTurnTokens*4 < 32 {
+		return &genai.Content{Role: t.Role, Parts: []*genai.Part{{Text: fmt.Sprintf("[...%d non-text part(s) dropped for compaction seed budget - original turn ~%d tokens...]", nonText, origTokens)}}}
+	}
+
+	per := maxTurnTokens * 4 / textCount
+	stub := &genai.Content{Role: t.Role}
+	dropped := 0
+	for _, p := range t.Parts {
+		if p == nil {
+			continue
+		}
+		if !isTextPart(p) {
+			dropped++
+			continue
+		}
+		cloned := *p
+		cloned.Text = truncateTurnTextToBudget(cloned.Text, per)
+		stub.Parts = append(stub.Parts, &cloned)
+	}
+	if dropped > 0 {
+		stub.Parts = append(stub.Parts, &genai.Part{Text: fmt.Sprintf("[...%d non-text part(s) dropped for compaction seed budget...]", dropped)})
+	}
+	return stub
+}
+
+// truncateTurnTextToBudget is the adaptive-head/tail twin of
+// truncatePersistTextPart: identical banner format, head and tail sized to
+// half of budgetChars each at valid rune boundaries.
+func truncateTurnTextToBudget(text string, budgetChars int) string {
+	if len(text) <= budgetChars {
+		return text
+	}
+	half := budgetChars / 2
+	if half < 16 {
+		return fmt.Sprintf("[...part dropped for compaction seed budget - original part was %d chars...]", len(text))
+	}
+	head := text[:half]
+	for len(head) > 0 && !utf8.RuneStart(text[len(head)]) {
+		head = head[:len(head)-1]
+	}
+	tailStart := len(text) - half
+	for tailStart < len(text) && !utf8.RuneStart(text[tailStart]) {
+		tailStart++
+	}
+	banner := fmt.Sprintf("\n[...truncated - original part was %d chars...]\n", len(text))
+	return head + banner + text[tailStart:]
+}
+
 // CheckAndCompactSession checks if the session exceeds contextWindow and performs compaction,
 // preserving the exact session prefix to optimize prompt caching according to D38/D45.
 // force skips the contextWindow/token-estimate gate checks below (D44) - still
@@ -273,6 +385,14 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 	memTurnText := FormatPersistentMemoryTurn(existingMemory)
 	memTurn := genai.NewContentFromText(memTurnText, "user")
 	seedContents := CleanSessionTurns(append([]*genai.Content{memTurn}, compactTurns...))
+
+	// D101 P1.3: cap the disposable seed so a megabyte-scale archived turn
+	// cannot blow the compaction runner itself up with a context-exceeded
+	// provider error.
+	if runtimeCfg != nil && runtimeCfg.ContextWindow > 0 {
+		maxSeedTokens := int(float64(runtimeCfg.ContextWindow) * compactionSeedTokenFraction)
+		seedContents = capSeedTokensForCompaction(seedContents, maxSeedTokens, preserveThinking)
+	}
 
 	sessionSvc := session.InMemoryService()
 	createResp, err := sessionSvc.Create(ctx, &session.CreateRequest{
