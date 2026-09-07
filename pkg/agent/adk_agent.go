@@ -21,6 +21,52 @@ import (
 // BuildADKAgent/LoadFolderAgent's own <= 0 fallback).
 const DefaultMaxToolTurns = 300
 
+// MaxEgressTextPartBytes caps a single TEXT part of a model response at the
+// moment it leaves the model layer (D101 P1.3). Intentionally the same size
+// as the D101 P0.2 persist cap so a capped part looks byte-for-byte identical
+// regardless of which guard fires.
+const MaxEgressTextPartBytes = 256 * 1024
+
+// capOversizedEgressResponse returns a shallow copy of llmResponse with every
+// oversized TEXT part truncated to the D101 P0.2 head/banner/tail format, or
+// nil when no intervention is needed. Only the terminal (non-partial,
+// non-error) response is inspected: ADK persists just the non-partial events,
+// and a model adapter's streaming accumulator builds the final aggregate
+// independently of what a callback returns for partials, so the terminal
+// response is the single effective clamp point. UsageMetadata and all other
+// fields ride along on the shallow copy untouched; ADK re-wraps a non-nil
+// callback return with the original event ID
+// (internal/llminternal/base_flow.go:811-815).
+func capOversizedEgressResponse(llmResponse *model.LLMResponse, llmResponseError error) *model.LLMResponse {
+	if llmResponse == nil || llmResponseError != nil || llmResponse.Partial || llmResponse.Content == nil {
+		return nil
+	}
+	oversized := 0
+	for _, p := range llmResponse.Content.Parts {
+		if isTextPart(p) && len(p.Text) > MaxEgressTextPartBytes {
+			oversized++
+		}
+	}
+	if oversized == 0 {
+		return nil
+	}
+	capped := *llmResponse
+	content := *llmResponse.Content
+	content.Parts = make([]*genai.Part, len(llmResponse.Content.Parts))
+	for i, p := range llmResponse.Content.Parts {
+		if isTextPart(p) && len(p.Text) > MaxEgressTextPartBytes {
+			cloned := *p
+			cloned.Text = truncatePersistTextPart(p.Text)
+			content.Parts[i] = &cloned
+		} else {
+			content.Parts[i] = p
+		}
+	}
+	capped.Content = &content
+	fmt.Fprintf(os.Stderr, "Warning: capped %d oversized text part(s) in model response at the D101 egress cap (%d bytes).\n", oversized, MaxEgressTextPartBytes)
+	return &capped
+}
+
 // CreateGeminiModel instantiates a native Gemini LLM model using Google ADK model package.
 func CreateGeminiModel(ctx context.Context, modelName string, apiKey string) (model.LLM, error) {
 	if modelName == "" {
@@ -156,6 +202,9 @@ func BuildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 						tracker.LastTotalTokens = llmResponse.UsageMetadata.PromptTokenCount + llmResponse.UsageMetadata.CandidatesTokenCount
 					}
 					tracker.LastUsageMetadata = llmResponse.UsageMetadata
+				}
+				if capped := capOversizedEgressResponse(llmResponse, llmResponseError); capped != nil {
+					return capped, nil
 				}
 				return nil, nil
 			},
