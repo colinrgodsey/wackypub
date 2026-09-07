@@ -67,6 +67,53 @@ func capOversizedEgressResponse(llmResponse *model.LLMResponse, llmResponseError
 	return &capped
 }
 
+// failureBreakerThreshold is the number of consecutive identical tool failures
+// tolerated before the turn is aborted (D101 P1.3).
+const failureBreakerThreshold = 3
+
+// failureSnippet collapses whitespace and rune-safely shortens an error to a
+// single-line snippet suitable for user-visible abort messages.
+func failureSnippet(err error) string {
+	s := strings.Join(strings.Fields(err.Error()), " ")
+	r := []rune(s)
+	if len(r) > 200 {
+		return string(r[:200]) + "..."
+	}
+	return s
+}
+
+// recordConsecutiveToolFailure feeds one tool failure into the turn-scoped
+// circuit breaker. A schema-validation-shaped error ("missing properties",
+// "is required") aborts immediately - the model will deterministically repeat
+// it. Any other failure aborts only after failureBreakerThreshold consecutive
+// identical failures (same tool, same error), so transient errors and varied
+// retries still get their chances. Detection lives here, in the ADK tool-error
+// callback, not in individual tool implementations.
+func recordConsecutiveToolFailure(tracker *TurnUsageTracker, toolName string, err error) {
+	if tracker == nil || err == nil || tracker.FailureBreakerTripped {
+		return
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "missing properties") || strings.Contains(lower, "is required") {
+		tracker.FailureBreakerTripped = true
+		tracker.FailureBreakerMessage = fmt.Sprintf("Tool %q failed schema validation (%s) - aborting turn instead of retrying.", toolName, failureSnippet(err))
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", tracker.FailureBreakerMessage)
+		return
+	}
+	sig := toolName + "|" + err.Error()
+	if sig == tracker.ConsecutiveFailureSignature {
+		tracker.ConsecutiveFailureCount++
+	} else {
+		tracker.ConsecutiveFailureSignature = sig
+		tracker.ConsecutiveFailureCount = 1
+	}
+	if tracker.ConsecutiveFailureCount >= failureBreakerThreshold {
+		tracker.FailureBreakerTripped = true
+		tracker.FailureBreakerMessage = fmt.Sprintf("Tool %q failed %d consecutive times with an identical error (%s) - aborting turn instead of retrying.", toolName, tracker.ConsecutiveFailureCount, failureSnippet(err))
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", tracker.FailureBreakerMessage)
+	}
+}
+
 // CreateGeminiModel instantiates a native Gemini LLM model using Google ADK model package.
 func CreateGeminiModel(ctx context.Context, modelName string, apiKey string) (model.LLM, error) {
 	if modelName == "" {
@@ -156,6 +203,12 @@ type TurnUsageTracker struct {
 	LastUsageMetadata         *genai.GenerateContentResponseUsageMetadata
 	StoppedEarlyForCompaction bool
 	DisableAutoContinuation   bool
+
+	// Consecutive-identical-failure circuit breaker state (D101 P1.3), reset per turn.
+	ConsecutiveFailureSignature string
+	ConsecutiveFailureCount     int
+	FailureBreakerTripped       bool
+	FailureBreakerMessage       string
 }
 
 // Reset clears turn usage and call count before starting a new turn or compaction pass.
@@ -169,6 +222,10 @@ func (t *TurnUsageTracker) Reset() {
 	t.LastTotalTokens = 0
 	t.LastUsageMetadata = nil
 	t.StoppedEarlyForCompaction = false
+	t.ConsecutiveFailureSignature = ""
+	t.ConsecutiveFailureCount = 0
+	t.FailureBreakerTripped = false
+	t.FailureBreakerMessage = ""
 }
 
 // BuildADKAgentWithConfigAndTracker constructs a Google ADK LLMAgent for an agent directory, applying RuntimeConfig settings and tracking turn usage.
@@ -209,8 +266,28 @@ func BuildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 				return nil, nil
 			},
 		},
+		OnToolErrorCallbacks: []llmagent.OnToolErrorCallback{
+			func(ctx agent.Context, t tool.Tool, args map[string]any, err error) (map[string]any, error) {
+				if err != nil {
+					name := ""
+					if t != nil {
+						name = t.Name()
+					}
+					recordConsecutiveToolFailure(tracker, name, err)
+				}
+				return nil, nil
+			},
+		},
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			func(ctx agent.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
+				if tracker.FailureBreakerTripped {
+					return &model.LLMResponse{
+						Content: &genai.Content{
+							Role:  "model",
+							Parts: []*genai.Part{{Text: "[" + tracker.FailureBreakerMessage + "]"}},
+						},
+					}, nil
+				}
 				tracker.ModelCalls++
 				if thinkingConfig != nil {
 					if req.Config == nil {

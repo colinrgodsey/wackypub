@@ -166,7 +166,7 @@ func (m *loopingToolModel) GenerateContent(ctx context.Context, req *model.LLMRe
 					{
 						FunctionCall: &genai.FunctionCall{
 							Name: m.toolName,
-							Args: map[string]any{"id": 1, "text": "loop"},
+							Args: map[string]any{"text": "loop"},
 						},
 					},
 				},
