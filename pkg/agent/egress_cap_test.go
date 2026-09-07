@@ -51,6 +51,65 @@ func TestCapOversizedEgressResponse_UnderCapUnchanged(t *testing.T) {
 	}
 }
 
+func TestCapOversizedEgressResponse_ExactBoundary(t *testing.T) {
+	// (MINOR-2) Assert the strict > vs >= boundary decision for egress cap:
+	// len(text) == MaxEgressTextPartBytes is left alone (returns nil).
+	// len(text) == MaxEgressTextPartBytes + 1 is truncated (returns capped response).
+	exactText := strings.Repeat("a", MaxEgressTextPartBytes)
+	exactResp := &model.LLMResponse{
+		Content: &genai.Content{Role: "model", Parts: []*genai.Part{{Text: exactText}}},
+	}
+	if got := capOversizedEgressResponse(exactResp, nil); got != nil {
+		t.Errorf("expected len == MaxEgressTextPartBytes (%d) to pass through untouched (got non-nil)", MaxEgressTextPartBytes)
+	}
+
+	overText := exactText + "b"
+	overResp := &model.LLMResponse{
+		Content: &genai.Content{Role: "model", Parts: []*genai.Part{{Text: overText}}},
+	}
+	got := capOversizedEgressResponse(overResp, nil)
+	if got == nil {
+		t.Fatalf("expected len == MaxEgressTextPartBytes + 1 (%d) to trigger truncation (got nil)", len(overText))
+	}
+	if !strings.Contains(got.Content.Parts[0].Text, "truncated - original part was 262145 chars") {
+		t.Errorf("expected truncation banner for 262145 chars, got: %q", got.Content.Parts[0].Text[:100])
+	}
+}
+
+func TestTruncatePersistTextPart_ExactBoundary(t *testing.T) {
+	// (MINOR-2) Assert the strict > vs >= boundary decision for persist cap:
+	// len(text) == MaxPersistTextPartBytes is left alone.
+	// len(text) == MaxPersistTextPartBytes + 1 is truncated.
+	exactText := strings.Repeat("x", MaxPersistTextPartBytes)
+	if got := truncatePersistTextPart(exactText); got != exactText {
+		t.Errorf("expected exact length %d to pass through truncatePersistTextPart untouched", MaxPersistTextPartBytes)
+	}
+
+	content := &genai.Content{Role: "user", Parts: []*genai.Part{{Text: exactText}}}
+	sanitized, err := sanitizeContentForPersist(content)
+	if err != nil {
+		t.Fatalf("sanitizeContentForPersist failed: %v", err)
+	}
+	if strings.Contains(string(sanitized), "truncated - original part was") {
+		t.Errorf("expected exact length %d not to be truncated in sanitizeContentForPersist", MaxPersistTextPartBytes)
+	}
+
+	overText := exactText + "y"
+	gotOver := truncatePersistTextPart(overText)
+	if gotOver == overText || !strings.Contains(gotOver, "truncated - original part was 262145 chars") {
+		t.Errorf("expected len == MaxPersistTextPartBytes + 1 to be truncated with banner")
+	}
+
+	overContent := &genai.Content{Role: "user", Parts: []*genai.Part{{Text: overText}}}
+	sanitizedOver, err := sanitizeContentForPersist(overContent)
+	if err != nil {
+		t.Fatalf("sanitizeContentForPersist failed on overText: %v", err)
+	}
+	if !strings.Contains(string(sanitizedOver), "truncated - original part was 262145 chars") {
+		t.Errorf("expected overText to carry truncation banner in sanitizeContentForPersist")
+	}
+}
+
 func TestCapOversizedEgressResponse_TruncatesWithBanner(t *testing.T) {
 	original := strings.Repeat("abcdefgh", 40_000) // 320_000 bytes > 256KB cap
 	usage := &genai.GenerateContentResponseUsageMetadata{PromptTokenCount: 11, CandidatesTokenCount: 70157, TotalTokenCount: 70168}
