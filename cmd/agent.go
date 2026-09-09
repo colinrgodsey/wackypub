@@ -4,12 +4,16 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -20,6 +24,8 @@ var (
 	messageFlag        string
 	compactMDFile      string
 	compactRuntimeFile string
+	detachFlag         bool
+	detachTimeoutFlag  time.Duration
 )
 
 func signalCtx() (context.Context, context.CancelFunc) {
@@ -514,7 +520,38 @@ what's printed, though it is still persisted to session.jsonl).`,
 			return fmt.Errorf("user message is required. Provide via argument, --message flag, or stdin pipe")
 		}
 
-		ctx, stop := signalCtx()
+		// D103: detached turn execution. The parent validates authorization and
+		// busy-target state synchronously, then re-execs self as a detached child
+		// that runs the full prompt flow under its own session lock and deadline.
+		if detachFlag {
+			return dispatchDetachedTurn(cmd, sdk, agentID, userMsg, args)
+		}
+
+		// Item 3: the detached worker bounds the whole turn with context.WithTimeout
+		// (--command-timeout-seconds only bounds individual tool executions). If the
+		// turn does not unwind within the grace period after cancellation, a
+		// watchdog escalates by force-exiting 124 so a wedged runner cannot hang
+		// forever as a zombie detached child.
+		var ctx context.Context
+		var stop context.CancelFunc
+		if os.Getenv("WACKYPUB_DETACH_WORKER") == "1" {
+			timeout := detachTimeoutFlag
+			if envTimeout := os.Getenv("WACKYPUB_DETACH_TIMEOUT"); envTimeout != "" {
+				if d, err := time.ParseDuration(envTimeout); err == nil {
+					timeout = d
+				}
+			}
+			ctx, stop = context.WithTimeout(context.Background(), timeout)
+			go func() {
+				<-ctx.Done()
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					time.Sleep(10 * time.Second)
+					os.Exit(124)
+				}
+			}()
+		} else {
+			ctx, stop = signalCtx()
+		}
 		defer stop()
 		first := true
 		for chunk, err := range sdk.AddAndGenerateTurnStream(ctx, agentID, userMsg, func(w string) {
@@ -533,6 +570,164 @@ what's printed, though it is still persisted to session.jsonl).`,
 		}
 		return nil
 	},
+}
+
+// dispatchDetachedTurn implements the D103 parent side: validate the target
+// synchronously, fail fast when the target session is busy, mint a per-request
+// correlation ID, propagate the full upstream call chain, then spawn a
+// detached (Setsid) child that re-execs this binary without --detach to run
+// the actual turn under its own session lock and deadline.
+func dispatchDetachedTurn(cmd *cobra.Command, sdk *adkAgent.AgentSDK, agentID, userMsg string, args []string) error {
+	// Item 1: Parent performs explicit ValidateAgentTarget before spawn; the child
+	// re-checks as defense-in-depth (permissions may change post-dispatch).
+	a2aMeta, err := adkAgent.ValidateAgentTarget(agentID)
+	if err != nil {
+		return err
+	}
+
+	// Item 4: Busy-target decision - fail fast with a clear error rather than
+	// queuing silently in an untimed POSIX flock wait queue.
+	targetLock, err := adkAgent.TryAcquireSessionLock(sdk.AgentDir(agentID))
+	if err != nil {
+		return fmt.Errorf("target agent %q is busy; detached dispatch rejected: %w", agentID, err)
+	}
+	targetLock.Release()
+
+	// Item 7: Pin CWD as the identity anchor for the detached child.
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current working directory: %w", err)
+	}
+
+	// Mint a fresh per-request correlation ID distinct from the chain-level trace ID.
+	corrID := adkAgent.GenerateTraceID()
+	if a2aMeta == nil {
+		a2aMeta = &adkAgent.A2AMetadata{Metadata: make(map[string]string)}
+	}
+	if a2aMeta.Metadata == nil {
+		a2aMeta.Metadata = make(map[string]string)
+	}
+	a2aMeta.Metadata[adkAgent.CorrelationIDMetadataKey] = corrID
+	a2aMeta.Metadata["request_id"] = corrID
+
+	// Preserve the full upstream call chain (caller's incoming chain, not just
+	// [caller, target]) so a response-direction cycle is still caught downstream.
+	upstreamMeta, err := adkAgent.ParseA2AMetadata()
+	if err != nil {
+		return fmt.Errorf("failed to parse upstream A2A metadata: %w", err)
+	}
+	if upstreamMeta == nil {
+		upstreamMeta = &adkAgent.A2AMetadata{Metadata: make(map[string]string)}
+	}
+	if upstreamMeta.Metadata == nil {
+		upstreamMeta.Metadata = make(map[string]string)
+	}
+	if len(upstreamMeta.CallChain) == 0 {
+		// Fresh top-level dispatch from an agent directory: anchor with the caller.
+		if callerID, ok := adkAgent.CurrentAgentIDFromCWD(); ok {
+			upstreamMeta.CallChain = []string{callerID}
+			upstreamMeta.CallerID = callerID
+		}
+	}
+	upstreamMeta.TraceID = a2aMeta.TraceID
+	for k, v := range a2aMeta.Metadata {
+		upstreamMeta.Metadata[k] = v
+	}
+
+	childA2AJSON, err := upstreamMeta.Encode()
+	if err != nil {
+		return fmt.Errorf("failed to encode child A2A metadata: %w", err)
+	}
+
+	// Item 2: Setsid + explicit stdio redirection. stdin/stdout to /dev/null,
+	// stderr captured to <agentDir>/.detach/<corrID>.log for diagnostics.
+	logDir := filepath.Join(sdk.AgentDir(agentID), ".detach")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return fmt.Errorf("failed to create detach log directory: %w", err)
+	}
+	logPath := filepath.Join(logDir, fmt.Sprintf("%s.log", corrID))
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open detach log file %s: %w", logPath, err)
+	}
+	defer logFile.Close()
+
+	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("failed to open %s: %w", os.DevNull, err)
+	}
+	defer devNull.Close()
+
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to resolve executable: %w", err)
+	}
+
+	// Re-exec self with --detach removed so the child runs the normal blocking
+	// prompt path (never recursing into detached dispatch).
+	childArgs := removeFlag(os.Args[1:], "--detach")
+	hasMessage := false
+	for _, a := range childArgs {
+		if a == "--message" || strings.HasPrefix(a, "--message=") {
+			hasMessage = true
+			break
+		}
+	}
+	if !hasMessage && len(args) < 2 {
+		childArgs = append(childArgs, "--message", userMsg)
+	}
+
+	child := exec.Command(exe, childArgs...)
+	child.Dir = cwd // identity anchor
+	child.Stdin = devNull
+	child.Stdout = devNull
+	child.Stderr = logFile
+	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	// Build the child environment: inherit the caller's env, then inject the
+	// A2A payload, call chain, worker marker, fail-fast lock, and timeout.
+	envMap := make(map[string]string, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+	envMap[adkAgent.Agent2AgentEnvVar] = childA2AJSON
+	if len(upstreamMeta.CallChain) > 0 {
+		envMap[adkAgent.CallChainEnvVar] = strings.Join(upstreamMeta.CallChain, ",")
+	}
+	envMap["WACKYPUB_DETACH_WORKER"] = "1"
+	envMap["WACKYPUB_FAIL_FAST_LOCK"] = "1"
+	envMap["WACKYPUB_DETACH_TIMEOUT"] = detachTimeoutFlag.String()
+
+	child.Env = make([]string, 0, len(envMap))
+	for k, v := range envMap {
+		child.Env = append(child.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	if err := child.Start(); err != nil {
+		return fmt.Errorf("failed to spawn detached turn for agent %q: %w", agentID, err)
+	}
+
+	// Item 2: dispatch receipt names where diagnostics and logs are stored.
+	fmt.Printf("spawned detached turn for agent %q (pid %d, correlation %s, log: %s)\n",
+		agentID, child.Process.Pid, corrID, logPath)
+	return nil
+}
+
+// removeFlag removes a boolean flag and its optional =value form from argv,
+// preserving all other arguments and their ordering.
+func removeFlag(args []string, flag string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == flag || strings.HasPrefix(a, flag+"=") {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // wackypub agent <agent_id> repl OR wackypub agent repl <agent_id>
@@ -925,6 +1120,10 @@ func init() {
 	// panics on the collision as soon as --help (or completion) merges the two flag sets.
 	agentAddCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
 	agentPromptCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
+	agentPromptCmd.Flags().BoolVar(&detachFlag, "detach", false, "Spawn target generation as a detached background process and return immediately")
+	agentPromptCmd.Flags().DurationVar(&detachTimeoutFlag, "detach-timeout", 15*time.Minute, "Execution deadline for detached agent generation")
+	agentCmd.Flags().BoolVar(&detachFlag, "detach", false, "Spawn target generation as a detached background process and return immediately")
+	agentCmd.Flags().DurationVar(&detachTimeoutFlag, "detach-timeout", 15*time.Minute, "Execution deadline for detached agent generation")
 	agentCompactCmd.Flags().StringVar(&compactMDFile, "md-file", "", "Path to alternate COMPACT.md file to use for compaction recipe")
 	agentCompactCmd.Flags().StringVar(&compactRuntimeFile, "runtime", "", "Path to alternate runtime.json file to use for compaction")
 	scratchpadCreateCmd.Flags().StringVar(&messageFlag, "message", "", "Scratchpad text payload")
