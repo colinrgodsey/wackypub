@@ -1,6 +1,6 @@
 ---
 name: wackypub-ws
-description: Guide for setting up, structuring, and managing WackyPub AI agent workspaces, including git versioning, manifest snapshots, remote sync, and symlink organization.
+description: Guide for setting up, structuring, and managing WackyPub AI agent workspaces, including git versioning, manifest snapshots, remote sync, symlink organization, and an AGENTS.md brace gotcha.
 always_load: false
 ---
 # WackyPub AI Workspace Setup & Management Guide
@@ -131,3 +131,56 @@ my_workspace/
 └── agent_b/
     └── runtime.json -> ../runtimes/gemini-flash.json
 ```
+
+## Gotcha: Braces in `AGENTS.md` Are Session-State Lookups
+
+Everything in `AGENTS.md` becomes the agent's ADK instruction, and ADK scans that whole string for
+`{...}` placeholders before the model ever sees it. A braced span whose contents look like an
+identifier is resolved against session state, and a missing key fails the turn outright:
+
+```text
+failed to append instructions: failed to inject session state into instruction: state key does not exist
+```
+
+So a placeholder you wrote for human readers is not inert text. Shell style does not save you: in
+`${OPENROUTER_API_KEY}` the `$` is an ordinary character, and `{OPENROUTER_API_KEY}` is still matched
+and looked up.
+
+| Written in `AGENTS.md` | What actually happens |
+|---|---|
+| `{OPENROUTER_API_KEY}`, `${OPENROUTER_API_KEY}` | State lookup for `OPENROUTER_API_KEY`; turn dies if the key is not in session state |
+| `{HOME}`, `${HOME}` | Same trap; the `$` changes nothing |
+| `{app:theme}`, `{user:lang}` | Prefixed state lookup (`app:` / `user:` / `temp:`); same failure if unset |
+| `{nickname?}` | No error, but the span renders as an empty string, silently eating your sentence |
+| `{artifact.summary}` | Loads an artifact by that name, and errors if the artifact service is unset or the file is missing |
+| `{"a": 1}`, `{my-var}` | Not a valid state name, so passed through unchanged |
+| `OPENROUTER_API_KEY`, `$HOME` (unbraced) | Safe, reaches the model verbatim |
+
+Mechanism, for anyone chasing the error: the rendered prompt (`RenderAgentSystemPrompt`,
+`pkg/agent/macro.go:49`) is handed to ADK as the agent instruction
+(`BuildADKAgentWithConfigAndTracker`, `pkg/agent/adk_agent.go:380`), and ADK v2.0.0 applies
+the placeholder regex `{+[^{}]*}+` (`internal/llminternal/instruction_processor.go:70`) across it in
+`InjectSessionState` (`instruction_processor.go:204`). Brace stripping, the `?` optional suffix, the
+`artifact.` prefix, and the fall-through for invalid names all live in `replaceMatch`
+(`instruction_processor.go:121`); the error is `session.ErrStateKeyNotExist`
+(`session/session.go:272`). `@`-included files are expanded before this point, so braces in
+*them* are resolved too.
+
+Always-loaded skills count as instruction text too: `RenderAgentSystemPrompt` appends the
+`<AUTOLOADED_SKILLS>` block, and that block embeds each always-load skill's **body**
+(`pkg/agent/skill.go:199`) onto the end of the prompt (`pkg/agent/macro.go:72`). A brace-delimited
+identifier anywhere in an `always_load: true` skill fails every turn for that agent, not just turns
+that mention it. The file you are reading is `always_load: false`, which is why the examples above
+are inert here.
+
+**Safe pattern:** name environment variables unbraced in prose ("the `OPENROUTER_API_KEY` environment
+variable"). Reserve braces for real session-state injection, which is what they mean, and add `?`
+only when an empty substitution is genuinely what you want. Before committing, check the file:
+
+```bash
+grep -oE '\{+[^{}]*\}+' AGENTS.md | tr -d '{}' | sed 's/?$//' \
+  | grep -E '^([A-Za-z_][A-Za-z0-9_]*|(app|user|temp):[A-Za-z_][A-Za-z0-9_]*|artifact\..*)$'
+```
+
+Every line of output is a span ADK will try to resolve. Empty output means nothing in the file will
+be treated as a lookup.
