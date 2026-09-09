@@ -19,6 +19,26 @@ Agent guidelines for working in the `WackyPub` repository.
 > compaction mechanics, file schemas), see [docs/agents.md](../docs/agents.md) -
 > this file is orientation, that one is reference.
 
+## Wiki mirror: publish cadence and pre-push scan
+
+The public wiki ([Decisions index](https://github.com/colinrgodsey/wackypub/wiki/Decisions)) is a
+generated mirror of GitKB, maintained by the archivist agent (`barnaby`). GitKB is the source of
+truth: wiki pages are regenerated from GitKB documents and are never hand-edited. Only decision and
+ADR documents are mirrored; task documents, with their acceptance criteria and incident detail, stay
+in GitKB and are not published.
+
+**Cadence (official, decided by Colin): sync on PR-open, flip badges on merge.** A decision's wiki
+page goes up as soon as its implementation PR opens, while the GitKB document is at `ready` or
+`in-review`, so the spec is reviewable on-wiki next to the diff. The page is regenerated when the PR
+merges and its status badge flips to `completed`. Never push raw drafts or abandoned tasks.
+
+**Pre-push credential scan (mandatory).** The wiki is public, so every sync runs the credential
+scanner built into the mirror tooling, which hard-fails the push on any hit. GitHub wikis retain
+full page history, so a credential that lands once cannot be removed by deleting or editing the
+page afterward. If a decision or task body ever contains a real credential, remove it from GitKB
+before the next sync and treat the value as leaked (rotate it) rather than counting on the wiki's
+history being scrubbed.
+
 ## Personality and Harness Overrides
 
 - Be conversative- ask questions, give explanations, be valuable during workshopping.
