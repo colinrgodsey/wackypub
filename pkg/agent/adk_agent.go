@@ -77,7 +77,7 @@ func capOversizedEgressResponse(llmResponse *model.LLMResponse, llmResponseError
 
 // failureBreakerThreshold is the number of consecutive identical tool failures
 // tolerated before the turn is aborted (D101 P1.4).
-const failureBreakerThreshold = 3
+const failureBreakerThreshold = 10
 
 // failureSnippet collapses whitespace and rune-safely shortens an error to a
 // single-line snippet suitable for user-visible abort messages.
@@ -188,14 +188,24 @@ func recordConsecutiveToolFailure(tracker *TurnUsageTracker, toolName string, ar
 		return
 	}
 
+	sig := computeFailureSignature(toolName, args, err)
 	if isSchemaValidationError(err) {
-		tracker.FailureBreakerTripped = true
-		tracker.FailureBreakerMessage = fmt.Sprintf("Tool %q failed schema validation (%s) - aborting turn instead of retrying.", toolName, failureSnippet(err))
-		fmt.Fprintf(os.Stderr, "Warning: %s\n", tracker.FailureBreakerMessage)
+		// D110: route schema-validation errors through the same K=failureBreakerThreshold
+		// counter as general failures, instead of aborting immediately. The previous
+		// K=1 behavior aborted turns on planning-phase skeleton tool calls (just the
+		// tool name, no args) which the model could not recover from. K=10 still
+		// catches a model genuinely stuck on the same broken call.
+		tracker.ConsecutiveFailureSignature = sig
+		tracker.ConsecutiveFailureCount++
+		if tracker.ConsecutiveFailureCount >= failureBreakerThreshold {
+			tracker.FailureBreakerTripped = true
+			tracker.FailureBreakerMessage = fmt.Sprintf("Tool %q failed schema validation %d consecutive times - aborting turn.", toolName, tracker.ConsecutiveFailureCount)
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", tracker.FailureBreakerMessage)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "Warning: Tool %q failed schema validation (attempt %d/%d) - continuing.\n", toolName, tracker.ConsecutiveFailureCount, failureBreakerThreshold)
 		return
 	}
-
-	sig := computeFailureSignature(toolName, args, err)
 	if sig == tracker.ConsecutiveFailureSignature {
 		tracker.ConsecutiveFailureCount++
 	} else {

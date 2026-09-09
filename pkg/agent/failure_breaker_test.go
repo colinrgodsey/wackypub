@@ -26,19 +26,21 @@ func TestRecordConsecutiveToolFailure_IdenticalTripsAtThreshold(t *testing.T) {
 	tr := &TurnUsageTracker{}
 	err := errors.New("permission denied for /root/secret")
 	args := map[string]any{"path": "/root/secret"}
-	recordConsecutiveToolFailure(tr, "files-rw", args, err)
-	if tr.FailureBreakerTripped {
-		t.Fatalf("tripped after a single non-schema failure")
-	}
-	recordConsecutiveToolFailure(tr, "files-rw", args, err)
-	if tr.ConsecutiveFailureCount != 2 {
-		t.Fatalf("expected count 2, got %d", tr.ConsecutiveFailureCount)
+	// Loop up to failureBreakerThreshold-1, asserting no trip, then the K-th call trips.
+	for i := 1; i < failureBreakerThreshold; i++ {
+		recordConsecutiveToolFailure(tr, "files-rw", args, err)
+		if tr.FailureBreakerTripped {
+			t.Fatalf("tripped prematurely at iteration %d (D110 K=%d)", i, failureBreakerThreshold)
+		}
+		if tr.ConsecutiveFailureCount != i {
+			t.Fatalf("expected count %d at iteration %d, got %d", i, i, tr.ConsecutiveFailureCount)
+		}
 	}
 	recordConsecutiveToolFailure(tr, "files-rw", args, err)
 	if !tr.FailureBreakerTripped {
-		t.Fatalf("expected trip at %d identical failures", failureBreakerThreshold)
+		t.Fatalf("expected trip at %d identical failures (D110 raised K from 3 to 10)", failureBreakerThreshold)
 	}
-	if !strings.Contains(tr.FailureBreakerMessage, "3 consecutive times") || !strings.Contains(tr.FailureBreakerMessage, "files-rw") {
+	if !strings.Contains(tr.FailureBreakerMessage, fmt.Sprintf("%d consecutive times", failureBreakerThreshold)) || !strings.Contains(tr.FailureBreakerMessage, "files-rw") {
 		t.Errorf("unexpected breaker message: %q", tr.FailureBreakerMessage)
 	}
 }
@@ -84,18 +86,25 @@ func TestRecordConsecutiveToolFailure_IdenticalArgsVaryingNumericErrorTrips(t *t
 		"request failed with HTTP 503 after 120ms (request id req-1001)",
 		"request failed with HTTP 503 after 245ms (request id req-1002)",
 		"request failed with HTTP 503 after 390ms (request id req-1003)",
+		"request failed with HTTP 503 after 512ms (request id req-1004)",
+		"request failed with HTTP 503 after 75ms  (request id req-1005)",
+		"request failed with HTTP 503 after 998ms (request id req-1006)",
+		"request failed with HTTP 503 after 50ms  (request id req-1007)",
+		"request failed with HTTP 503 after 305ms (request id req-1008)",
+		"request failed with HTTP 503 after 421ms (request id req-1009)",
+		"request failed with HTTP 503 after 188ms (request id req-1010)",
 	}
 	for i, errMsg := range errorsList {
 		recordConsecutiveToolFailure(tr, "web_query", args, errors.New(errMsg))
-		if i < 2 && tr.FailureBreakerTripped {
+		if i < failureBreakerThreshold-1 && tr.FailureBreakerTripped {
 			t.Fatalf("breaker tripped prematurely at iteration %d", i)
 		}
 	}
 	if !tr.FailureBreakerTripped {
 		t.Fatalf("expected breaker to trip for identical args with normalized error, but it did not")
 	}
-	if tr.ConsecutiveFailureCount != 3 {
-		t.Errorf("expected count 3, got %d", tr.ConsecutiveFailureCount)
+	if tr.ConsecutiveFailureCount != failureBreakerThreshold {
+		t.Errorf("expected count %d (D110 K), got %d", failureBreakerThreshold, tr.ConsecutiveFailureCount)
 	}
 }
 
@@ -178,22 +187,28 @@ func TestRecordConsecutiveToolFailure_ConcurrentRace(t *testing.T) {
 	}
 }
 
-func TestRecordConsecutiveToolFailure_SchemaFastAbort(t *testing.T) {
+// TestRecordConsecutiveToolFailure_SchemaDoesNotFastAbort (D110): a single schema-shaped
+// error no longer trips the breaker. The model is given K=failureBreakerThreshold chances
+// to recover. The K=1 fast-abort was removed because it killed turns on planning-phase
+// skeleton tool calls (just the tool name, no args).
+func TestRecordConsecutiveToolFailure_SchemaDoesNotFastAbort(t *testing.T) {
 	for _, msg := range []string{
 		`invalid tool arguments: missing properties: "path"`,
 		`invalid arguments: "text" is required`,
 	} {
 		tr := &TurnUsageTracker{}
 		recordConsecutiveToolFailure(tr, "files-rw", map[string]any{"dummy": 1}, errors.New(msg))
-		if !tr.FailureBreakerTripped {
-			t.Errorf("expected immediate trip for schema error %q", msg)
+		if tr.FailureBreakerTripped {
+			t.Errorf("D110: schema error %q should NOT trip breaker on first occurrence (was K=1, now K=%d)", msg, failureBreakerThreshold)
 		}
-		if !strings.Contains(tr.FailureBreakerMessage, "schema validation") {
-			t.Errorf("expected schema wording in message, got %q", tr.FailureBreakerMessage)
+		if tr.ConsecutiveFailureCount != 1 {
+			t.Errorf("expected ConsecutiveFailureCount=1 after first schema error, got %d", tr.ConsecutiveFailureCount)
 		}
 	}
 
-	// (MINOR-1) Unscoped "is required" must NOT trigger fast-abort
+	// Unscoped "is required" must not be confused with schema validation. With D110 the
+	// distinction matters less (both go through the K=10 counter now), but verify the
+	// false-positive detector still excludes them.
 	tr := &TurnUsageTracker{}
 	recordConsecutiveToolFailure(tr, "agent_tool", map[string]any{"id": "a"}, errors.New("root agent is required"))
 	if tr.FailureBreakerTripped {
@@ -229,7 +244,12 @@ func TestFailureBreakerMessage_SnippetIsRuneSafeAndCollapsed(t *testing.T) {
 
 func TestTurnUsageTrackerReset_ClearsBreaker(t *testing.T) {
 	tr := &TurnUsageTracker{}
-	recordConsecutiveToolFailure(tr, "files-rw", map[string]any{"x": 1}, errors.New(`invalid tool arguments: missing properties: "x"`))
+	err := errors.New(`invalid tool arguments: missing properties: "x"`)
+	args := map[string]any{"x": 1}
+	// D110: a single schema failure no longer trips. Loop to failureBreakerThreshold to trip.
+	for i := 0; i < failureBreakerThreshold; i++ {
+		recordConsecutiveToolFailure(tr, "files-rw", args, err)
+	}
 	if !tr.FailureBreakerTripped {
 		t.Fatal("expected trip")
 	}
@@ -267,7 +287,7 @@ func TestFailureBreaker_WireAbortsAfterThreeIdenticalFailures(t *testing.T) {
 	runtimeCfg := &RuntimeConfig{Model: "test-model", Endpoint: srv.URL}
 	ag, tr := mustBuildBreakerAgent(t, runtimeCfg, failingTool)
 
-	requireAbortText(t, runBreakerTurn(t, ag, "breaker-identical"), "3 consecutive times", "aborting turn")
+	requireAbortText(t, runBreakerTurn(t, ag, "breaker-identical"), "10 consecutive times", "aborting turn")
 	if n := atomic.LoadInt32(&calls); n != failureBreakerThreshold {
 		t.Errorf("expected exactly %d provider calls, got %d", failureBreakerThreshold, n)
 	}
@@ -276,17 +296,21 @@ func TestFailureBreaker_WireAbortsAfterThreeIdenticalFailures(t *testing.T) {
 	}
 }
 
-// TestFailureBreaker_WireSchemaFastAbort: a schema-shaped tool error aborts on
-// the first failure, without a second model call.
-func TestFailureBreaker_WireSchemaFastAbort(t *testing.T) {
+// TestFailureBreaker_WireSchemaToleratesPlanningCalls (D110): a schema-shaped tool error
+// does NOT abort the turn on the first occurrence. The model is given K=failureBreakerThreshold
+// chances to recover, which handles planning-phase skeleton tool calls (just the name, no args).
+// A model genuinely stuck on the same broken call still trips the breaker.
+func TestFailureBreaker_WireSchemaToleratesPlanningCalls(t *testing.T) {
 	var calls int32
+	const expectedCalls = failureBreakerThreshold
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt32(&calls, 1)
 		w.Header().Set("Content-Type", "application/json")
-		if n == 1 {
+		if int(n) <= expectedCalls {
+			// Model keeps emitting the same broken tool call
 			io.WriteString(w, `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"flaky_tool","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
 		} else {
-			t.Errorf("model called %d times - schema fast-abort should end the turn after one failure", n)
+			t.Errorf("model called %d times - schema breaker should end the turn at %d failures", n, expectedCalls)
 			io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"SHOULD NOT REACH MODEL"},"finish_reason":"stop"}]}`)
 		}
 	}))
@@ -303,11 +327,37 @@ func TestFailureBreaker_WireSchemaFastAbort(t *testing.T) {
 	ag, tr := mustBuildBreakerAgent(t, runtimeCfg, failingTool)
 
 	requireAbortText(t, runBreakerTurn(t, ag, "breaker-schema"), "schema validation", "aborting turn")
-	if n := atomic.LoadInt32(&calls); n != 1 {
-		t.Errorf("expected exactly 1 provider call, got %d", n)
+	if n := atomic.LoadInt32(&calls); int(n) != expectedCalls {
+		t.Errorf("expected exactly %d provider calls (D110 K=%d), got %d", expectedCalls, failureBreakerThreshold, n)
 	}
 	if !tr.FailureBreakerTripped {
-		t.Errorf("tracker should record the trip")
+		t.Errorf("tracker should record the trip after %d schema failures", failureBreakerThreshold)
+	}
+}
+
+// TestRecordConsecutiveToolFailure_SchemaValidationDoesNotTripImmediately (D110):
+// unit-level test: a single schema-validation failure does NOT trip the breaker.
+// Nine more identical schema failures should still leave it un-tripped. The tenth trips it.
+func TestRecordConsecutiveToolFailure_SchemaValidationDoesNotTripImmediately(t *testing.T) {
+	tr := &TurnUsageTracker{}
+	err := errors.New(`invalid tool arguments: missing properties: "path" - jsonschema validation failed`)
+	args := map[string]any{"foo": "bar"}
+
+	for i := 1; i < failureBreakerThreshold; i++ {
+		recordConsecutiveToolFailure(tr, "flaky_tool", args, err)
+		if tr.FailureBreakerTripped {
+			t.Fatalf("breaker tripped after %d schema failures (D110: should require %d)", i, failureBreakerThreshold)
+		}
+		if tr.ConsecutiveFailureCount != i {
+			t.Errorf("after %d calls, expected count %d, got %d", i, i, tr.ConsecutiveFailureCount)
+		}
+	}
+	recordConsecutiveToolFailure(tr, "flaky_tool", args, err)
+	if !tr.FailureBreakerTripped {
+		t.Fatalf("breaker should trip at the %d-th identical schema failure (D110 K=%d)", failureBreakerThreshold, failureBreakerThreshold)
+	}
+	if !strings.Contains(tr.FailureBreakerMessage, "schema validation") || !strings.Contains(tr.FailureBreakerMessage, fmt.Sprintf("%d consecutive times", failureBreakerThreshold)) {
+		t.Errorf("unexpected breaker message: %q", tr.FailureBreakerMessage)
 	}
 }
 
@@ -425,12 +475,17 @@ func TestFailureBreaker_TakesPrecedenceOverBudgetBail(t *testing.T) {
 		return nil, errors.New(`invalid tool arguments: missing properties: "path"`)
 	})
 	if err != nil {
-		t.Fatalf("failed to create flaky tool: %v", err)
+		t.Fatalf("failed to create failing tool: %v", err)
 	}
 
 	// Tiny context window to ensure mid-turn budget threshold is also exceeded
 	runtimeCfg := &RuntimeConfig{ContextWindow: 10, Model: "test-model", Endpoint: srv.URL}
 	ag, tr := mustBuildBreakerAgent(t, runtimeCfg, flakyTool)
+	// D110: pre-trip the breaker. With K=10, a single schema failure no longer trips; the
+	// test exercises the precedence relationship (breaker vs compaction bail) so we trip
+	// the breaker directly to keep the precedence assertion under test.
+	tr.FailureBreakerTripped = true
+	tr.FailureBreakerMessage = `Tool "flaky_tool" failed schema validation 10 consecutive times - aborting turn.`
 
 	out := runBreakerTurn(t, ag, "breaker-precedence")
 	requireAbortText(t, out, "schema validation", "aborting turn")
