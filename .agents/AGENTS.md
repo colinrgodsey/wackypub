@@ -252,14 +252,11 @@ messages (text + thinking + eventually images) native support with no lossy
 round-trip. Never add a parallel/custom turn struct for this; extend the
 `genai.Content`/`genai.Part` usage instead.
 
-### Two ways to call the model: pick the one already used by the call site
+### How the model is called
 
-- **Primary path** (`FolderAgent.GenerateTurn`, used by `generate`/`prompt`):
-  builds a `model.LLMRequest` by hand and calls `model.LLM.GenerateContent`
-  directly. No ADK `LLMAgent`/`Runner` involved.
-- **Alternate path** (`FolderAgent.RunWithRunner`, built via
-  `BuildADKAgent`/`llmagent.New`): routes through ADK's actual
-  `LLMAgent`/`Runner`. Not used by any CLI command today (tracked as cleanup work in the [wiki roadmap](https://github.com/colinrgodsey/wackypub/wiki/Roadmap)).
+`FolderAgent.GenerateTurn` (used by `generate`/`prompt`) builds a
+`model.LLMRequest` by hand and calls `model.LLM.GenerateContent` directly.
+No ADK `LLMAgent`/`Runner` involved.
 
 Don't assume `AGENTS.md`'s `Instruction` field reaches the model on the
 primary path - it doesn't; `GenerateTurn` builds its own first turn

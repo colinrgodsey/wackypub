@@ -266,7 +266,7 @@ Agent generation turns are executed using ADK's `runner.Runner` pipeline with `F
 
 `pkg/agent/openai_model.go`'s `NewOpenAIModel` is a thin wrapper around [`achetronic/adk-utils-go`](https://github.com/achetronic/adk-utils-go)'s `genai/openai` package, which itself wraps the official `openai-go/v3` SDK. `go.mod` tracks upstream `achetronic/adk-utils-go` at commit `1f0a646bcdfd07ad5f09363d6cbca3b5c58bd764` (which incorporated the `Dialect` interface for OpenRouter and reasoning handling), eliminating the need for a fork replace directive.
 
-### ADK `llmagent.Config` Mapping (alternate `RunWithRunner` path)
+### ADK `llmagent.Config` Mapping
 
 1. **`Name`**: Set directly to `agentID` (which is already unique within the workspace directory).
 2. **`Instruction`**: Set to the fully rendered system prompt string loaded from `AGENTS.md` (after processing `@<FILE_PATH>` macro inclusions).
