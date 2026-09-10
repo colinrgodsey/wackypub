@@ -2,11 +2,9 @@ module github.com/colinrgodsey/wackypub
 
 go 1.25.7
 
-// D103/D-runtime-config: local vendored fork of achetronic/adk-utils-go adding
 // HTTPOptions.MaxRetries (openai-go retry budget) per runtime.json maxRetries.
 // Replace is dropped once upstream merges MaxRetries and gets a tag; the vendored
 // copy pins the exact achetronic revision wackypub builds against today.
-replace github.com/achetronic/adk-utils-go => ./third_party/adk-utils-go
 
 require (
 	github.com/achetronic/adk-utils-go v0.23.1-0.20260810132742-1f0a646bcdfd
@@ -19,6 +17,8 @@ require (
 	google.golang.org/genai v1.57.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+replace github.com/achetronic/adk-utils-go => github.com/DranboFieldston/adk-utils-go v1.1.1-0.20260910015947-f5db46c6ef9e
 
 require (
 	cloud.google.com/go v0.123.0 // indirect

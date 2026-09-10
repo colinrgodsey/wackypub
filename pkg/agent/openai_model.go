@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	adkopenai "github.com/achetronic/adk-utils-go/genai/openai"
+	adkopenai "github.com/achetronic/adk-utils-go/genai/openai/completions"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
