@@ -19,7 +19,6 @@ import (
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
-	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
@@ -1408,31 +1407,4 @@ func (fa *FolderAgent) GenerateTurn(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("received empty response from agent")
 	}
 	return strings.Join(chunks, "\n\n"), nil
-}
-
-// Helper to run ADK runner session for folder agent
-func (fa *FolderAgent) RunWithRunner(ctx context.Context, sessionID string, prompt string) ([]*session.Event, error) {
-	sessionService := session.InMemoryService()
-	r, err := runner.New(runner.Config{
-		AppName:           "wackypub",
-		Agent:             fa.ADKAgent,
-		SessionService:    sessionService,
-		AutoCreateSession: true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create runner: %w", err)
-	}
-
-	userMsg := genai.NewContentFromText(prompt, "user")
-	var events []*session.Event
-	for event, err := range r.Run(ctx, "user", sessionID, userMsg, agent.RunConfig{}) {
-		if err != nil {
-			return events, err
-		}
-		if event != nil {
-			events = append(events, event)
-		}
-	}
-
-	return events, nil
 }
