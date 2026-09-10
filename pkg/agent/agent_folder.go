@@ -592,7 +592,10 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 
 	cmd := exec.CommandContext(execCtx, absToolPath, cmdArgs...)
 	cmd.Dir = agentDir
-	cmd.Env = os.Environ()
+	baseEnv := os.Environ()
+	// Harness-owned variables (A2A trust channel, PATH/HOME/TMPDIR/LANG) are captured here so a
+	// model-supplied or .env-supplied value can never win the last-wins race (oracle audit A2).
+	harnessEnv := harnessEnvFromBase(baseEnv)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}
@@ -603,14 +606,15 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		return nil
 	}
 
-	// D59: Propagate A2A Metadata and legacy CallChain directly to child process environment
+	// D59: Propagate A2A Metadata and legacy CallChain to the child process environment. These land
+	// in harnessEnv rather than straight onto cmd.Env so they stay non-overridable by args.Env below.
 	if a2aMeta != nil {
 		denseJSON, err := a2aMeta.Encode()
 		if err == nil && denseJSON != "" {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", Agent2AgentEnvVar, denseJSON))
+			harnessEnv[Agent2AgentEnvVar] = denseJSON
 		}
 		if len(a2aMeta.CallChain) > 0 {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", CallChainEnvVar, strings.Join(a2aMeta.CallChain, ",")))
+			harnessEnv[CallChainEnvVar] = strings.Join(a2aMeta.CallChain, ",")
 		}
 	}
 
@@ -618,15 +622,11 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to load agent .env: %w", err)
 	}
-	for k, v := range dotEnv {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
-	}
 
-	if len(args.Env) > 0 {
-		for k, v := range args.Env {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
-		}
-	}
+	// Order: base environment, then .env, then the model-supplied args.Env, with the harness-owned
+	// entries forced on top last. args.Env still wins for every variable the harness does not own,
+	// which is the precedence TestExecuteTool_DotEnvInjectionAndPrecedence pins.
+	cmd.Env = childEnv(baseEnv, harnessEnv, dotEnv, args.Env)
 
 	var stdinFile *os.File
 	if args.Stdin != "" {
