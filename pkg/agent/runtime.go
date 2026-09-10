@@ -29,6 +29,12 @@ type RuntimeConfig struct {
 	// Defaults to DefaultHTTPTimeoutSeconds (900s / 15 minutes) when unset or <= 0.
 	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
 
+	// MaxRetries sets the openai-go client retry budget. 0 = no retries (fail-fast:
+	// a single HTTP attempt, no silent retry storm on a slow backend). -1 = explicit
+	// disable (semantically same as 0, preferred for self-documentation). Unset (nil)
+	// = openai-go default of 2. Pointer distinguishes 0 from unset.
+	MaxRetries *int `json:"maxRetries,omitempty"`
+
 	// Anthropic-specific thinking fields:
 	AnthropicThinkingBudgetTokens *int   `json:"anthropicThinkingBudgetTokens,omitempty"`
 	AnthropicThinkingEffort       string `json:"anthropicThinkingEffort,omitempty"`

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	adkopenai "github.com/achetronic/adk-utils-go/genai/openai"
+	adkopenai "github.com/achetronic/adk-utils-go/genai/openai/completions"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
@@ -111,8 +111,9 @@ func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
 		BaseURL:   strings.TrimSuffix(runtimeCfg.Endpoint, "/"),
 		ModelName: runtimeCfg.Model,
 		HTTPOptions: adkopenai.HTTPOptions{
-			Client:  &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
-			Headers: headers,
+			Client:     &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+			Headers:    headers,
+			MaxRetries: runtimeCfg.MaxRetries,
 		},
 		Dialect:         dialect,
 		ReasoningEgress: adkopenai.ReasoningEgressMode(runtimeCfg.ReasoningEgress),
