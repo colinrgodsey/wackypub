@@ -111,8 +111,9 @@ func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
 		BaseURL:   strings.TrimSuffix(runtimeCfg.Endpoint, "/"),
 		ModelName: runtimeCfg.Model,
 		HTTPOptions: adkopenai.HTTPOptions{
-			Client:  &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
-			Headers: headers,
+			Client:     &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+			Headers:    headers,
+			MaxRetries: runtimeCfg.MaxRetries,
 		},
 		Dialect:         dialect,
 		ReasoningEgress: adkopenai.ReasoningEgressMode(runtimeCfg.ReasoningEgress),
