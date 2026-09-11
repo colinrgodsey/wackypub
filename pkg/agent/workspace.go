@@ -2,11 +2,15 @@ package agent
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 const (
@@ -482,4 +486,179 @@ func countNonEmptyLines(path string) (int, error) {
 		}
 	}
 	return count, scanner.Err()
+}
+
+// AgentLockObservation is a read-only snapshot of one agent directory's session lock
+// and session activity, as returned by InspectAgentLocks.
+type AgentLockObservation struct {
+	AgentID  string
+	AgentDir string
+
+	// LockExists is whether <agent_dir>/session.lock is present. The file outlives
+	// every release, so presence alone never means held: SessionLock.Release drops
+	// the flock and closes the fd but does not delete the file.
+	LockExists bool
+	// HolderPID is the PID recorded inside the lock file by the last acquisition, or
+	// zero when the file is missing or its contents cannot be parsed.
+	HolderPID int
+	// HolderPIDValid is whether HolderPID was parsed from the lock file. It is what
+	// distinguishes "nobody has ever locked this agent" from "the lock file exists
+	// but holds no readable PID", which a bare zero cannot tell apart.
+	HolderPIDValid bool
+	// HolderAlive is whether that PID currently exists. A held lock with a live PID
+	// is not the same as progress; pair it with LastWrite.
+	HolderAlive bool
+	// HolderCommand is a shortened command line for the holder with credential flag
+	// values redacted, or empty when there is no readable PID.
+	HolderCommand string
+	// LockHeldSince is the lock file modification time, which is when the current
+	// holder's PID was written into it.
+	LockHeldSince time.Time
+
+	// SessionExists is whether <agent_dir>/session.jsonl is present.
+	SessionExists bool
+	// LastWrite is session.jsonl's modification time: the most recent evidence that
+	// the agent is producing anything.
+	LastWrite time.Time
+}
+
+// InspectAgentLocks reports session lock and session activity for every agent
+// directory in wsDir. It exists because AcquireSessionLock blocks indefinitely on
+// flock with no timeout, so a stuck holder silently queues everyone behind it and
+// the only clue is the PID inside the lock file, which every acquisition overwrites.
+//
+// Read-only by construction: the lock file is opened for reading only, never flocked,
+// truncated, created, or deleted, so observing a holder cannot disturb it or queue
+// behind it. Per-file failures are not errors - a missing lock file is a normal
+// state and is reported by the zero values of the relevant fields.
+//
+// Deliberately not gated by ValidateAgentTarget's WACKYPUB_ALLOWED_AGENTS check, for
+// the same reason as InspectAgentDir (D16): this has no side effects and cannot cause
+// another agent to do anything, so gating it would report an authorization failure
+// where the truth is "that agent is idle".
+func InspectAgentLocks(wsDir string) ([]AgentLockObservation, error) {
+	ids, err := ListAgentIDs(wsDir)
+	if err != nil {
+		return nil, err
+	}
+
+	observations := make([]AgentLockObservation, 0, len(ids))
+	for _, id := range ids {
+		agentDir := filepath.Join(wsDir, id)
+		obs := AgentLockObservation{AgentID: id, AgentDir: agentDir}
+
+		lockPath := filepath.Join(agentDir, "session.lock")
+		if info, err := os.Stat(lockPath); err == nil {
+			obs.LockExists = true
+			obs.LockHeldSince = info.ModTime()
+			data, err := os.ReadFile(lockPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read session lock for agent %q: %w", id, err)
+			}
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+				obs.HolderPID = pid
+				obs.HolderPIDValid = true
+				obs.HolderAlive = processAlive(pid)
+				obs.HolderCommand = processCommand(pid)
+			}
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to stat session lock for agent %q: %w", id, err)
+		}
+
+		if info, err := os.Stat(filepath.Join(agentDir, "session.jsonl")); err == nil {
+			obs.SessionExists = true
+			obs.LastWrite = info.ModTime()
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to stat session file for agent %q: %w", id, err)
+		}
+
+		observations = append(observations, obs)
+	}
+	return observations, nil
+}
+
+// processAlive reports whether a process exists. Signal 0 performs the existence and
+// permission checks without delivering anything, so EPERM also means alive - owned by
+// another user, which an operator still needs to see as a live holder.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	if err == nil {
+		return true
+	}
+	return errors.Is(err, syscall.EPERM)
+}
+
+// secretFlagMarkers name the flags whose values must never be echoed. A long-lived
+// gateway observed in a real workspace passes its Discord token as argv, so printing a
+// raw command line leaks credential prefixes into terminals, scrollback, and CI logs.
+var secretFlagMarkers = []string{"token", "secret", "password", "passwd", "apikey", "api-key", "credential", "key"}
+
+// shortenCommandArgs reduces argv to a recognizable prefix, redacting the value of any
+// credential-bearing flag in both the "--flag value" and "--flag=value" forms. limit
+// counts the total tokens kept, including the program name; because credential flags
+// are common early arguments, the limit applies to the token before any redaction, so
+// a redaction can never silently free up room for a later argument.
+func shortenCommandArgs(argv []string, limit int) []string {
+	if len(argv) == 0 {
+		return nil
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	parts := []string{filepath.Base(argv[0])}
+	redactNext := false
+	for _, arg := range argv[1:] {
+		if len(parts) >= limit {
+			break
+		}
+		if redactNext {
+			parts = append(parts, "[redacted]")
+			redactNext = false
+			continue
+		}
+		name, _, hasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		switch {
+		case hasValue && holdsSecretFlag(name):
+			parts = append(parts, name+"=[redacted]")
+		case holdsSecretFlag(name):
+			parts = append(parts, arg)
+			redactNext = true
+		default:
+			parts = append(parts, arg)
+		}
+	}
+	return parts
+}
+
+func holdsSecretFlag(flag string) bool {
+	flag = strings.ToLower(flag)
+	for _, marker := range secretFlagMarkers {
+		if strings.Contains(flag, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// processCommand returns a shortened, credential-redacted command line for a PID, or
+// "" when it cannot be read. Linux-specific: it reads the NUL-separated
+// /proc/<pid>/cmdline, and the rest of a wackypub invocation's argv can be an entire
+// prompt, so only the program name and two arguments are kept. Callers treat an
+// unreadable command as cosmetic: liveness and lock state come from elsewhere.
+func processCommand(pid int) string {
+	if pid <= 0 {
+		return ""
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return ""
+	}
+	argv := strings.FieldsFunc(string(data), func(r rune) bool { return r == 0 })
+	if len(argv) == 0 {
+		return ""
+	}
+	return strings.Join(shortenCommandArgs(argv, 3), " ")
 }

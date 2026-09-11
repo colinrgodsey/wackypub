@@ -478,12 +478,14 @@ wackypub workspace init-git [agent_id]
 wackypub workspace snapshot
 wackypub workspace tag <name>
 wackypub workspace push <remote>
+wackypub workspace locks
 ```
 - **Overview (`wackypub workspace`)**: Top-level diagnostic command inspecting workspace agents, git tracking status, presence of expected files (`WACKYPUB_ROOT`, `AGENTS.md`, `runtime.json`, `session.jsonl`, `MEMORY.md`, `WACKYPUB_ALLOWED_AGENTS`, `tools/`), discovered tools, shadowed tools, and issue warnings. Read-only: never creates or modifies any file.
 - **Git Versioning Init (`wackypub workspace init-git [agent_id]`)**: Initializes a pure-Go git repository in an agent directory (`<ws_dir>/<agent_id>/.git`) or workspace root (`<ws_dir>/.git`) via `go-git`. When `.git` is present, every state event creates an isolated commit with embedded `AGENT2AGENT` JSON metadata and `workspace_revision` (D35).
 - **Workspace Snapshot (`wackypub workspace snapshot`)**: Scans all workspace agent repositories, records each agent's active HEAD commit SHA in `<ws_dir>/MANIFEST.md`, and commits `MANIFEST.md` in the workspace root repository.
 - **Workspace Tagging (`wackypub workspace tag <name>`)**: Tags the workspace root repository with `<name>` and tags each per-agent repository with `tag-<agent_id>`.
 - **Remote Push (`wackypub workspace push <remote>`)**: Pushes each agent repository to `<remote>` under a remote branch matching its `agent_id`, and pushes all workspace and agent tags. Requires `--i-understand` flag confirmation to guard against accidental API key exfiltration.
+- **Session Locks (`wackypub workspace locks`)**: Read-only table (backed by the `adkAgent.InspectAgentLocks` SDK function, which owns the lock, `/proc`, and session mtime reads) of every agent directory showing whether its `session.lock` is HELD, FREE, or STALE (recorded PID gone), the holder PID and shortened command line (credential flag values redacted), the lock file mtime, and the age of the last `session.jsonl` write with a verdict: OK, WEDGED (lock held, session quiet over 10 minutes), IDLE (no lock, quiet over 30 minutes), or STALE. Holder liveness uses `kill(pid,0)` and `/proc/<pid>/cmdline`, so holder details are Linux-specific. Never creates, truncates, locks, or deletes a lock file.
 
 ### Causal Swarm Tracing (`trace`)
 ```bash
