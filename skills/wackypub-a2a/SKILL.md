@@ -53,3 +53,16 @@ wackypub agent strip-signatures --help
   wackypub agent prompt <target_agent_id> "Message content"
   ```
 - `AGENT2AGENT` metadata (caller ID, call chain, trace ID, and sender git commit revision) is automatically propagated across environment variables down the execution chain.
+
+### 5. Response Routing Semantics (who sees your output)
+
+How your reply reaches the other agent depends entirely on WHICH command they used to reach you - this is not obvious, and getting it wrong wastes turns:
+
+- **They used `agent prompt <you>`** (synchronous): their CLI is LIVE and BLOCKED, waiting for your turn to finish. Your final response text of this turn IS the reply they receive - it is returned to them automatically as the tool result. Do NOT try to `agent prompt` them back: the cycle detector will reject it (their call is in your chain), and the rejection costs a turn. Just answer normally and end your turn. If the topic is done, your turn ending IS the message delivered.
+- **They used `agent add <you>`** (asynchronous, fire-and-forget): nobody is waiting. Your turn output goes nowhere they can see. If a reply is needed, YOU must initiate it - `agent prompt <sender>` from your own next turn (or now; their turn is not holding a chain open, so no cycle).
+- **How to tell which happened**: you cannot reliably tell from the message text alone. The AGENT2AGENT env metadata (caller_id, call_chain, trace_id) tells you WHO sent it, but not whether they are blocking on your response. Heuristic until tooling improves: if the message is a question or task handed to you mid-conversation by a known collaborator, assume synchronous and answer in-turn; if it is a notification, FYI, or batch instruction, assume async.
+- **Cycle-blocked replies are recoverable**: if your `agent prompt` reply is rejected with "already in call chain", the sender is still waiting - your in-progress turn's final response will be delivered to them when you finish. Do not keep retrying the prompt; finish your turn with the answer as your final text.
+
+Known friction (TODO logged): an async pattern with reply routing does not exist yet - `add` gives the sender no way to receive your response. See GitKB task `a2a-async-reply-pattern`.
+
+**Hook recommendation**: if your workspace does a2a, install a receiver-side announce hook (see `examples/hooks/on-user-message/10-announce-check` in the wackypub repo) so inbound agent turns are mechanically annotated with `[Message from agent: <id>]` - generally wanted; a minority of use cases do not call for it. Verify what hooks you have via `git-kb show knowledge/gitkb-swarm-process` and the hooks inspection command (pending).
