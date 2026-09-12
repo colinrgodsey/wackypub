@@ -305,7 +305,7 @@ Snapshot the before-state into an entry, make the edit, snapshot the after-state
 Inside a turn, call the `diff_scratchpad` tool, whose two arguments are the entry IDs:
 
 ```text
-diff_scratchpad(before_id: "AB12", after_id: "CD34")
+diff_scratchpad(before_id: "ab12", after_id: "cd34")
 ```
 
 Both IDs are required, and there is no mode where an absent side is treated as empty: comparing against nothing would turn a mistyped ID into a patch that adds or deletes the whole entry.

@@ -707,7 +707,6 @@ func (s *AgentSDK) SearchScratchpad(agentID string, entryID string, query string
 	return SearchScratchpad(agentDir, entryID, query, caseSensitive, useRegex, maxResults)
 }
 
-// DeleteScratchpad removes a scratchpad entry from <ws_dir>/<agent_id>/scratchpad/ by entry ID.
 // DiffScratchpadEntries returns a unified diff between two of an agent's scratchpad entries,
 // or an empty string when they are byte-identical. A diff too large to be useful in one turn is
 // left as ordinary output: callers piping this command into their own tooling get the existing
@@ -730,6 +729,7 @@ func (s *AgentSDK) DiffScratchpadEntries(agentID string, beforeID string, afterI
 	return DiffScratchpadEntries(s.WorkspaceDir, agentID, beforeID, afterID)
 }
 
+// DeleteScratchpad removes a scratchpad entry from <ws_dir>/<agent_id>/scratchpad/ by entry ID.
 func (s *AgentSDK) DeleteScratchpad(agentID string, entryID string) error {
 	if agentID == "" {
 		return fmt.Errorf("agentID cannot be empty")
