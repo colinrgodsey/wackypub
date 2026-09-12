@@ -194,7 +194,7 @@ Use the precomputed `skip_lines` value (`411`) directly in `get_scratchpad` to p
   "args": ["read", "app.log"]
 }
 ```
-If the file's content exceeds 4,000 bytes, the output auto-captures into a fresh scratchpad entry (<STDOUT><SCRATCHPAD_DATA id="..." /></STDOUT>) exactly like any other large command output. The returned ID is the entry to search.
+Files ≤ 4,000 bytes do not auto-capture - `files-rw read` returns the content directly in `output`, already in context, so search it directly without the scratchpad round-trip. If the file exceeds 4,000 bytes, the output auto-captures into a fresh scratchpad entry (`<STDOUT><SCRATCHPAD_DATA id="..." /></STDOUT>`) exactly like any other large command output, and the returned ID is the entry to search.
 
 **Step 2: search the captured entry.** `search_scratchpad` supports the same flags as the CLI: `regex`, `case_sensitive`, and `max_results`:
 
@@ -209,7 +209,7 @@ If the file's content exceeds 4,000 bytes, the output auto-captures into a fresh
 ```
 
 - `regex: true` treats the query as a regular expression; `false` (default) is a literal substring match.
-- `case_sensitive` defaults to false (case-insensitive).
+- `case_sensitive` defaults to true (case-sensitive); pass `false` for case-insensitive matching.
 - `max_results` caps how many line hits come back.
 
 Every match returns its 1-indexed `line` and a precomputed `skip_lines` so you can page the surrounding context with `get_scratchpad` without searching again.
