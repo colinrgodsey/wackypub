@@ -151,12 +151,12 @@ func TestBuildFolderAgentTools(t *testing.T) {
 		t.Fatalf("BuildFolderAgentTools failed: %v", err)
 	}
 
-	// Should contain create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, run_command, load_skill, load_skill_extra, list_skill_extra, run_skill_script (10 tools)
-	if len(toolMap) != 10 {
-		t.Errorf("expected 10 tools, got %d", len(toolMap))
+	// Should contain create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, diff_scratchpad, run_command, load_skill, load_skill_extra, list_skill_extra, run_skill_script (11 tools)
+	if len(toolMap) != 11 {
+		t.Errorf("expected 11 tools, got %d", len(toolMap))
 	}
-	if len(decls) != 10 {
-		t.Errorf("expected 10 decls, got %d", len(decls))
+	if len(decls) != 11 {
+		t.Errorf("expected 11 decls, got %d", len(decls))
 	}
 	if _, ok := toolMap["create_scratchpad"]; !ok {
 		t.Errorf("missing create_scratchpad in toolMap")
@@ -320,12 +320,12 @@ func TestRunCommandToolValidationAndExecution(t *testing.T) {
 		t.Fatalf("BuildFolderAgentTools failed: %v", err)
 	}
 
-	// 10 tools in toolMap: create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, run_command, load_skill, load_skill_extra, list_skill_extra, run_skill_script
-	if len(toolMap) != 10 {
-		t.Fatalf("expected 10 tools in toolMap, got %d", len(toolMap))
+	// 11 tools in toolMap: create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, diff_scratchpad, run_command, load_skill, load_skill_extra, list_skill_extra, run_skill_script
+	if len(toolMap) != 11 {
+		t.Fatalf("expected 11 tools in toolMap, got %d", len(toolMap))
 	}
-	if len(decls) != 10 {
-		t.Fatalf("expected 10 decls, got %d", len(decls))
+	if len(decls) != 11 {
+		t.Fatalf("expected 11 decls, got %d", len(decls))
 	}
 
 	runCmdTool, ok := toolMap["run_command"]
@@ -443,6 +443,20 @@ func TestSearchScratchpad(t *testing.T) {
 	}
 }
 
+// TestDiffScratchpadToolResultMapping pins what the tool promises: identical is true exactly when
+// there is no patch. Flipping the comparison is invisible to every other test, which is why this
+// is asserted directly instead of trusting the handler to get it right.
+func TestDiffScratchpadToolResultMapping(t *testing.T) {
+	empty := diffScratchpadToolResult("")
+	if !empty.Identical || empty.Diff != "" {
+		t.Errorf("expected an empty patch to report identical, got %+v", empty)
+	}
+
+	patch := diffScratchpadToolResult("@@ -1 +1 @@\n-old\n+new\n")
+	if patch.Identical || patch.Diff == "" {
+		t.Errorf("expected a patch to report not-identical and carry the patch, got %+v", patch)
+	}
+}
 func TestExecuteTool_Timeout(t *testing.T) {
 	agentDir := t.TempDir()
 	toolPath := filepath.Join(agentDir, "sleep_tool.sh")
@@ -662,6 +676,7 @@ func TestDeterministicToolOrderingD57(t *testing.T) {
 	expectedOrder := []string{
 		"create_scratchpad",
 		"delete_scratchpad",
+		"diff_scratchpad",
 		"get_scratchpad",
 		"list_scratchpads",
 		"list_skill_extra",
@@ -881,5 +896,122 @@ func TestExecuteTool_FailureOverThreshold_PreservedInScratchpad(t *testing.T) {
 	}
 	if !strings.Contains(raw, "failure output line before exit") {
 		t.Fatalf("scratchpad content missing tool output: %q", raw)
+	}
+}
+
+// TestDiffScratchpadTool covers both halves of the model surface: that the tool is offered with
+// the parameter schema and description the model needs to choose it, and that the handler behind
+// it distinguishes "changed" from "unchanged" the way the result promises.
+func TestDiffScratchpadTool(t *testing.T) {
+	agentDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("Prompt"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	toolMap, _, err := BuildFolderAgentTools(agentDir)
+	if err != nil {
+		t.Fatalf("BuildFolderAgentTools failed: %v", err)
+	}
+
+	diffTool, ok := toolMap["diff_scratchpad"]
+	if !ok {
+		t.Fatalf("missing diff_scratchpad in toolMap")
+	}
+
+	decler, ok := diffTool.(interface {
+		Declaration() *genai.FunctionDeclaration
+	})
+	if !ok {
+		t.Fatalf("diff_scratchpad does not implement Declaration()")
+	}
+
+	declBytes, err := json.Marshal(decler.Declaration())
+	if err != nil {
+		t.Fatalf("failed to marshal decl: %v", err)
+	}
+
+	var declMap map[string]any
+	if err := json.Unmarshal(declBytes, &declMap); err != nil {
+		t.Fatalf("failed to unmarshal decl JSON: %v", err)
+	}
+
+	var paramsMap map[string]any
+	if p, ok := declMap["parameters"].(map[string]any); ok {
+		paramsMap = p
+	} else if p, ok := declMap["parametersJsonSchema"].(map[string]any); ok {
+		paramsMap = p
+	} else {
+		t.Fatalf("neither parameters nor parametersJsonSchema found in decl: %s", string(declBytes))
+	}
+
+	props, ok := paramsMap["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing 'properties' in schema: %v", paramsMap)
+	}
+	for _, name := range []string{"before_id", "after_id"} {
+		if _, ok := props[name]; !ok {
+			t.Errorf("expected %q in the tool's parameter schema, got %v", name, props)
+		}
+	}
+
+	reqList, _ := paramsMap["required"].([]any)
+	reqSet := make(map[string]bool)
+	for _, r := range reqList {
+		if s, ok := r.(string); ok {
+			reqSet[s] = true
+		}
+	}
+	for _, name := range []string{"before_id", "after_id"} {
+		if !reqSet[name] {
+			t.Errorf("expected %q to be required, required=%v", name, reqList)
+		}
+	}
+
+	// The description is the only thing the model reads before deciding to call this, so it has
+	// to name the operation and not merely the tool.
+	if desc := diffTool.Description(); !strings.Contains(desc, "unified diff") {
+		t.Errorf("expected the tool description to say what it renders, got %q", desc)
+	}
+
+	differing, err := CreateScratchpad(agentDir, "keep\nreplace me\nkeep too", "test")
+	if err != nil {
+		t.Fatalf("CreateScratchpad: %v", err)
+	}
+	changed, err := CreateScratchpad(agentDir, "keep\nreplaced\nkeep too", "test")
+	if err != nil {
+		t.Fatalf("CreateScratchpad: %v", err)
+	}
+	unchanged, err := CreateScratchpad(agentDir, "keep\nreplace me\nkeep too", "test")
+	if err != nil {
+		t.Fatalf("CreateScratchpad: %v", err)
+	}
+
+	// 1. A differing pair yields a patch, which is what the handler reports as Identical=false.
+	out, err := diffScratchpadEntriesInDir(agentDir, filepath.Base(agentDir), differing.ID, changed.ID)
+	if err != nil {
+		t.Fatalf("diff of differing entries: %v", err)
+	}
+	if out == "" {
+		t.Fatal("expected a patch for differing entries")
+	}
+	for _, want := range []string{"-replace me", "+replaced"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected patch to contain %q, got:\n%s", want, out)
+		}
+	}
+
+	// 2. An identical pair yields nothing, which is what the handler reports as Identical=true.
+	outSame, err := diffScratchpadEntriesInDir(agentDir, filepath.Base(agentDir), differing.ID, unchanged.ID)
+	if err != nil {
+		t.Fatalf("diff of identical entries: %v", err)
+	}
+	if outSame != "" {
+		t.Errorf("expected an empty patch for identical entries, got %q", outSame)
+	}
+
+	// 3. An ID that does not exist is an error, not an empty diff: the handler cannot mistake a
+	// typo for "nothing changed".
+	if _, err := diffScratchpadEntriesInDir(agentDir, filepath.Base(agentDir), "zzzz", changed.ID); err == nil {
+		t.Error("expected an unknown entry ID to be an error")
 	}
 }

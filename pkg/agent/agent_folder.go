@@ -76,6 +76,28 @@ type DeleteScratchpadResult struct {
 	Status string `json:"status"`
 }
 
+// DiffScratchpadArgs names the two entries to compare. Both have to exist: there is no mode
+// where a missing side counts as empty, because that turns a typo into a whole-file patch.
+type DiffScratchpadArgs struct {
+	BeforeID string `json:"before_id" jsonschema_description:"4-character ID of the entry holding the earlier state"`
+	AfterID  string `json:"after_id" jsonschema_description:"4-character ID of the entry holding the later state"`
+}
+
+type DiffScratchpadResult struct {
+	// Diff is the unified patch, empty when the entries are identical.
+	Diff string `json:"diff"`
+	// Identical lets "did anything change" be read off the result instead of tested for an
+	// empty string, which is easy to confuse with an entry that is itself empty.
+	Identical bool `json:"identical"`
+}
+
+// diffScratchpadToolResult maps a rendered diff onto the tool result. It exists as a function so
+// that the promise the result makes, identical exactly when there is no patch, is testable
+// without driving a whole model turn to reach the tool handler.
+func diffScratchpadToolResult(diff string) DiffScratchpadResult {
+	return DiffScratchpadResult{Diff: diff, Identical: diff == ""}
+}
+
 type ExecToolArgs struct {
 	Args  []string          `json:"args,omitempty" jsonschema_description:"List of CLI command line arguments passed positionally to the tool (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
 	Env   map[string]string `json:"env,omitempty" jsonschema_description:"Key-value object map of environment variables to set for the tool invocation (not macro-expanded)"`
@@ -137,7 +159,7 @@ type RunSkillScriptResult struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
-// BuildFolderAgentTools constructs ADK functiontool instances for built-in tools (create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad)
+// BuildFolderAgentTools constructs ADK functiontool instances for built-in tools (create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, diff_scratchpad)
 // and a single generic run_command tool covering executables discovered under <agent_dir>/tools/.
 func BuildFolderAgentTools(agentDir string, commandTimeoutSeconds ...int) (map[string]tool.Tool, []*genai.FunctionDeclaration, error) {
 	return BuildFolderAgentToolsWithA2A(agentDir, nil, commandTimeoutSeconds...)
@@ -272,7 +294,24 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 	}
 	addTool(deleteTool)
 
-	// 6. Generic run_command tool covering all discovered executables under <agent_dir>/tools/
+	// 6. diff_scratchpad: comparing two entries is the commonest reason an agent holds a pair,
+	// and until now the only way to do it was shelling out to diff, which needs a shell.
+	diffTool, err := functiontool.New(functiontool.Config{
+		Name:        "diff_scratchpad",
+		Description: "Render a unified diff between two text scratchpad entries, so an edit can be verified without re-reading either version back into context. Snapshot the thing you are about to change, change it, snapshot again, then pass the two entry IDs here. Identical entries return an empty diff with identical=true, so checking whether anything moved is a field lookup rather than a string test. Use it to review the blast radius of a refactor or another agent's candidate version. Text entries only, both sides obey the single-read size cap, and this previews without applying.",
+	}, func(ctx agent.Context, args DiffScratchpadArgs) (DiffScratchpadResult, error) {
+		out, err := diffScratchpadEntriesInDir(agentDir, filepath.Base(agentDir), args.BeforeID, args.AfterID)
+		if err != nil {
+			return DiffScratchpadResult{}, err
+		}
+		return diffScratchpadToolResult(out), nil
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create diff_scratchpad tool: %w", err)
+	}
+	addTool(diffTool)
+
+	// 7. Generic run_command tool covering all discovered executables under <agent_dir>/tools/
 	discoveredMap, discoveredNames, _, err := DiscoverAgentToolsMap(agentDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to discover agent tools: %w", err)
@@ -339,7 +378,7 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 	}
 	addTool(runCmdTool)
 
-	// 7. load_skill tool for on-demand skills
+	// 8. load_skill tool for on-demand skills
 	skillsMap, onDemandSkills, _, err := DiscoverAgentSkills(agentDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to discover agent skills: %w", err)
@@ -378,7 +417,7 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 	}
 	addTool(loadSkillTool)
 
-	// 8. load_skill_extra tool for reading reference files / images inside a skill
+	// 9. load_skill_extra tool for reading reference files / images inside a skill
 	loadSkillExtraDesc := "Read a reference document, example file, or image from within a skill's folder by relative path. Text content is returned directly; binary files are stored in a scratchpad entry."
 	loadSkillExtraTool, err := functiontool.New(functiontool.Config{
 		Name:        "load_skill_extra",
@@ -432,7 +471,7 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 	}
 	addTool(loadSkillExtraTool)
 
-	// 9. list_skill_extra tool for recursively listing files in a skill folder
+	// 10. list_skill_extra tool for recursively listing files in a skill folder
 	listSkillExtraDesc := "Recursively list all extra reference files and bundled scripts inside a skill's folder, excluding SKILL.md itself."
 	listSkillExtraTool, err := functiontool.New(functiontool.Config{
 		Name:        "list_skill_extra",
@@ -457,7 +496,7 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 	}
 	addTool(listSkillExtraTool)
 
-	// 10. run_skill_script tool for executing bundled executable scripts in a skill folder
+	// 11. run_skill_script tool for executing bundled executable scripts in a skill folder
 	runSkillScriptDesc := "Execute a bundled executable script from inside a skill's folder by relative path. Reuses run_command execution semantics, macro expansion, and scratchpad redirection."
 	runSkillScriptTool, err := functiontool.New(functiontool.Config{
 		Name:        "run_skill_script",

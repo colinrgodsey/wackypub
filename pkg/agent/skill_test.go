@@ -191,12 +191,12 @@ Step 1: Check logs.
 		t.Fatalf("BuildFolderAgentTools failed: %v", err)
 	}
 
-	// 10 tools: create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, run_command, load_skill, load_skill_extra, list_skill_extra, run_skill_script
-	if len(toolMap) != 10 {
-		t.Errorf("expected 10 tools, got %d", len(toolMap))
+	// 11 tools: create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, diff_scratchpad, run_command, load_skill, load_skill_extra, list_skill_extra, run_skill_script
+	if len(toolMap) != 11 {
+		t.Errorf("expected 11 tools, got %d", len(toolMap))
 	}
-	if len(decls) != 10 {
-		t.Errorf("expected 10 decls, got %d", len(decls))
+	if len(decls) != 11 {
+		t.Errorf("expected 11 decls, got %d", len(decls))
 	}
 
 	loadSkillTool, ok := toolMap["load_skill"]

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1091,4 +1092,187 @@ func TestD90_ToolResultLayer_MissingEntryWarningsNotDuplicatedInOutput(t *testin
 			t.Fatalf("expected to find FunctionResponse in session turns")
 		}
 	})
+}
+
+// newDiffTestWorkspace lays out <wsDir>/<agentID>/ so the package-level diff entry point,
+// which takes workspace and agent rather than an agent directory, has something to resolve.
+func newDiffTestWorkspace(t *testing.T) (string, string) {
+	t.Helper()
+	wsDir := t.TempDir()
+	agentID := "diffagent"
+	if err := os.MkdirAll(filepath.Join(wsDir, agentID), 0o755); err != nil {
+		t.Fatalf("mkdir agent dir: %v", err)
+	}
+	return wsDir, agentID
+}
+
+func putDiffEntry(t *testing.T, wsDir, agentID, text string) string {
+	t.Helper()
+	entry, err := CreateScratchpad(filepath.Join(wsDir, agentID), text, "unit_test")
+	if err != nil {
+		t.Fatalf("CreateScratchpad: %v", err)
+	}
+	return entry.ID
+}
+
+func TestDiffScratchpadEntriesIdentical(t *testing.T) {
+	wsDir, agentID := newDiffTestWorkspace(t)
+	text := "line one\nline two\nline three\n"
+	beforeID := putDiffEntry(t, wsDir, agentID, text)
+	afterID := putDiffEntry(t, wsDir, agentID, text)
+
+	diff, err := DiffScratchpadEntries(wsDir, agentID, beforeID, afterID)
+	if err != nil {
+		t.Fatalf("DiffScratchpadEntries: %v", err)
+	}
+	if diff != "" {
+		t.Errorf("identical entries should diff to empty, got %q", diff)
+	}
+}
+
+func TestDiffScratchpadEntriesModified(t *testing.T) {
+	wsDir, agentID := newDiffTestWorkspace(t)
+	// No trailing newline on purpose: an entry is compared exactly as stored, so the hunk
+	// header below is the honest one rather than one padded by a phantom empty line.
+	beforeID := putDiffEntry(t, wsDir, agentID, "keep\nreplace me\nkeep too")
+	afterID := putDiffEntry(t, wsDir, agentID, "keep\nreplaced\nkeep too")
+
+	diff, err := DiffScratchpadEntries(wsDir, agentID, beforeID, afterID)
+	if err != nil {
+		t.Fatalf("DiffScratchpadEntries: %v", err)
+	}
+
+	// The headers carry the entry IDs, which is what lets a caller work out which snapshot is
+	// which once several diffs are in flight, and the hunk markers have to stay the familiar
+	// ones so a patch can be grep-ped or handed to patch(1).
+	for _, want := range []string{
+		"--- " + beforeID + " (before)",
+		"+++ " + afterID + " (after)",
+		"@@ -1,3 +1,3 @@",
+		"-replace me",
+		"+replaced",
+		" keep\n",
+	} {
+		if !strings.Contains(diff, want) {
+			t.Errorf("expected diff to contain %q, got:\n%s", want, diff)
+		}
+	}
+}
+
+func TestDiffScratchpadEntriesMissingEntry(t *testing.T) {
+	wsDir, agentID := newDiffTestWorkspace(t)
+	knownID := putDiffEntry(t, wsDir, agentID, "content\n")
+	const absentID = "zzzz"
+
+	cases := []struct {
+		name      string
+		beforeID  string
+		afterID   string
+		wantInMsg string
+	}{
+		{name: "before missing", beforeID: absentID, afterID: knownID, wantInMsg: absentID},
+		{name: "after missing", beforeID: knownID, afterID: absentID, wantInMsg: absentID},
+		{name: "malformed id reports the rule", beforeID: "bad", afterID: knownID, wantInMsg: "lowercase"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DiffScratchpadEntries(wsDir, agentID, tc.beforeID, tc.afterID)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+
+			var notFound *ScratchpadEntryNotFoundError
+			if !errors.As(err, &notFound) {
+				t.Fatalf("expected ScratchpadEntryNotFoundError, got %T: %v", err, err)
+			}
+			if notFound.AgentID != agentID {
+				t.Errorf("expected error to name agent %q, got %q", agentID, notFound.AgentID)
+			}
+			if !strings.Contains(err.Error(), tc.wantInMsg) {
+				t.Errorf("expected error to mention %q, got %q", tc.wantInMsg, err.Error())
+			}
+		})
+	}
+}
+
+func TestDiffScratchpadEntriesRejectsBinaryEntry(t *testing.T) {
+	wsDir, agentID := newDiffTestWorkspace(t)
+	agentDir := filepath.Join(wsDir, agentID)
+
+	textID := putDiffEntry(t, wsDir, agentID, "text side\n")
+	binEntry, err := CreateBinaryScratchpad(agentDir, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}, "unit_test", "image/png")
+	if err != nil {
+		t.Fatalf("CreateBinaryScratchpad: %v", err)
+	}
+
+	_, err = DiffScratchpadEntries(wsDir, agentID, textID, binEntry.ID)
+	if err == nil {
+		t.Fatal("expected a binary entry to be refused")
+	}
+	if !strings.Contains(err.Error(), "binary") {
+		t.Errorf("expected the binary refusal to explain itself, got %q", err.Error())
+	}
+
+	// A binary entry exists, so it must not be reported as a usage error: the ID was fine.
+	var notFound *ScratchpadEntryNotFoundError
+	if errors.As(err, &notFound) {
+		t.Errorf("a binary entry is present, so the ID is not at fault: %v", err)
+	}
+}
+
+func TestDiffScratchpadEntriesReturnsWholeLargeDiff(t *testing.T) {
+	wsDir, agentID := newDiffTestWorkspace(t)
+
+	// A diff well past the tool-output capture threshold still comes back whole: the tool
+	// renders a diff, and deciding what to store is left to whatever captured its output.
+	var before, after strings.Builder
+	for i := 0; i < 400; i++ {
+		before.WriteString("before line ")
+		before.WriteString(strings.Repeat("x", 20))
+		before.WriteString(fmt.Sprintf(" %d\n", i))
+		after.WriteString("after line ")
+		after.WriteString(strings.Repeat("y", 20))
+		after.WriteString(fmt.Sprintf(" %d\n", i))
+	}
+	beforeID := putDiffEntry(t, wsDir, agentID, before.String())
+	afterID := putDiffEntry(t, wsDir, agentID, after.String())
+
+	diff, err := DiffScratchpadEntries(wsDir, agentID, beforeID, afterID)
+	if err != nil {
+		t.Fatalf("DiffScratchpadEntries: %v", err)
+	}
+	if len(diff) <= ScratchpadOutputThreshold {
+		t.Fatalf("expected a diff larger than %d bytes, got %d", ScratchpadOutputThreshold, len(diff))
+	}
+	if strings.Contains(diff, "truncated") || strings.Count(diff, "@@") < 2 {
+		t.Errorf("expected an untruncated multi-hunk diff, got %d bytes with %d hunks", len(diff), strings.Count(diff, "@@"))
+	}
+}
+
+func TestDiffScratchpadEntriesValidatesArguments(t *testing.T) {
+	wsDir, agentID := newDiffTestWorkspace(t)
+	id := putDiffEntry(t, wsDir, agentID, "x\n")
+
+	if _, err := DiffScratchpadEntries("", agentID, id, id); err == nil {
+		t.Error("expected empty wsDir to be refused")
+	}
+	if _, err := DiffScratchpadEntries(wsDir, "", id, id); err == nil {
+		t.Error("expected empty agentID to be refused")
+	}
+}
+
+func TestSDKDiffScratchpadEntriesRejectsEmptyArguments(t *testing.T) {
+	wsDir, agentID := newDiffTestWorkspace(t)
+	sdk := NewSDK(wsDir)
+
+	if _, err := sdk.DiffScratchpadEntries("", "aaaa", "bbbb"); err == nil {
+		t.Error("expected empty agentID to be refused before any authorization check")
+	}
+	if _, err := sdk.DiffScratchpadEntries(agentID, "", "bbbb"); err == nil {
+		t.Error("expected empty beforeID to be refused")
+	}
+	if _, err := sdk.DiffScratchpadEntries(agentID, "aaaa", ""); err == nil {
+		t.Error("expected empty afterID to be refused")
+	}
 }

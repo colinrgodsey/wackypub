@@ -707,6 +707,28 @@ func (s *AgentSDK) SearchScratchpad(agentID string, entryID string, query string
 	return SearchScratchpad(agentDir, entryID, query, caseSensitive, useRegex, maxResults)
 }
 
+// DiffScratchpadEntries returns a unified diff between two of an agent's scratchpad entries,
+// or an empty string when they are byte-identical. A diff too large to be useful in one turn is
+// left as ordinary output: callers piping this command into their own tooling get the existing
+// output-capture behaviour, so the tool does not duplicate that machinery.
+//
+// Read-only, so it takes no session lock, and it authorizes with AuthorizeAgentTarget like the
+// other scratchpad reads.
+func (s *AgentSDK) DiffScratchpadEntries(agentID string, beforeID string, afterID string) (string, error) {
+	if agentID == "" {
+		return "", fmt.Errorf("agentID cannot be empty")
+	}
+	if beforeID == "" || afterID == "" {
+		return "", fmt.Errorf("beforeID and afterID cannot be empty")
+	}
+
+	if err := AuthorizeAgentTarget(agentID); err != nil {
+		return "", err
+	}
+
+	return DiffScratchpadEntries(s.WorkspaceDir, agentID, beforeID, afterID)
+}
+
 // DeleteScratchpad removes a scratchpad entry from <ws_dir>/<agent_id>/scratchpad/ by entry ID.
 func (s *AgentSDK) DeleteScratchpad(agentID string, entryID string) error {
 	if agentID == "" {

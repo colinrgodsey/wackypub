@@ -205,6 +205,7 @@ $ wackypub --help
 # positional argument, --message flag, or stdin all work the same way
 echo "a large log or payload that doesn't need to cost tokens to move around" | ./wackypub agent scratchpad create my_agent
 ./wackypub agent scratchpad read my_agent <entry-id>
+./wackypub agent scratchpad diff my_agent <before-entry-id> <after-entry-id>
 ```
 
 `wackypub agent <cmd> <agent_id>` and `wackypub agent <agent_id> <cmd>` are both supported for real invocation (though `--help` only resolves correctly with the subcommand name first — put it right after `agent`).
