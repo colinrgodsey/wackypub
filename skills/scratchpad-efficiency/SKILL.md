@@ -184,7 +184,9 @@ Use the precomputed `skip_lines` value (`411`) directly in `get_scratchpad` to p
 
 ### Searching Inside a File's Content
 
-`files-rw` has no built-in search/grep command - don't look for one. Instead, use this exact same auto-capture pattern: read the file via `files-rw`, let the output land in a scratchpad entry, then `search_scratchpad` that entry, same as above.
+`files-rw` has no built-in search/grep command - don't look for one. This section is the documented solution for the single-file case (task card `files-rw-has-no-way-to-search-inside-a-file-s-cont` settled docs-only over a search verb: a dedicated subcommand would only wrap the two primitives below and earn no new capability). Compose the same auto-capture pattern used above: read the file via `files-rw`, let the output land in a scratchpad entry, then `search_scratchpad` that entry.
+
+**Step 1: read the file.** A single-file search is one read plus one search on the captured entry:
 
 ```json
 {
@@ -192,9 +194,29 @@ Use the precomputed `skip_lines` value (`411`) directly in `get_scratchpad` to p
   "args": ["read", "app.log"]
 }
 ```
-If the file's content exceeds 4,000 bytes, the output auto-captures into a fresh scratchpad entry (`<STDOUT><SCRATCHPAD_DATA id="..." /></STDOUT>`) exactly like any other large command output - then follow the same 2-step search + slice workflow above.
+If the file's content exceeds 4,000 bytes, the output auto-captures into a fresh scratchpad entry (<STDOUT><SCRATCHPAD_DATA id="..." /></STDOUT>) exactly like any other large command output. The returned ID is the entry to search.
 
-**Known limit**: this only works up to `files-rw read`'s own 200KB cap - a file larger than that can't be pulled into a scratchpad this way at all, `read` refuses outright with a pagination-suggestion error instead of producing output to capture. For a file that large, fall back to `files-rw read --start N --end M` in smaller ranges directly (no scratchpad search across the whole file in one shot).
+**Step 2: search the captured entry.** `search_scratchpad` supports the same flags as the CLI: `regex`, `case_sensitive`, and `max_results`:
+
+```json
+{
+  "id": "v8n2",
+  "query": "connection refused",
+  "case_sensitive": false,
+  "regex": false,
+  "max_results": 10
+}
+```
+
+- `regex: true` treats the query as a regular expression; `false` (default) is a literal substring match.
+- `case_sensitive` defaults to false (case-insensitive).
+- `max_results` caps how many line hits come back.
+
+Every match returns its 1-indexed `line` and a precomputed `skip_lines` so you can page the surrounding context with `get_scratchpad` without searching again.
+
+**Step 3: page context with `get_scratchpad`**, using a match's `skip_lines` to pull only the surrounding window instead of the whole file.
+
+**Known limit**: this composition only works up to `files-rw read`'s own 200KB cap - a file larger than that can't be pulled into a scratchpad this way at all, `read` refuses outright with a pagination-suggestion error instead of producing output to capture. For a file that large, fall back to `files-rw read --start N --end M` in smaller ranges directly (no scratchpad search across the whole file in one shot), or `git grep` when the file is under git and searching the working tree is acceptable.
 
 ---
 
