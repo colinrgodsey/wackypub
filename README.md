@@ -193,6 +193,10 @@ $ wackypub --help
 # Manually trigger compaction (normally automatic during generate/prompt)
 ./wackypub agent compact my_agent
 
+# Stop a turn that is stuck (works across processes: it signals whoever holds the
+# agent's session lock)
+./wackypub agent cancel my_agent
+
 # Strip stale reasoning/thought signatures (OpenRouter encrypted blocks, Gemini
 # ThoughtSignature) after switching models or providers
 ./wackypub agent strip-signatures my_agent
