@@ -468,6 +468,16 @@ wackypub agent <agent_id> cancel
 - A cancelled turn stops at the existing `ctx.Err()` checkpoints, all before the assistant turn boundary, so no partial assistant text is committed. The user message that started the turn stays in `session.jsonl`, and the session lock is released, leaving the agent immediately usable.
 - Exits non-zero when there is nothing to cancel. `wackypub workspace locks` shows who holds each lock and how long each session has been quiet.
 
+### Inspect Hooks (`hooks`)
+```bash
+wackypub agent hooks <agent_id>
+```
+- Read-only listing of every hook installed under `<ws_dir>/<agent_id>/hooks/<event>/`, backed by `adkAgent.InspectAgentHooks`. Groups by event, in the same ascending numeric order `RunHookChain` executes them in, and shows each script's source.
+- Works against any agent in the workspace, not just the caller's own - useful for a coordinator verifying hook installs across a swarm without raw filesystem access.
+- Only lists files `DiscoverHooks` would actually execute (regular, executable files directly under an event directory), so the listing matches runtime behavior rather than everything sitting in that directory.
+- Source is capped at `adkAgent.HookContentLineLimit` (200) lines per script; a longer script prints with a `+N more lines` suffix instead of its full body, since hooks are expected to be small (see examples/hooks/).
+- Never creates, modifies, or executes a hook.
+
 ### Scratchpad Management (`scratchpad`)
 ```bash
 wackypub agent <agent_id> scratchpad create [message]
