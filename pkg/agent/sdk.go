@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -18,8 +19,13 @@ type AgentSDK struct {
 	WorkspaceDir          string
 	MaxToolTurns          int
 	CommandTimeoutSeconds int
-	lastHookEnvMu         sync.Mutex
-	lastHookEnv           map[string]map[string]string
+	// FailFastLock makes turn acquisition non-blocking (TryAcquireSessionLock)
+	// and fail fast with ErrSessionBusy when the target is mid-turn. Set by the
+	// D103 detached-dispatch child (also honors WACKYPUB_FAIL_FAST_LOCK=1 for
+	// re-executed workers) so a busy target is never silently queued.
+	FailFastLock  bool
+	lastHookEnvMu sync.Mutex
+	lastHookEnv   map[string]map[string]string
 }
 
 // NewSDK creates an SDK instance bound to a workspace directory.
@@ -317,7 +323,12 @@ func (s *AgentSDK) AddAndGenerateTurnStream(ctx context.Context, agentID string,
 			return
 		}
 
-		lock, err := AcquireSessionLock(agentDir)
+		var lock *SessionLock
+		if s.FailFastLock || os.Getenv("WACKYPUB_FAIL_FAST_LOCK") == "1" {
+			lock, err = TryAcquireSessionLock(agentDir)
+		} else {
+			lock, err = AcquireSessionLock(agentDir)
+		}
 		if err != nil {
 			yield("", fmt.Errorf("failed to acquire session lock: %w", err))
 			return
@@ -338,7 +349,20 @@ func (s *AgentSDK) AddAndGenerateTurnStream(ctx context.Context, agentID string,
 			}
 		}
 
+		// persistTimeoutNotice appends an explicit model notice turn on deadline
+		// exhaustion (D103 Item 3) so session.jsonl keeps role alternation valid
+		// and the audit trail records why generation stopped.
+		persistTimeoutNotice := func() {
+			notice := "[Generation timed out - stopping here. Send another message (e.g. \"continue\") to keep going.]"
+			_ = AppendSessionTurn(agentDir, "model", notice)
+			_ = CommitWorkspaceEvent(s.WorkspaceDir, agentID, "assistant")
+			yield(notice, context.DeadlineExceeded)
+		}
 		if turnCtx.Err() != nil {
+			if errors.Is(turnCtx.Err(), context.DeadlineExceeded) {
+				persistTimeoutNotice()
+				return
+			}
 			yield("", turnCtx.Err())
 			return
 		}
@@ -358,6 +382,10 @@ func (s *AgentSDK) AddAndGenerateTurnStream(ctx context.Context, agentID string,
 
 		for chunk, err := range fa.GenerateTurnStream(turnCtx) {
 			if turnCtx.Err() != nil {
+				if errors.Is(turnCtx.Err(), context.DeadlineExceeded) {
+					persistTimeoutNotice()
+					return
+				}
 				yield("", turnCtx.Err())
 				return
 			}
@@ -369,6 +397,10 @@ func (s *AgentSDK) AddAndGenerateTurnStream(ctx context.Context, agentID string,
 			}
 		}
 		if turnCtx.Err() != nil {
+			if errors.Is(turnCtx.Err(), context.DeadlineExceeded) {
+				persistTimeoutNotice()
+				return
+			}
 			yield("", turnCtx.Err())
 			return
 		}

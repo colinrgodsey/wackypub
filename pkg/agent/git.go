@@ -213,6 +213,17 @@ func CommitWorkspaceEvent(wsDir, agentID, eventType string) error {
 
 // commitWorkspaceEvent is the D35 commit itself, error-only for callers that decide how loudly to fail.
 func commitWorkspaceEvent(wsDir, repoDir, agentID, eventType string) error {
+	// D103 Item 5: Serialize workspace stage-and-commit behind an exclusive flock on
+	// <repoDir>/.git.lock. In shared-repo workspaces (repoDir == wsDir) multiple agents
+	// can commit concurrently; without this, read-modify-write on the git index races
+	// and concurrent turns clobber each other's staged files. The kernel releases the
+	// lock if the process dies mid-commit.
+	gitLock, err := AcquireGitCommitLock(repoDir)
+	if err != nil {
+		return fmt.Errorf("failed to acquire git commit lock: %w", err)
+	}
+	defer gitLock.Release()
+
 	repo, err := git.PlainOpen(repoDir)
 	if err != nil {
 		return fmt.Errorf("failed to open git repo at %s: %w", repoDir, err)
