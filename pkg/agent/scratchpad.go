@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/h2non/filetype"
+	"github.com/pmezard/go-difflib/difflib"
 )
 
 const (
@@ -741,4 +742,90 @@ func SearchScratchpad(agentDir string, id string, query string, caseSensitive *b
 		MaxResults:   maxResults,
 		Matches:      matches,
 	}, nil
+}
+
+// ScratchpadDiffContextLines is the number of unchanged lines difflib keeps around each
+// hunk, matching diff -u so agents can grep and patch with familiar output.
+const ScratchpadDiffContextLines = 3
+
+// ScratchpadEntryNotFoundError reports that one of the entries a caller named does not
+// exist. It is typed so `wackypub agent <id> scratchpad diff` can exit 2 on a bad entry ID
+// while every other failure keeps the CLI's ordinary exit 1.
+type ScratchpadEntryNotFoundError struct {
+	AgentID string
+	ID      string
+	// Reason explains an ID that can never match, such as the wrong length, instead of an
+	// ID that is merely absent right now.
+	Reason string
+}
+
+func (e *ScratchpadEntryNotFoundError) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("scratchpad entry %q not found for agent %q: %s", e.ID, e.AgentID, e.Reason)
+	}
+	return fmt.Sprintf("scratchpad entry %q not found for agent %q", e.ID, e.AgentID)
+}
+
+// DiffScratchpadEntries renders a unified diff between two text entries of one agent,
+// reading both in full. An empty result means the entries are byte-identical.
+//
+// Unlike GetScratchpad this takes the workspace and agent rather than the agent directory,
+// because a diff has two entry IDs and one owner, and the A2A tool surface holds the former
+// pair. Binary (.dat) entries are rejected outright the way `scratchpad read` rejects them
+// (D48), and both sides obey the single-read size cap (D63).
+//
+// Diffing is read-only, so this function performs no authorization; callers reached through
+// the SDK or CLI must gate with AuthorizeAgentTarget first, the same split as GetScratchpad.
+func DiffScratchpadEntries(wsDir, agentID, beforeID, afterID string) (string, error) {
+	if wsDir == "" {
+		return "", fmt.Errorf("wsDir cannot be empty")
+	}
+	if agentID == "" {
+		return "", fmt.Errorf("agentID cannot be empty")
+	}
+
+	return diffScratchpadEntriesInDir(filepath.Join(wsDir, agentID), agentID, beforeID, afterID)
+}
+
+// diffScratchpadEntriesInDir is the one implementation, reachable both from the workspace-shaped
+// entry point above and from the agent tool, which only ever holds an agent directory.
+func diffScratchpadEntriesInDir(agentDir, agentID, beforeID, afterID string) (string, error) {
+	before, err := readScratchpadForDiff(agentDir, agentID, beforeID)
+	if err != nil {
+		return "", err
+	}
+	after, err := readScratchpadForDiff(agentDir, agentID, afterID)
+	if err != nil {
+		return "", err
+	}
+
+	// Identical entries come back as an empty string from difflib, so no short-circuit is
+	// needed for the "nothing changed" case.
+	return difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+		A:        difflib.SplitLines(before),
+		B:        difflib.SplitLines(after),
+		FromFile: beforeID + " (before)",
+		ToFile:   afterID + " (after)",
+		Context:  ScratchpadDiffContextLines,
+	})
+}
+
+// readScratchpadForDiff reads one side of a diff, turning an unusable entry ID into the typed
+// error so callers can tell "you named the wrong ID" from a read failure without matching on
+// message text.
+func readScratchpadForDiff(agentDir, agentID, id string) (string, error) {
+	if err := validateScratchpadID(id); err != nil {
+		return "", &ScratchpadEntryNotFoundError{AgentID: agentID, ID: id, Reason: err.Error()}
+	}
+	matches, err := filepath.Glob(filepath.Join(agentDir, ScratchpadDirName, id+"-*"))
+	if err != nil {
+		return "", fmt.Errorf("failed to look up scratchpad entry %q for agent %q: %w", id, agentID, err)
+	}
+	if len(matches) == 0 {
+		return "", &ScratchpadEntryNotFoundError{AgentID: agentID, ID: id}
+	}
+
+	// The real read still does the work, so binary entries stay rejected (D48) and the
+	// single-read size cap stays enforced (D63).
+	return GetScratchpad(agentDir, id, nil, nil)
 }

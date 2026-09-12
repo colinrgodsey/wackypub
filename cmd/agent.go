@@ -733,6 +733,45 @@ Pass --skip-lines N and/or --num-lines M for line-based pagination. Rejects bina
 	},
 }
 
+var scratchpadDiffCmd = &cobra.Command{
+	Use:   "diff [agent_id] <before_id> <after_id>",
+	Short: "Unified diff between two scratchpad entries",
+	Long: `Renders a unified diff between two text entries of one agent, so an edit can be verified
+without re-reading either version into context. Both entries are read in full from
+<ws_dir>/<agent_id>/scratchpad/ by ID, and nothing is written.
+
+Arguments:
+  agent_id    Required. Identifies the agent directory (<ws_dir>/<agent_id>).
+  before_id   Required. Entry ID holding the earlier state.
+  after_id    Required. Entry ID holding the later state.
+
+Identical entries print nothing and exit 0. An entry ID that does not exist, or that is not a
+valid ID, exits 2 and writes nothing. Binary entries are rejected the way the read verb rejects
+them. A diff too large to read in one turn stays ordinary output: pipe it into the create verb to
+store it as its own entry, then search and paginate that entry.
+
+Typical loop: snapshot the files a refactor will touch, run the refactor, snapshot them again,
+diff the pairs, then search the resulting patch for a symbol that should be gone entirely.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
+
+		if len(args) < 3 {
+			return fmt.Errorf("agent_id, before_id and after_id are required. Usage: wackypub agent <agent_id> scratchpad diff <before_id> <after_id>")
+		}
+
+		diff, err := sdk.DiffScratchpadEntries(args[0], args[1], args[2])
+		if err != nil {
+			return err
+		}
+		fmt.Print(diff)
+		return nil
+	},
+}
+
 var scratchpadListCmd = &cobra.Command{
 	Use:   "list [agent_id]",
 	Short: "List all live scratchpad entries for an agent",
@@ -904,6 +943,8 @@ func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 				return scratchpadCreateCmd.RunE(cmd, rem)
 			case "read":
 				return scratchpadReadCmd.RunE(cmd, rem)
+			case "diff":
+				return scratchpadDiffCmd.RunE(cmd, rem)
 			case "list":
 				return scratchpadListCmd.RunE(cmd, rem)
 			case "search":
@@ -938,6 +979,7 @@ func init() {
 
 	scratchpadCmd.AddCommand(scratchpadCreateCmd)
 	scratchpadCmd.AddCommand(scratchpadReadCmd)
+	scratchpadCmd.AddCommand(scratchpadDiffCmd)
 	scratchpadCmd.AddCommand(scratchpadListCmd)
 	scratchpadCmd.AddCommand(scratchpadSearchCmd)
 	scratchpadCmd.AddCommand(scratchpadDeleteCmd)

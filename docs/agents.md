@@ -212,6 +212,8 @@ You are Ignis, an ancient wizard.
 - **`list_scratchpads()`**: Lists metadata for all currently-live scratchpad entries (id, size, lines, created_by) ordered by file mtime ascending, and reports current capacity usage (D39).
 - **`search_scratchpad(id: string, query: string, case_sensitive?: bool, regex?: bool, max_results?: int)`**: Searches a specific scratchpad entry by ID for matching lines (see DECISIONS.md D25). Returns 1-indexed line numbers, precomputed `skip_lines` for `get_scratchpad` pagination, and truncated line text (~200 chars), with total match counts reported separately.
 - **Inline Macro Expansion**: Positional arguments and `stdin` template string in `run_command` expand `<SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" json_escape="true" />` server-side before process execution. When `json_escape="true"` is set, content is substituted as JSON-escaped text (quotes, newlines, and backslashes escaped per RFC 8259) without adding surrounding quotes (D37). Arguments exceeding 500,000 bytes after expansion fail fast.
+- **`diff_scratchpad(before_id: string, after_id: string)`**: Renders a unified diff between two text entries as an agent-callable tool, returning `{diff, identical}`. Identical entries yield an empty diff with `identical: true`; an unknown or malformed ID is an error rather than an empty diff, so a typo cannot read as "nothing changed". Unlike the CLI form, the patch is returned into context directly, so slice or shell out for a diff expected to be huge.
+- **`wackypub agent <agent_id> scratchpad diff <before_id> <after_id>`**: Renders a unified diff between two text entries, backed by the SDK `DiffScratchpadEntries(wsDir, agentID, beforeID, afterID)` and its authorized method `(s *AgentSDK) DiffScratchpadEntries(agentID, beforeID, afterID)`. Identical entries print nothing and exit 0; an unknown or malformed entry ID exits 2 without writing; binary entries are refused. A diff larger than the output threshold stays ordinary stdout, so the Automatic Output Redirection below is what turns it into a new entry.
 - **Automatic Output Redirection**: Subprocess stdout/stderr exceeding 4,000 bytes are automatically captured into fresh scratchpad entries, returning structured tags like `<STDOUT><SCRATCHPAD_DATA id="k3p1" size="5001" lines="42" /></STDOUT>` (D39).
 
 ---
@@ -462,6 +464,7 @@ wackypub agent <agent_id> compact
 ```bash
 wackypub agent <agent_id> scratchpad create [message]
 wackypub agent <agent_id> scratchpad read <entry_id> [--skip-lines N] [--num-lines M]
+wackypub agent <agent_id> scratchpad diff <before_id> <after_id>
 wackypub agent <agent_id> scratchpad list
 wackypub agent <agent_id> scratchpad search <entry_id> <query> [--regex] [--case-insensitive] [--max-results N]
 ```

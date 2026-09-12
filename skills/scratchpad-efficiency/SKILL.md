@@ -1,6 +1,6 @@
 ---
 name: scratchpad-efficiency
-description: Advanced scratchpad patterns, zero-token inter-agent data hand-offs, macro templating, and line-level search/pagination strategies
+description: Advanced scratchpad patterns, zero-token inter-agent data hand-offs, macro templating, line-level search/pagination, and diffing two entries to verify an edit
 always_load: true
 ---
 # Scratchpad Efficiency & Swarm Communication Patterns
@@ -290,4 +290,60 @@ An agent generates its large output directly into a scratchpad via `create_scrat
 - **`wackypub` Core (CLI / SDK / session.jsonl):** Leaves `<SCRATCHPAD_EXPAND id="n1a7" />` untouched as literal plain text. No core rewriting occurs.
 - **Downstream Consumers (e.g. `wackydiscord`):** Before delivering the assistant message to human users, `wackydiscord` resolves the sentinel against the agent's scratchpad (`get_scratchpad("n1a7")`) and substitutes the full prose inline.
 - **Fallback:** If the scratchpad entry cannot be found or was evicted, downstream consumers gracefully display the raw `<SCRATCHPAD_EXPAND id="X" />` tag.
+
+
+---
+
+## 9. Diff Two Entries To Verify An Edit (Zero-Token Patch Preview)
+
+### The Pattern
+
+Snapshot the before-state into an entry, make the edit, snapshot the after-state, then hand the two entry IDs to `diff_scratchpad`. Neither version comes back into context. Only the patch does, and only once, with no need to re-read or regenerate either snapshot.
+
+### The Tool
+
+Inside a turn, call the `diff_scratchpad` tool, whose two arguments are the entry IDs:
+
+```text
+diff_scratchpad(before_id: "AB12", after_id: "CD34")
+```
+
+Both IDs are required, and there is no mode where an absent side is treated as empty: comparing against nothing would turn a mistyped ID into a patch that adds or deletes the whole entry.
+
+It answers the way the other scratchpad tools do, and the contract is deliberately blunt:
+
+- entries differ: `diff` carries the unified patch, `identical` is false, and the `---` and `+++` headers name the two entry IDs so a patch stays traceable
+- entries identical: `diff` is empty and `identical` is true, so "did anything change" is a field lookup rather than a test against an empty string that might just be an empty entry
+- an entry ID that does not exist, or is malformed: an error naming the ID, never an empty diff, so a typo cannot masquerade as "nothing changed"
+- binary entries: refused, the way reading them is refused
+
+External callers (a shell, a script, another agent's CLI) use the equivalent command, which behaves identically: `wackypub agent <agent_id> scratchpad diff <before_id> <after_id>`. Both orderings of that command work, matching the other scratchpad verbs. The SDK counterparts are `agent.DiffScratchpadEntries(wsDir, agentID, beforeID, afterID)` and `(s *AgentSDK) DiffScratchpadEntries(agentID, beforeID, afterID)`, the latter being the authorized path.
+
+### Getting The Two Entries
+
+- **An existing file**: `files-rw read <path>`. Above the capture threshold the read result *is* the snapshot entry, at no token cost. Reads are gated by the `r:` rules in `FILES_RW_ACCESS`.
+- **Command output**: run the command. Large stdout becomes an entry.
+- **A slice of an entry**: `create_scratchpad` with `skip_lines` and `num_lines` macro attributes.
+- **Another agent's version**: it deposits straight into your scratchpad (section 1), then you diff against yours. Neither version touches anyone's context.
+- **Explicitly**: `wackypub agent <id> scratchpad create "text"`, or redirect a file into it with no message argument, in which case stdin is read. Passing a lone dash stores a literal dash instead of the file.
+
+### Worked Example: Preview A Multi-File Refactor
+
+1. Before touching anything, snapshot every file the refactor rewrites and keep the entry IDs.
+2. Run the refactor.
+3. Snapshot the same files again.
+4. Diff one pair per file. A pair whose result comes back `identical` is an unchanged file, verified rather than assumed.
+5. Search the largest patch for a symbol that should have disappeared entirely. Every hit being a removal line is the check that catches a rename which missed a call site.
+6. Everything here is a preview. Nothing is written, and git restore still undoes the edit.
+
+### Large Diffs
+
+Through the CLI nothing to remember: a patch past the capture threshold arrives as the scratchpad entry reference tag instead of as text, which you then narrow with `search_scratchpad` or paginate with `skip_lines`. The tool has no such wrapper, it returns the patch straight into context, so when a diff is likely to be huge (two long entries that differ almost everywhere) diff slices of them, or run the CLI form through a command and let the capture do its job. To keep a patch on purpose, pipe the CLI output into `wackypub agent <id> scratchpad create` with the message argument omitted.
+
+### Limits
+
+- Text entries only. A binary entry is refused rather than diffed as garbage.
+- Both sides obey the single-read size cap, so two entries too large to read are also too large to diff whole. Diff slices of them instead, or diff the files with git.
+- It previews; it does not apply. Applying means writing a real file and running `patch` or `git apply`.
+- For files git already tracks, plain `git diff` is the better tool, for staging awareness and rename detection. This section earns its keep on untracked or generated content, and on reviewing another agent's candidate version without loading it into context.
 

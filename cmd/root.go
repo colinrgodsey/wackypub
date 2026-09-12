@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -162,6 +163,12 @@ func GetCommandTimeoutSeconds() int {
 func Execute() {
 	if err := RootCmd.Execute(); err != nil {
 		fmt.Println(err)
+		// A named scratchpad entry that does not exist is a usage error, so it exits 2 the way
+		// diff does. Everything else keeps the previous generic exit 1.
+		var entryMissing *adkAgent.ScratchpadEntryNotFoundError
+		if errors.As(err, &entryMissing) {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 }
