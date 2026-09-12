@@ -458,6 +458,16 @@ wackypub agent <agent_id> compact
 ```
 - Unconditionally performs session compaction on the agent's session history (summarizes oldest turns into MEMORY.md and prunes session.jsonl).
 
+### Cancel In-Flight Turn (`cancel`)
+```bash
+wackypub agent <agent_id> cancel
+```
+- Requests cancellation of the turn now running for the agent and prints which one it reached: an in-process turn through the D85 registry, or a turn in another process by SIGTERM to whatever holds the agent's session lock.
+- Enforces `WACKYPUB_ALLOWED_AGENTS` like `add`, `prompt`, and `generate`: cancelling ends another agent's work, so it is a mutating call, not a read-only diagnostic.
+- A turn holds the session lock for its whole duration, which is how an outside process identifies it. The lock is probed with `LOCK_EX|LOCK_NB` so the command never queues behind the turn it is trying to stop, and only a holder that is a `wackypub` executable (or this same binary) is signalled. A lock file naming an absent or unrelated process is leftover metadata from a finished turn: nothing is signalled and the command reports that no turn is running.
+- A cancelled turn stops at the existing `ctx.Err()` checkpoints, all before the assistant turn boundary, so no partial assistant text is committed. The user message that started the turn stays in `session.jsonl`, and the session lock is released, leaving the agent immediately usable.
+- Exits non-zero when there is nothing to cancel. `wackypub workspace locks` shows who holds each lock and how long each session has been quiet.
+
 ### Scratchpad Management (`scratchpad`)
 ```bash
 wackypub agent <agent_id> scratchpad create [message]

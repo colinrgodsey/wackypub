@@ -392,6 +392,61 @@ Read-only: does not modify anything.`,
 }
 
 // wackypub agent <agent_id> compact OR wackypub agent compact <agent_id>
+var agentCancelCmd = &cobra.Command{
+	Use:   "cancel [agent_id]",
+	Short: "Request cancellation of an agent's in-flight turn",
+	Long: `Sends a cancellation request to the turn currently running for an agent, whether that
+turn runs in this process or in another one, and prints which one it reached.
+
+Arguments:
+  agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
+
+Authorization is the same WACKYPUB_ALLOWED_AGENTS gate that prompt, add, and generate
+enforce, evaluated from the current working directory: cancelling ends another agent's
+work, so it is a mutating call, not a diagnostic.
+
+A turn holds the agent's session lock for its whole duration, which is how an outside
+process finds it. The lock is probed without ever queueing behind it, and only a holder
+that is a wackypub process receives SIGTERM, which is the same stop request that an
+operator gets from Ctrl-C in that terminal. The turn unwinds at its existing cancellation
+checkpoints: partial assistant text is not committed, the user message that started the
+turn stays in session.jsonl, and the session lock is released, so the agent is immediately
+usable again rather than wedged.
+
+A lock file naming a process that no longer exists is leftover metadata from a finished
+turn, not an in-flight turn: nothing is signalled, and the command exits non-zero saying
+no turn is running. Use "wackypub workspace locks" to see holders, PIDs, and how long
+each session has been quiet.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
+
+		var agentID string
+		if len(args) >= 1 {
+			agentID = args[0]
+		}
+		if agentID == "" {
+			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> cancel")
+		}
+
+		result, err := sdk.CancelAgentTurn(agentID)
+		if err != nil {
+			return err
+		}
+		if result.Scope == adkAgent.CancelScopeInProcess {
+			fmt.Printf("Cancelled the in-flight turn for agent %q.\n", result.AgentID)
+			return nil
+		}
+		fmt.Printf("Sent SIGTERM to pid %d (%s), which holds agent %q's session lock; its turn stops at the next cancellation checkpoint.\n",
+			result.PID, result.Program, result.AgentID)
+		return nil
+	},
+}
+
 var agentCompactCmd = &cobra.Command{
 	Use:   "compact [agent_id]",
 	Short: "Perform session compaction on an agent's history",
@@ -854,7 +909,7 @@ Arguments:
 	},
 }
 
-// ExecuteAgentDispatcher handles positional "wackypub agent <agent_id> <add|add-media|generate|prompt|repl|...>" syntax.
+// ExecuteAgentDispatcher handles positional "wackypub agent <agent_id> <add|add-media|generate|prompt|cancel|repl|...>" syntax.
 func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 	if len(args) >= 2 {
 		agentID := args[0]
@@ -888,6 +943,8 @@ func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 			return agentRenderPromptCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "compact" {
 			return agentCompactCmd.RunE(cmd, []string{agentID})
+		} else if subCmd == "cancel" {
+			return agentCancelCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "context" {
 			return agentContextCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "scratchpad" {
@@ -949,6 +1006,7 @@ func init() {
 	agentCmd.AddCommand(agentGenerateCmd)
 	agentCmd.AddCommand(agentPromptCmd)
 	agentCmd.AddCommand(agentReplCmd)
+	agentCmd.AddCommand(agentCancelCmd)
 	agentCmd.AddCommand(agentStripSignaturesCmd)
 	agentCmd.AddCommand(agentReadSessionCmd)
 	agentCmd.AddCommand(agentReadMemoryCmd)
