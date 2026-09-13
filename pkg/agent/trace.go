@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"google.golang.org/genai"
+
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 // TraceOptions configures causal graph traversal and formatting according to D36.
@@ -258,10 +261,11 @@ func TraceByTraceID(wsDir, traceID string, opts TraceOptions) (*TraceResult, err
 	}
 
 	sdk := NewSDK(wsDir)
-	agentIDs, err := sdk.ListAgentsLegacy()
+	listResp, err := sdk.ListAgents(context.Background(), &agentv1.ListAgentsRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list agents: %w", err)
 	}
+	agentIDs := listResp.GetAgentIds()
 
 	var latestAgentID string
 	var latestCommitSHA string

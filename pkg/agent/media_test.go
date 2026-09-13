@@ -74,7 +74,7 @@ func TestAddMedia_GatingAndExecution(t *testing.T) {
 		t.Errorf("expected MIMEType image/jpeg, got %s", blob.MIMEType)
 	}
 
-	turns, err := sdk.ReadSessionLegacy(agentID)
+	turns, err := sdk.readSessionLegacy(agentID)
 	if err != nil {
 		t.Fatalf("ReadSession failed: %v", err)
 	}

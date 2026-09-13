@@ -341,7 +341,7 @@ printf '{"text":"What is your secret quest?","env":{"TODAY":"2026-09-03"}}\n'
 	}
 
 	// Verify session.jsonl stored the altered text
-	turns, err := sdk.ReadSessionLegacy(agentID)
+	turns, err := sdk.readSessionLegacy(agentID)
 	if err != nil {
 		t.Fatalf("ReadSession failed: %v", err)
 	}
@@ -537,7 +537,7 @@ printf '{"text":"intercepted-by-hook","env":{"INTERCEPTED":"true"}}\n'
 		if res.Text != "intercepted-by-hook" {
 			t.Errorf("expected result text 'intercepted-by-hook', got %q", res.Text)
 		}
-		turns, err := sdk.ReadSessionLegacy("bob")
+		turns, err := sdk.readSessionLegacy("bob")
 		if err != nil {
 			t.Fatalf("ReadSession failed: %v", err)
 		}
@@ -563,7 +563,7 @@ printf '{"text":"intercepted-by-hook","env":{"INTERCEPTED":"true"}}\n'
 		if res.Text != "intercepted-by-hook" {
 			t.Errorf("expected result text 'intercepted-by-hook', got %q", res.Text)
 		}
-		turns, err := sdk.ReadSessionLegacy("bob")
+		turns, err := sdk.readSessionLegacy("bob")
 		if err != nil {
 			t.Fatalf("ReadSession failed: %v", err)
 		}

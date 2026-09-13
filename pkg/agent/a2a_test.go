@@ -225,7 +225,7 @@ func TestD59_StatelessA2APropagationAndReadOnlyExemption(t *testing.T) {
 	sdk := NewSDK(wsDir)
 
 	// 1. Read-only methods must NOT fail on deadlock cycle even when target agent is in active call chain
-	turns, err := sdk.ReadSessionLegacy("bob")
+	turns, err := sdk.readSessionLegacy("bob")
 	if err != nil {
 		t.Fatalf("ReadSession failed: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestD59_StatelessA2APropagationAndReadOnlyExemption(t *testing.T) {
 		t.Fatalf("expected 1 turn from ReadSession, got %d", len(turns))
 	}
 
-	mem, err := sdk.ReadMemoryLegacy("bob")
+	mem, err := sdk.readMemoryLegacy("bob")
 	if err != nil {
 		t.Fatalf("ReadMemory failed: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestD59_StatelessA2APropagationAndReadOnlyExemption(t *testing.T) {
 		t.Errorf("unexpected ReadMemory output: %q", mem)
 	}
 
-	prompt, err := sdk.RenderSystemPromptLegacy("bob")
+	prompt, err := sdk.renderSystemPromptLegacy("bob")
 	if err != nil {
 		t.Fatalf("RenderSystemPrompt failed: %v", err)
 	}
@@ -317,13 +317,13 @@ func TestD60_ReadOnlyCrossAgentAuthorizationGating(t *testing.T) {
 	}
 
 	// 1. All read-only content operations for Alice must FAIL due to missing allowlist in Bob's dir
-	if _, err := sdk.ReadSessionLegacy("alice"); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
+	if _, err := sdk.readSessionLegacy("alice"); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
 		t.Fatalf("expected ReadSession to fail with missing allowlist, got: %v", err)
 	}
-	if _, err := sdk.ReadMemoryLegacy("alice"); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
+	if _, err := sdk.readMemoryLegacy("alice"); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
 		t.Fatalf("expected ReadMemory to fail with missing allowlist, got: %v", err)
 	}
-	if _, err := sdk.RenderSystemPromptLegacy("alice"); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
+	if _, err := sdk.renderSystemPromptLegacy("alice"); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
 		t.Fatalf("expected RenderSystemPrompt to fail with missing allowlist, got: %v", err)
 	}
 	if _, _, _, err := sdk.ListScratchpads("alice"); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
@@ -337,7 +337,7 @@ func TestD60_ReadOnlyCrossAgentAuthorizationGating(t *testing.T) {
 	}
 
 	// 2. InspectAgent MUST SUCCEED (diagnostic exemption per D16)
-	info, err := sdk.InspectAgentLegacy("alice")
+	info, err := sdk.inspectAgentLegacy("alice")
 	if err != nil {
 		t.Fatalf("InspectAgent should be exempt from authorization, got err: %v", err)
 	}
@@ -351,15 +351,15 @@ func TestD60_ReadOnlyCrossAgentAuthorizationGating(t *testing.T) {
 	}
 
 	// Now all read operations must SUCCEED
-	turns, err := sdk.ReadSessionLegacy("alice")
+	turns, err := sdk.readSessionLegacy("alice")
 	if err != nil || len(turns) != 1 {
 		t.Fatalf("ReadSession failed after authorization: err=%v, turns=%d", err, len(turns))
 	}
-	mem, err := sdk.ReadMemoryLegacy("alice")
+	mem, err := sdk.readMemoryLegacy("alice")
 	if err != nil || !strings.Contains(mem, "Alice private memory") {
 		t.Fatalf("ReadMemory failed after authorization: err=%v, mem=%q", err, mem)
 	}
-	prompt, err := sdk.RenderSystemPromptLegacy("alice")
+	prompt, err := sdk.renderSystemPromptLegacy("alice")
 	if err != nil || !strings.Contains(prompt, "You are Alice") {
 		t.Fatalf("RenderSystemPrompt failed after authorization: err=%v, prompt=%q", err, prompt)
 	}

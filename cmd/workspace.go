@@ -75,9 +75,9 @@ var initGitCmd = &cobra.Command{
 func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 	if selfID, ok := adkAgent.CurrentAgentIDFromCWD(); ok {
 		fmt.Printf("You are agent %q.\n", selfID)
-		if insp, err := sdk.InspectAgentLegacy(selfID); err == nil {
-			if len(insp.AllowedAgents) > 0 {
-				fmt.Printf("Agents you can talk to: %s\n", strings.Join(insp.AllowedAgents, ", "))
+		if insp, err := sdk.InspectAgent(context.Background(), &agentv1.InspectAgentRequest{AgentId: selfID}); err == nil {
+			if len(insp.GetAllowedAgents()) > 0 {
+				fmt.Printf("Agents you can talk to: %s\n", strings.Join(insp.GetAllowedAgents(), ", "))
 			} else {
 				fmt.Println("Agents you can talk to: none (no WACKYPUB_ALLOWED_AGENTS file, or it's empty)")
 			}
@@ -95,23 +95,14 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 	}
 	fmt.Printf("Workspace: %s (git: %s)\n", absDir, gitStatus)
 
-	var ids []string
-	if isProtoMethodEnabled("ListAgents") {
-		ctx := context.Background()
-		resp, err := sdk.ListAgents(ctx, &agentv1.ListAgentsRequest{
-			WorkspaceDir: wsDir,
-		})
-		if err != nil {
-			return err
-		}
-		ids = resp.GetAgentIds()
-	} else {
-		var err error
-		ids, err = sdk.ListAgentsLegacy()
-		if err != nil {
-			return err
-		}
+	ctx := context.Background()
+	resp, err := sdk.ListAgents(ctx, &agentv1.ListAgentsRequest{
+		WorkspaceDir: wsDir,
+	})
+	if err != nil {
+		return err
 	}
+	ids := resp.GetAgentIds()
 
 	if len(ids) == 0 {
 		fmt.Println("\nNo agent directories found.")
@@ -125,15 +116,15 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "AGENT_ID\tRUNTIME.JSON\tSESSION TURNS\tMEMORY.MD\tTOOLS\tSKILLS\tALLOWED_AGENTS")
 	for _, id := range ids {
-		insp, err := sdk.InspectAgentLegacy(id)
+		insp, err := sdk.InspectAgent(context.Background(), &agentv1.InspectAgentRequest{AgentId: id})
 		if err != nil {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, "error", "-", "-", "-", "-", "-")
 			continue
 		}
 
 		runtimeStatus := "missing"
-		if insp.RuntimeJSONExists {
-			if insp.RuntimeJSONValid {
+		if insp.GetRuntimeJsonExists() {
+			if insp.GetRuntimeJsonValid() {
 				runtimeStatus = "ok"
 			} else {
 				runtimeStatus = "invalid"
@@ -141,37 +132,37 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 		}
 
 		turns := "-"
-		if insp.SessionJSONLExists {
-			turns = fmt.Sprintf("%d", insp.SessionTurnCount)
-			if insp.SessionCorruptLines > 0 {
-				turns += fmt.Sprintf(" (%d corrupt)", insp.SessionCorruptLines)
+		if insp.GetSessionJsonlExists() {
+			turns = fmt.Sprintf("%d", insp.GetSessionTurnCount())
+			if insp.GetSessionCorruptLines() > 0 {
+				turns += fmt.Sprintf(" (%d corrupt)", insp.GetSessionCorruptLines())
 			}
 		}
 
 		memory := "no"
-		if insp.MemoryMDExists {
+		if insp.GetMemoryMdExists() {
 			memory = "yes"
 		}
 
 		toolsStatus := "-"
-		if insp.ToolsDirExists {
-			toolsStatus = fmt.Sprintf("%d tool(s)", len(insp.DiscoveredTools))
-			if len(insp.ShadowedTools) > 0 {
-				toolsStatus += fmt.Sprintf(" (%d shadowed)", len(insp.ShadowedTools))
+		if insp.GetToolsDirExists() {
+			toolsStatus = fmt.Sprintf("%d tool(s)", len(insp.GetDiscoveredTools()))
+			if len(insp.GetShadowedTools()) > 0 {
+				toolsStatus += fmt.Sprintf(" (%d shadowed)", len(insp.GetShadowedTools()))
 			}
 		}
 
 		skillsStatus := "-"
-		if insp.SkillsDirExists {
-			skillsStatus = fmt.Sprintf("%d skill(s)", len(insp.DiscoveredSkills))
-			if len(insp.ShadowedSkills) > 0 {
-				skillsStatus += fmt.Sprintf(" (%d shadowed)", len(insp.ShadowedSkills))
+		if insp.GetSkillsDirExists() {
+			skillsStatus = fmt.Sprintf("%d skill(s)", len(insp.GetDiscoveredSkills()))
+			if len(insp.GetShadowedSkills()) > 0 {
+				skillsStatus += fmt.Sprintf(" (%d shadowed)", len(insp.GetShadowedSkills()))
 			}
 		}
 
 		allowedStatus := "deny-all"
-		if insp.AllowedAgentsExists {
-			allowedStatus = fmt.Sprintf("%d allowed", len(insp.AllowedAgents))
+		if insp.GetAllowedAgentsExists() {
+			allowedStatus = fmt.Sprintf("%d allowed", len(insp.GetAllowedAgents()))
 		}
 
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, runtimeStatus, turns, memory, toolsStatus, skillsStatus, allowedStatus)
@@ -180,60 +171,60 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 }
 
 func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
-	insp, err := sdk.InspectAgentLegacy(agentID)
+	insp, err := sdk.InspectAgent(context.Background(), &agentv1.InspectAgentRequest{AgentId: agentID})
 	if err != nil {
 		return err
 	}
 
-	if !insp.AgentDirExists {
-		fmt.Printf("Agent %q does not exist yet at %s.\n\n", agentID, insp.AgentDir)
+	if !insp.GetAgentDirExists() {
+		fmt.Printf("Agent %q does not exist yet at %s.\n\n", agentID, insp.GetAgentDir())
 		fmt.Println("To create it, add at minimum:")
-		fmt.Printf("  %s/runtime.json   LLM endpoint/model config - see docs/agents.md §3\n", insp.AgentDir)
+		fmt.Printf("  %s/runtime.json   LLM endpoint/model config - see docs/agents.md §3\n", insp.GetAgentDir())
 		fmt.Println("AGENTS.md is optional (falls back to a generic \"You are agent <id>.\" prompt if missing).")
 		fmt.Printf("\nThen run: wackypub agent %s prompt \"...\"\n", agentID)
 		return nil
 	}
 
-	fmt.Printf("Agent: %s\n", insp.AgentID)
-	fmt.Printf("Directory: %s\n\n", insp.AgentDir)
+	fmt.Printf("Agent: %s\n", insp.GetAgentId())
+	fmt.Printf("Directory: %s\n\n", insp.GetAgentDir())
 
 	fmt.Println("Files:")
-	fmt.Printf("  AGENTS.md                 %s\n", presence(insp.AgentsMDExists))
-	fmt.Printf("  MEMORY.md                 %s\n", presence(insp.MemoryMDExists))
-	if insp.DotEnvExists {
+	fmt.Printf("  AGENTS.md                 %s\n", presence(insp.GetAgentsMdExists()))
+	fmt.Printf("  MEMORY.md                 %s\n", presence(insp.GetMemoryMdExists()))
+	if insp.GetDotEnvExists() {
 		fmt.Println("  .env                      present")
 	}
 
-	if insp.AllowedAgentsExists {
-		fmt.Printf("  WACKYPUB_ALLOWED_AGENTS   present (%d allowed)\n", len(insp.AllowedAgents))
+	if insp.GetAllowedAgentsExists() {
+		fmt.Printf("  WACKYPUB_ALLOWED_AGENTS   present (%d allowed)\n", len(insp.GetAllowedAgents()))
 	} else {
 		fmt.Println("  WACKYPUB_ALLOWED_AGENTS   missing (deny-all cross-agent access)")
 	}
 
-	if insp.ToolsDirExists {
-		fmt.Printf("  tools/                    present (%d tool(s) discovered)\n", len(insp.DiscoveredTools))
+	if insp.GetToolsDirExists() {
+		fmt.Printf("  tools/                    present (%d tool(s) discovered)\n", len(insp.GetDiscoveredTools()))
 	} else {
 		fmt.Println("  tools/                    missing")
 	}
 
-	if insp.SkillsDirExists {
-		fmt.Printf("  skills/                   present (%d skill(s) discovered)\n", len(insp.DiscoveredSkills))
+	if insp.GetSkillsDirExists() {
+		fmt.Printf("  skills/                   present (%d skill(s) discovered)\n", len(insp.GetDiscoveredSkills()))
 	} else {
 		fmt.Println("  skills/                   missing")
 	}
 
-	if !insp.RuntimeJSONExists {
+	if !insp.GetRuntimeJsonExists() {
 		fmt.Println("  runtime.json              missing")
 	} else {
 		runtimeLine := "present"
-		if insp.RuntimeJSONIsSymlink {
-			if insp.RuntimeJSONResolved != "" {
-				runtimeLine += fmt.Sprintf(" (symlink -> %s)", insp.RuntimeJSONResolved)
+		if insp.GetRuntimeJsonIsSymlink() {
+			if insp.GetRuntimeJsonResolved() != "" {
+				runtimeLine += fmt.Sprintf(" (symlink -> %s)", insp.GetRuntimeJsonResolved())
 			} else {
 				runtimeLine += " (symlink, broken - target does not resolve)"
 			}
 		}
-		if insp.RuntimeJSONValid {
+		if insp.GetRuntimeJsonValid() {
 			runtimeLine += ", valid"
 		} else {
 			runtimeLine += ", INVALID"
@@ -241,32 +232,32 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 		fmt.Printf("  runtime.json              %s\n", runtimeLine)
 	}
 
-	if !insp.SessionJSONLExists {
+	if !insp.GetSessionJsonlExists() {
 		fmt.Println("  session.jsonl             missing (no turns yet)")
 	} else {
-		sessionLine := fmt.Sprintf("present, %d turn(s)", insp.SessionTurnCount)
-		if insp.SessionCorruptLines > 0 {
-			sessionLine += fmt.Sprintf(", %d line(s) failed to parse and were skipped", insp.SessionCorruptLines)
+		sessionLine := fmt.Sprintf("present, %d turn(s)", insp.GetSessionTurnCount())
+		if insp.GetSessionCorruptLines() > 0 {
+			sessionLine += fmt.Sprintf(", %d line(s) failed to parse and were skipped", insp.GetSessionCorruptLines())
 		}
 		fmt.Printf("  session.jsonl             %s\n", sessionLine)
 	}
 
 	var issues []string
-	if !insp.RuntimeJSONExists {
+	if !insp.GetRuntimeJsonExists() {
 		issues = append(issues, "runtime.json is missing - generation will fall back to the bundled openrouter-auto default (requires OPENROUTER_API_KEY), or add your own (see docs/agents.md §3 for the schema).")
-	} else if !insp.RuntimeJSONValid {
-		issues = append(issues, fmt.Sprintf("runtime.json failed to parse: %s", insp.RuntimeJSONError))
+	} else if !insp.GetRuntimeJsonValid() {
+		issues = append(issues, fmt.Sprintf("runtime.json failed to parse: %s", insp.GetRuntimeJsonError()))
 	}
-	if insp.RuntimeJSONIsSymlink && insp.RuntimeJSONResolved == "" {
+	if insp.GetRuntimeJsonIsSymlink() && insp.GetRuntimeJsonResolved() == "" {
 		issues = append(issues, "runtime.json is a symlink that does not resolve to an existing file.")
 	}
-	if insp.SessionCorruptLines > 0 {
-		issues = append(issues, fmt.Sprintf("session.jsonl has %d line(s) that don't parse as JSON turns - they're silently skipped on every read, which can cause the agent to lose context. See .agents/AGENTS.md's session.jsonl corruption gotcha.", insp.SessionCorruptLines))
+	if insp.GetSessionCorruptLines() > 0 {
+		issues = append(issues, fmt.Sprintf("session.jsonl has %d line(s) that don't parse as JSON turns - they're silently skipped on every read, which can cause the agent to lose context. See .agents/AGENTS.md's session.jsonl corruption gotcha.", insp.GetSessionCorruptLines()))
 	}
-	for _, shadowMsg := range insp.ShadowedTools {
+	for _, shadowMsg := range insp.GetShadowedTools() {
 		issues = append(issues, shadowMsg)
 	}
-	for _, shadowMsg := range insp.ShadowedSkills {
+	for _, shadowMsg := range insp.GetShadowedSkills() {
 		issues = append(issues, shadowMsg)
 	}
 
