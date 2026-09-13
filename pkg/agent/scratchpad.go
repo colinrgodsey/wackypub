@@ -547,8 +547,6 @@ var (
 // ExpandScratchpadMacros replaces any inline <SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" json_escape="true" /> macros
 // in text with the corresponding scratchpad text content according to D18/D28/D30/D37/D90.
 // Non-escaped macros whose IDs do not exist pass through literally and emit warnings.
-// A leading backslash (\) escapes the macro, rendering it literally without
-// warnings even if the ID exists. The backslash is preserved in the output.
 // Additionally, a doubled-token form <<...>> is recognized and emitted as
 // a single <...> tag (one pair stripped) for readability.
 func ExpandScratchpadMacros(agentDir string, text string) (string, []string, error) {
@@ -565,9 +563,6 @@ func ExpandScratchpadMacros(agentDir string, text string) (string, []string, err
 
 		if strings.HasPrefix(match, "<<") && strings.HasSuffix(match, ">>") {
 			return match[1 : len(match)-1]
-		}
-		if strings.HasPrefix(match, "\\") {
-			return match
 		}
 
 		idMatch := macroIDRegex.FindStringSubmatch(match)

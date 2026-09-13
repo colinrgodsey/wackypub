@@ -743,39 +743,38 @@ func TestD90_ExpandScratchpadMacros_ExistenceGatedAndEscape(t *testing.T) {
 		}
 		if len(warnings) != 0 {
 			t.Errorf("expected 0 warnings on genuine expansion, got: %v", warnings)
-		}
-	})
-
-	t.Run("backslash-escaped macro renders literally even when id exists, without warning", func(t *testing.T) {
-		input := fmt.Sprintf(`Escaped: \<SCRATCHPAD_DATA id=%q skip_lines="1" />`, realEntry.ID)
+	
+	t.Run("doubled-token escape renders as single tag, without warning", func(t *testing.T) {
+		input := fmt.Sprintf(`Doc example: <<<SCRATCHPAD_DATA id=%q skip_lines=\"1\" />>`, realEntry.ID)
 		expanded, warnings, err := ExpandScratchpadMacros(agentDir, input)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		expected := fmt.Sprintf(`Escaped: <SCRATCHPAD_DATA id=%q skip_lines="1" />`, realEntry.ID)
+		expected := fmt.Sprintf(`Doc example: <<SCRATCHPAD_DATA id=%q skip_lines=\"1\" />`, realEntry.ID)
 		if expanded != expected {
 			t.Errorf("expected %q, got %q", expected, expanded)
 		}
 		if len(warnings) != 0 {
-			t.Errorf("expected 0 warnings on escaped macro, got: %v", warnings)
+			t.Errorf("expected 0 warnings on doubled-token escape, got: %v", warnings)
 		}
 	})
 
-	t.Run("backslash-escaped macro with nonexistent id renders literally without warning", func(t *testing.T) {
-		input := `Escaped: \<SCRATCHPAD_DATA id="zz88" />`
+	t.Run("doubled-token escape with nonexistent id renders as single tag, without warning", func(t *testing.T) {
+		input := `Doc example: <<<SCRATCHPAD_DATA id=\"zz77\" />>`
 		expanded, warnings, err := ExpandScratchpadMacros(agentDir, input)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		expected := `Escaped: <SCRATCHPAD_DATA id="zz88" />`
+		expected := `Doc example: <<SCRATCHPAD_DATA id=\"zz77\" />`
 		if expanded != expected {
 			t.Errorf("expected %q, got %q", expected, expanded)
 		}
 		if len(warnings) != 0 {
-			t.Errorf("expected 0 warnings on escaped macro, got: %v", warnings)
+			t.Errorf("expected 0 warnings on doubled-token escape, got: %v", warnings)
 		}
 	})
-}
+	}
+	})}
 
 func TestD90_ExecuteTool_ArgsAndStdin_PassthroughAndWarnings(t *testing.T) {
 	agentDir := t.TempDir()
@@ -867,32 +866,6 @@ func TestD90_ExecuteTool_ArgsAndStdin_PassthroughAndWarnings(t *testing.T) {
 			t.Errorf("expected expanded stdin content, got:\n%s", out)
 		}
 	})
-
-	t.Run("backslash-escaped macro in args and stdin renders literally without warning", func(t *testing.T) {
-		args := ExecToolArgs{
-			Args:  []string{fmt.Sprintf(`\<SCRATCHPAD_DATA id=%q />`, realEntry.ID)},
-			Stdin: fmt.Sprintf(`\<SCRATCHPAD_DATA id=%q />`, realEntry.ID),
-		}
-		out, warnings, err := executeTool(context.Background(), agentDir, "echo_tool.sh", echoToolPath, args, nil)
-		if err != nil {
-			t.Fatalf("executeTool failed: %v", err)
-		}
-		if len(warnings) != 0 {
-			t.Errorf("expected 0 warnings on escaped macro, got: %v", warnings)
-		}
-		if strings.Contains(out, "<WARNING>") {
-			t.Errorf("unexpected <WARNING> block on escaped macro:\n%s", out)
-		}
-		expectedTag := fmt.Sprintf(`ARG: <SCRATCHPAD_DATA id=%q />`, realEntry.ID)
-		if !strings.Contains(out, expectedTag) {
-			t.Errorf("expected literal macro tag %q in args, got:\n%s", expectedTag, out)
-		}
-		expectedStdinTag := fmt.Sprintf(`STDIN: <SCRATCHPAD_DATA id=%q />`, realEntry.ID)
-		if !strings.Contains(out, expectedStdinTag) {
-			t.Errorf("expected literal macro tag %q in stdin, got:\n%s", expectedStdinTag, out)
-		}
-	})
-
 	t.Run("warning rides on error when tool fails", func(t *testing.T) {
 		args := ExecToolArgs{
 			Args: []string{"<SCRATCHPAD_DATA id=\"no99\" />"},
@@ -916,7 +889,7 @@ func TestD90_ExecuteTool_ArgsAndStdin_PassthroughAndWarnings(t *testing.T) {
 func TestD90_InProcessCreateScratchpad_WarningSurface(t *testing.T) {
 	agentDir := t.TempDir()
 
-	realEntry, err := CreateScratchpad(agentDir, "original content", "test")
+	_, err := CreateScratchpad(agentDir, "original content", "test")
 	if err != nil {
 		t.Fatalf("CreateScratchpad failed: %v", err)
 	}
@@ -935,23 +908,7 @@ func TestD90_InProcessCreateScratchpad_WarningSurface(t *testing.T) {
 		if !strings.Contains(entry.Warning, `scratchpad entry "no01" not found; macro passed through literally`) {
 			t.Errorf("unexpected entry.Warning: %q", entry.Warning)
 		}
-	})
-
-	t.Run("escaped macro creates literal content without warning", func(t *testing.T) {
-		input := fmt.Sprintf(`Ref: \<SCRATCHPAD_DATA id=%q />`, realEntry.ID)
-		entry, err := CreateScratchpad(agentDir, input, "test")
-		if err != nil {
-			t.Fatalf("CreateScratchpad failed: %v", err)
-		}
-		expectedText := fmt.Sprintf(`Ref: <SCRATCHPAD_DATA id=%q />`, realEntry.ID)
-		if entry.Text != expectedText {
-			t.Errorf("expected %q, got %q", expectedText, entry.Text)
-		}
-		if len(entry.Warnings) != 0 || entry.Warning != "" {
-			t.Errorf("expected no warnings on escaped macro, got: %v / %q", entry.Warnings, entry.Warning)
-		}
-	})
-}
+	})}
 
 func TestD90_ToolResultLayer_MissingEntryWarningsNotDuplicatedInOutput(t *testing.T) {
 	agentDir := t.TempDir()
