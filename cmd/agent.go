@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"os/signal"
 	"strings"
@@ -32,6 +33,61 @@ func newSDK(wsDir string) *adkAgent.AgentSDK {
 	sdk.MaxToolTurns = GetMaxToolTurns()
 	sdk.CommandTimeoutSeconds = GetCommandTimeoutSeconds()
 	return sdk
+}
+
+// generateTurnStreamProto drives the D112 Phase 2 streaming RPC for a continue-only turn
+// (AgentSDK.GenerateTurnStream) and returns an iterator of text chunks for the CLI loop.
+// The in-process stream adapter mediates between the generated grpc.ServerStreamingServer
+// shape and the CLI's pull-based iteration; the adapter is closed when the RPC returns so
+// the range terminates.
+func generateTurnStreamProto(sdk *adkAgent.AgentSDK, ctx context.Context, agentID string) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		stream := adkAgent.NewInProcessStream[agentv1.GenerateTurnStreamResponse](ctx, 16)
+		defer stream.Close()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- sdk.GenerateTurnStream(&agentv1.GenerateTurnStreamRequest{AgentId: agentID}, stream)
+		}()
+		for chunk := range stream.Chunks() {
+			if !yield(chunk.GetText(), nil) {
+				return
+			}
+		}
+		if err := <-errCh; err != nil {
+			yield("", err)
+		}
+	}
+}
+
+// addAndGenerateTurnStreamProto drives the D112 Phase 2 streaming RPC that appends a user
+// message and streams the assistant response. Warning-bearing stream responses are routed to
+// onWarning (if provided) instead of the text loop; text chunks are yielded as they arrive.
+func addAndGenerateTurnStreamProto(sdk *adkAgent.AgentSDK, ctx context.Context, agentID, userMsg string, onWarning func(string)) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		stream := adkAgent.NewInProcessStream[agentv1.AddAndGenerateTurnStreamResponse](ctx, 16)
+		defer stream.Close()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- sdk.AddAndGenerateTurnStream(&agentv1.AddAndGenerateTurnStreamRequest{
+				AgentId:     agentID,
+				UserMessage: userMsg,
+			}, stream)
+		}()
+		for chunk := range stream.Chunks() {
+			if w := chunk.GetWarning(); w != "" {
+				if onWarning != nil {
+					onWarning(w)
+				}
+				continue
+			}
+			if !yield(chunk.GetText(), nil) {
+				return
+			}
+		}
+		if err := <-errCh; err != nil {
+			yield("", err)
+		}
+	}
 }
 
 var agentCmd = &cobra.Command{
@@ -222,15 +278,15 @@ Acquires the session lock for the duration of the operation.`,
 		ctx, stop := signalCtx()
 		defer stop()
 		first := true
-		for chunk, err := range sdk.GenerateTurnStream(ctx, agentID) {
+		for text, err := range generateTurnStreamProto(sdk, ctx, agentID) {
 			if err != nil {
 				return err
 			}
-			if chunk != "" {
+			if text != "" {
 				if !first {
 					fmt.Println()
 				}
-				fmt.Println(chunk)
+				fmt.Println(text)
 				first = false
 			}
 		}
@@ -615,17 +671,17 @@ what's printed, though it is still persisted to session.jsonl).`,
 		ctx, stop := signalCtx()
 		defer stop()
 		first := true
-		for chunk, err := range sdk.AddAndGenerateTurnStream(ctx, agentID, userMsg, func(w string) {
+		for text, err := range addAndGenerateTurnStreamProto(sdk, ctx, agentID, userMsg, func(w string) {
 			cmd.PrintErrln(w)
 		}) {
 			if err != nil {
 				return err
 			}
-			if chunk != "" {
+			if text != "" {
 				if !first {
 					fmt.Println()
 				}
-				fmt.Println(chunk)
+				fmt.Println(text)
 				first = false
 			}
 		}
@@ -689,18 +745,18 @@ real terminal, not something an agent should invoke on itself via run_command.`,
 			}
 
 			first := true
-			for chunk, err := range sdk.AddAndGenerateTurnStream(ctx, agentID, line, func(w string) {
+			for text, err := range addAndGenerateTurnStreamProto(sdk, ctx, agentID, line, func(w string) {
 				cmd.PrintErrln(w)
 			}) {
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					break
 				}
-				if chunk != "" {
+				if text != "" {
 					if !first {
 						fmt.Println()
 					}
-					fmt.Println(chunk)
+					fmt.Println(text)
 					first = false
 				}
 			}

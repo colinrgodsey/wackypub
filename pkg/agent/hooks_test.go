@@ -324,7 +324,7 @@ printf '{"text":"What is your secret quest?","env":{"TODAY":"2026-09-03"}}\n'
 `)
 
 	sdk := NewSDK(wsDir)
-	resp, err := sdk.AddAndGenerateTurn(context.Background(), agentID, "What is your name?")
+	resp, err := sdk.addAndGenerateTurnLegacy(context.Background(), agentID, "What is your name?")
 	if err != nil {
 		t.Fatalf("AddAndGenerateTurn failed: %v", err)
 	}
@@ -436,7 +436,7 @@ printf '{"text":"Altered Quest","env":{"SPLIT_ENV":"active"}}\n'
 		t.Fatalf("AddUserTurn failed: %v", err)
 	}
 
-	resp, err := sdk.GenerateTurn(context.Background(), agentID)
+	resp, err := sdk.generateTurnLegacy(context.Background(), agentID)
 	if err != nil {
 		t.Fatalf("GenerateTurn failed: %v", err)
 	}
@@ -732,7 +732,7 @@ echo "corrupt json output"
 	// Test 1: AddAndGenerateTurnStream yields ONLY model chunks; warnings arrive via onWarning callback
 	var capturedWarnings []string
 	var chunks []string
-	for chunk, err := range sdk.AddAndGenerateTurnStream(context.Background(), agentID, "test prompt", func(w string) {
+	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(context.Background(), agentID, "test prompt", func(w string) {
 		capturedWarnings = append(capturedWarnings, w)
 	}) {
 		if err != nil {
@@ -762,7 +762,7 @@ echo "corrupt json output"
 	}
 
 	// Test 2: AddAndGenerateTurn captures warnings on GenerateTurnResult without polluting response text
-	res, err := sdk.AddAndGenerateTurn(context.Background(), agentID, "another turn")
+	res, err := sdk.addAndGenerateTurnLegacy(context.Background(), agentID, "another turn")
 	if err != nil {
 		t.Fatalf("AddAndGenerateTurn failed: %v", err)
 	}
