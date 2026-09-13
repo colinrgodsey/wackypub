@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	adkAgent "github.com/colinrgodsey/wackypub/pkg/agent"
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 // wackypub workspace [agent_id]
@@ -93,9 +95,22 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 	}
 	fmt.Printf("Workspace: %s (git: %s)\n", absDir, gitStatus)
 
-	ids, err := sdk.ListAgents()
-	if err != nil {
-		return err
+	var ids []string
+	if IsProtoMethodEnabled("ListAgents") {
+		ctx := context.Background()
+		resp, err := sdk.ListAgents(ctx, &agentv1.ListAgentsRequest{
+			WorkspaceDir: wsDir,
+		})
+		if err != nil {
+			return err
+		}
+		ids = resp.GetAgentIds()
+	} else {
+		var err error
+		ids, err = sdk.ListAgentsLegacy()
+		if err != nil {
+			return err
+		}
 	}
 
 	if len(ids) == 0 {

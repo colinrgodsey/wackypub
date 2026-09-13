@@ -11,16 +11,23 @@ import (
 	"sync"
 
 	"google.golang.org/genai"
+
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 // AgentSDK provides a clean, programmatic Go API for orchestrating folder-based agents.
+// In D112, AgentSDK directly satisfies the generated AgentServiceServer interface.
 type AgentSDK struct {
+	agentv1.UnimplementedAgentServiceServer
+
 	WorkspaceDir          string
 	MaxToolTurns          int
 	CommandTimeoutSeconds int
 	lastHookEnvMu         sync.Mutex
 	lastHookEnv           map[string]map[string]string
 }
+
+var _ agentv1.AgentServiceServer = (*AgentSDK)(nil)
 
 // NewSDK creates an SDK instance bound to a workspace directory.
 func NewSDK(workspaceDir string) *AgentSDK {
@@ -418,7 +425,25 @@ func (s *AgentSDK) GetAgent(agentID string) (*FolderAgent, error) {
 // ListAgents returns the IDs of agent directories found directly under the
 // workspace directory (see ListAgentIDs for how a directory is recognized as
 // an agent). Does not acquire any lock - it only reads directory names.
-func (s *AgentSDK) ListAgents() ([]string, error) {
+//
+// In D112, this signature satisfies agentv1.AgentServiceServer.
+func (s *AgentSDK) ListAgents(ctx context.Context, req *agentv1.ListAgentsRequest) (*agentv1.ListAgentsResponse, error) {
+	wsDir := s.WorkspaceDir
+	if req != nil && req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	ids, err := ListAgentIDs(wsDir)
+	if err != nil {
+		return nil, err
+	}
+	return &agentv1.ListAgentsResponse{
+		AgentIds: ids,
+	}, nil
+}
+
+// ListAgentsLegacy returns the IDs of agent directories found directly under the
+// workspace directory using the legacy unparameterized positional signature.
+func (s *AgentSDK) ListAgentsLegacy() ([]string, error) {
 	return ListAgentIDs(s.WorkspaceDir)
 }
 

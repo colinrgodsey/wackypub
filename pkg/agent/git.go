@@ -308,7 +308,7 @@ func CreateWorkspaceSnapshot(wsDir string) (string, error) {
 	}
 
 	sdk := NewSDK(wsDir)
-	agentIDs, err := sdk.ListAgents()
+	agentIDs, err := sdk.ListAgentsLegacy()
 	if err != nil {
 		return "", fmt.Errorf("failed to list agents: %w", err)
 	}
@@ -380,7 +380,7 @@ func TagWorkspaceAndAgents(wsDir, tagName string) error {
 
 	// 2. Tag each agent repo with "tag-<agent_id>"
 	sdk := NewSDK(wsDir)
-	agentIDs, err := sdk.ListAgents()
+	agentIDs, err := sdk.ListAgentsLegacy()
 	if err != nil {
 		return fmt.Errorf("failed to list agents: %w", err)
 	}
@@ -466,7 +466,7 @@ func PushWorkspaceAndAgents(wsDir, remoteName string) error {
 
 	// 2. Push each agent folder repo to rootRemoteURL under branch <agent_id>
 	sdk := NewSDK(wsDir)
-	agentIDs, err := sdk.ListAgents()
+	agentIDs, err := sdk.ListAgentsLegacy()
 	if err != nil {
 		return fmt.Errorf("failed to list agents: %w", err)
 	}

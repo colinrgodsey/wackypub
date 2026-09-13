@@ -258,7 +258,7 @@ func TraceByTraceID(wsDir, traceID string, opts TraceOptions) (*TraceResult, err
 	}
 
 	sdk := NewSDK(wsDir)
-	agentIDs, err := sdk.ListAgents()
+	agentIDs, err := sdk.ListAgentsLegacy()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list agents: %w", err)
 	}

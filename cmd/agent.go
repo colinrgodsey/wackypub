@@ -33,6 +33,23 @@ func newSDK(wsDir string) *adkAgent.AgentSDK {
 	return sdk
 }
 
+// IsProtoMethodEnabled reports whether the given method is enabled for protobuf-service
+// in-process dispatch via WACKYPUB_PROTO_METHODS (D112).
+// The environment variable is a comma-separated list of method names (e.g. "ListAgents,InspectAgent").
+// An empty value or omitted variable disables the proto path (legacy positional path used).
+func IsProtoMethodEnabled(methodName string) bool {
+	raw := os.Getenv("WACKYPUB_PROTO_METHODS")
+	if raw == "" {
+		return false
+	}
+	for _, m := range strings.Split(raw, ",") {
+		if strings.EqualFold(strings.TrimSpace(m), methodName) {
+			return true
+		}
+	}
+	return false
+}
+
 var agentCmd = &cobra.Command{
 	Use:   "agent <agent_id>",
 	Short: "Manage folder-based agent sessions (<ws_dir>/<agent_id>)",
