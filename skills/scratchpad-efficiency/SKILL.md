@@ -135,6 +135,24 @@ Pass pre-staged prompts, templates, or raw inputs directly to a command tool wit
 - WackyPub server expands the `<SCRATCHPAD_DATA>` macro tags in `argv` and `stdin` immediately before process execution.
 - Argument size safety cap: expanded CLI positional arguments exceeding **500,000 bytes** fail fast to prevent OS exec argument limits (`E2BIG`).
 
+### Escape form: literal macro reference (D115)
+
+When you need to write a *literal* `<SCRATCHPAD_DATA id="x" />` token in tool output, documentation, or another entry's text -- without it being substituted or warning-emitting -- use the doubled-token form:
+
+```xml
+<<SCRATCHPAD_DATA id="x" />>   (input: doubled)
+<SCRATCHPAD_DATA id="x" />      (output: single pair, one stripped)
+```
+
+The server recognizes `<<.../>>` and emits the inner single-tag form. No macro expansion fires, no "not found" warning is generated, and the result is a clean literal that another agent or doc parser can read.
+
+**Use cases:**
+- Writing tool output that emits scratchpad references as text (e.g. a doc generator).
+- Documenting the macro syntax itself in skill files or comments.
+- Embedding an example token in a prompt template without it being expanded when the template is later run.
+
+**Why doubled-token and not backslash:** the older form using a leading backslash before the macro was buggy -- it consumed the backslash and emitted a re-expandable token. The doubled form is shape-distinct (it can never be confused with a real macro) and survives intact through any further pass that scans for scratchpad references.
+
 ---
 
 ## 5. Iterative Search & Slice Navigation
