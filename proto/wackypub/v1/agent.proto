@@ -1,0 +1,185 @@
+syntax = "proto3";
+
+package wackypub.agent.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/colinrgodsey/wackypub/pkg/agent/v1;agentv1";
+
+// AgentService defines the interface of record for WackyPub agent operations (D112).
+// In v1, this service is invoked in-process via generated Go interfaces; no network transport
+// or gRPC server is required.
+service AgentService {
+  // ListAgents returns the IDs of agent directories found directly under the workspace directory.
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+
+  // InspectAgent reports the on-disk state of <ws_dir>/<agent_id>.
+  rpc InspectAgent(InspectAgentRequest) returns (InspectAgentResponse);
+
+  // ReadSession returns every turn currently stored in <ws_dir>/<agent_id>/session.jsonl.
+  rpc ReadSession(ReadSessionRequest) returns (ReadSessionResponse);
+
+  // ReadMemory returns the contents of <ws_dir>/<agent_id>/MEMORY.md.
+  rpc ReadMemory(ReadMemoryRequest) returns (ReadMemoryResponse);
+
+  // RenderSystemPrompt returns the fully rendered system prompt (AGENTS.md after macro expansion).
+  rpc RenderSystemPrompt(RenderSystemPromptRequest) returns (RenderSystemPromptResponse);
+
+  // InspectSessionContext calculates the token usage, limits, and compaction headroom for an agent (D93).
+  rpc InspectSessionContext(InspectSessionContextRequest) returns (InspectSessionContextResponse);
+
+  // InspectAgentLocks reports session lock and session activity for every agent directory (D100).
+  rpc InspectAgentLocks(InspectAgentLocksRequest) returns (InspectAgentLocksResponse);
+}
+
+// ListAgentsRequest specifies parameters for listing agents.
+message ListAgentsRequest {
+  string workspace_dir = 1;
+}
+
+// ListAgentsResponse contains the IDs of all discovered agents.
+message ListAgentsResponse {
+  repeated string agent_ids = 1;
+}
+
+// InspectAgentRequest specifies parameters for inspecting an agent.
+message InspectAgentRequest {
+  string agent_id = 1;
+  string workspace_dir = 2;
+}
+
+// InspectAgentResponse contains the inspection details of an agent directory.
+message InspectAgentResponse {
+  string agent_id = 1;
+  string agent_dir = 2;
+  bool agent_dir_exists = 3;
+  bool agents_md_exists = 4;
+  bool memory_md_exists = 5;
+  bool dot_env_exists = 6;
+  bool runtime_json_exists = 7;
+  bool runtime_json_is_symlink = 8;
+  string runtime_json_resolved = 9;
+  bool runtime_json_valid = 10;
+  string runtime_json_error = 11;
+  AgentRuntimeConfig runtime_config = 12;
+  bool session_jsonl_exists = 13;
+  int32 session_turn_count = 14;
+  int32 session_corrupt_lines = 15;
+  bool allowed_agents_exists = 16;
+  repeated string allowed_agents = 17;
+  bool tools_dir_exists = 18;
+  repeated string discovered_tools = 19;
+  repeated string shadowed_tools = 20;
+  bool skills_dir_exists = 21;
+  repeated string discovered_skills = 22;
+  repeated string shadowed_skills = 23;
+}
+
+// AgentRuntimeConfig represents parsed runtime.json configuration.
+message AgentRuntimeConfig {
+  string provider = 1;
+  string endpoint = 2;
+  string model = 3;
+  string api_key = 4;
+  int32 context_window = 5;
+  int32 timeout_seconds = 6;
+  optional int32 anthropic_thinking_budget_tokens = 7;
+  string anthropic_thinking_effort = 8;
+  string anthropic_thinking_mode = 9;
+}
+
+// ReadSessionRequest specifies parameters for reading an agent's session turns.
+message ReadSessionRequest {
+  string agent_id = 1;
+  string workspace_dir = 2;
+}
+
+// ReadSessionResponse contains the parsed turns of an agent session.
+message ReadSessionResponse {
+  repeated SessionTurn turns = 1;
+}
+
+// SessionTurn represents a single conversational turn in session.jsonl.
+message SessionTurn {
+  string role = 1;
+  repeated SessionPart parts = 2;
+}
+
+// SessionPart represents one part of a turn (text or inline data).
+message SessionPart {
+  string text = 1;
+  bytes inline_data = 2;
+  string mime_type = 3;
+}
+
+// ReadMemoryRequest specifies parameters for reading an agent's memory.
+message ReadMemoryRequest {
+  string agent_id = 1;
+  string workspace_dir = 2;
+}
+
+// ReadMemoryResponse contains the memory markdown content.
+message ReadMemoryResponse {
+  string memory_md = 1;
+}
+
+// RenderSystemPromptRequest specifies parameters for rendering an agent's prompt.
+message RenderSystemPromptRequest {
+  string agent_id = 1;
+  string workspace_dir = 2;
+}
+
+// RenderSystemPromptResponse contains the rendered prompt string.
+message RenderSystemPromptResponse {
+  string rendered_prompt = 1;
+}
+
+// InspectSessionContextRequest specifies parameters for inspecting session context.
+message InspectSessionContextRequest {
+  string agent_id = 1;
+  string workspace_dir = 2;
+}
+
+// InspectSessionContextResponse contains context window and token usage estimates.
+message InspectSessionContextResponse {
+  string agent_id = 1;
+  string model = 2;
+  int32 context_window = 3;
+  int32 compaction_threshold = 4;
+  double compaction_overhead_pct = 5;
+  int32 estimated_total_tokens = 6;
+  int32 session_turns_tokens = 7;
+  int32 prompt_tokens_estimate = 8;
+  int32 memory_tokens_estimate = 9;
+  double percent_to_threshold = 10;
+  double percent_to_window = 11;
+  int32 turn_count = 12;
+  bool compacted = 13;
+  int32 last_prompt_tokens = 14;
+  int32 last_candidates_tokens = 15;
+  int32 last_total_tokens = 16;
+}
+
+// InspectAgentLocksRequest specifies parameters for inspecting workspace agent locks.
+message InspectAgentLocksRequest {
+  string workspace_dir = 1;
+}
+
+// InspectAgentLocksResponse contains lock observations for agents in the workspace.
+message InspectAgentLocksResponse {
+  repeated AgentLockObservation observations = 1;
+}
+
+// AgentLockObservation captures session lock status and activity for an agent.
+message AgentLockObservation {
+  string agent_id = 1;
+  string agent_dir = 2;
+  bool lock_exists = 3;
+  int32 holder_pid = 4;
+  bool holder_pid_valid = 5;
+  bool holder_alive = 6;
+  string holder_command = 7;
+  google.protobuf.Timestamp lock_held_since = 8;
+  bool session_exists = 9;
+  google.protobuf.Timestamp last_write = 10;
+}

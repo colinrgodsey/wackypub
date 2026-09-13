@@ -39,7 +39,7 @@ func TestSDKAddUserTurnAndReadSession(t *testing.T) {
 		t.Fatalf("failed to add user turn via SDK: %v", err)
 	}
 
-	turns, err := sdk.ReadSession(agentID)
+	turns, err := sdk.ReadSessionLegacy(agentID)
 	if err != nil {
 		t.Fatalf("failed to read session via SDK: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestSDKReadMemory(t *testing.T) {
 	}
 	defer os.Chdir(origCwd)
 
-	memory, err := sdk.ReadMemory(agentID)
+	memory, err := sdk.ReadMemoryLegacy(agentID)
 	if err != nil {
 		t.Fatalf("unexpected error reading non-existent memory: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestSDKReadMemory(t *testing.T) {
 		t.Fatalf("failed writing memory: %v", err)
 	}
 
-	memory, err = sdk.ReadMemory(agentID)
+	memory, err = sdk.ReadMemoryLegacy(agentID)
 	if err != nil {
 		t.Fatalf("failed reading memory via SDK: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestD93_InspectSessionContext(t *testing.T) {
 	}
 
 	// 1. Initial report without session
-	rep, err := sdk.InspectSessionContext("testbot")
+	rep, err := sdk.InspectSessionContextLegacy("testbot")
 	if err != nil {
 		t.Fatalf("InspectSessionContext failed: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestD93_InspectSessionContext(t *testing.T) {
 	_ = AppendSessionTurn(agentDir, "user", "Hello world from user")
 	_ = AppendSessionTurn(agentDir, "model", "Hello back from model")
 
-	rep2, err := sdk.InspectSessionContext("testbot")
+	rep2, err := sdk.InspectSessionContextLegacy("testbot")
 	if err != nil {
 		t.Fatalf("InspectSessionContext failed: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestD93_InspectSessionContext(t *testing.T) {
 		t.Fatalf("WriteLastUsage failed: %v", err)
 	}
 
-	rep3, err := sdk.InspectSessionContext("testbot")
+	rep3, err := sdk.InspectSessionContextLegacy("testbot")
 	if err != nil {
 		t.Fatalf("InspectSessionContext failed: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestD93_InspectSessionContext(t *testing.T) {
 	if err := InvalidateLastUsage(agentDir); err != nil {
 		t.Fatalf("InvalidateLastUsage failed: %v", err)
 	}
-	rep4, err := sdk.InspectSessionContext("testbot")
+	rep4, err := sdk.InspectSessionContextLegacy("testbot")
 	if err != nil {
 		t.Fatalf("InspectSessionContext failed: %v", err)
 	}

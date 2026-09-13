@@ -11,16 +11,23 @@ import (
 	"sync"
 
 	"google.golang.org/genai"
+
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 // AgentSDK provides a clean, programmatic Go API for orchestrating folder-based agents.
+// In D112, AgentSDK directly satisfies the generated AgentServiceServer interface.
 type AgentSDK struct {
+	agentv1.UnimplementedAgentServiceServer
+
 	WorkspaceDir          string
 	MaxToolTurns          int
 	CommandTimeoutSeconds int
 	lastHookEnvMu         sync.Mutex
 	lastHookEnv           map[string]map[string]string
 }
+
+var _ agentv1.AgentServiceServer = (*AgentSDK)(nil)
 
 // NewSDK creates an SDK instance bound to a workspace directory.
 func NewSDK(workspaceDir string) *AgentSDK {
@@ -418,14 +425,42 @@ func (s *AgentSDK) GetAgent(agentID string) (*FolderAgent, error) {
 // ListAgents returns the IDs of agent directories found directly under the
 // workspace directory (see ListAgentIDs for how a directory is recognized as
 // an agent). Does not acquire any lock - it only reads directory names.
-func (s *AgentSDK) ListAgents() ([]string, error) {
+//
+// In D112, this signature satisfies agentv1.AgentServiceServer.
+func (s *AgentSDK) ListAgents(ctx context.Context, req *agentv1.ListAgentsRequest) (*agentv1.ListAgentsResponse, error) {
+	wsDir := s.WorkspaceDir
+	if req != nil && req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	ids, err := ListAgentIDs(wsDir)
+	if err != nil {
+		return nil, err
+	}
+	return &agentv1.ListAgentsResponse{
+		AgentIds: ids,
+	}, nil
+}
+
+// ListAgentsLegacy returns the IDs of agent directories found directly under the
+// workspace directory using the legacy unparameterized positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) ListAgentsLegacy() ([]string, error) {
 	return ListAgentIDs(s.WorkspaceDir)
 }
 
-// InspectAgent reports the on-disk state of <ws_dir>/<agent_id>: which
+// InspectAgent satisfies agentv1.AgentServiceServer (D112).
+// Delegated to UnimplementedAgentServiceServer until its Phase 1 migration.
+func (s *AgentSDK) InspectAgent(ctx context.Context, req *agentv1.InspectAgentRequest) (*agentv1.InspectAgentResponse, error) {
+	return s.UnimplementedAgentServiceServer.InspectAgent(ctx, req)
+}
+
+// InspectAgentLegacy reports the on-disk state of <ws_dir>/<agent_id>: which
 // expected files are present, whether runtime.json parses, and
 // session/memory stats. Safe to call on an agent that doesn't exist yet or
 // is only partially set up - see AgentInspection.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 //
 // Deliberately does not go through ValidateAgentTarget's WACKYPUB_ALLOWED_AGENTS
 // check (D16): that authorization boundary exists to gate cross-agent tool
@@ -448,7 +483,7 @@ func (s *AgentSDK) ListAgents() ([]string, error) {
 // without the lock is safe: ReadSessionTurns already tolerates a torn read
 // gracefully (see AgentInspection.SessionCorruptLines), and the lock's real
 // job is serializing concurrent writers, not protecting readers.
-func (s *AgentSDK) InspectAgent(agentID string) (*AgentInspection, error) {
+func (s *AgentSDK) InspectAgentLegacy(agentID string) (*AgentInspection, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
@@ -462,7 +497,16 @@ func (s *AgentSDK) InspectAgent(agentID string) (*AgentInspection, error) {
 }
 
 // ReadSession returns all conversation turns logged in <ws_dir>/<agent_id>/session.jsonl.
-func (s *AgentSDK) ReadSession(agentID string) ([]*genai.Content, error) {
+// ReadSession satisfies agentv1.AgentServiceServer (D112).
+// Delegated to UnimplementedAgentServiceServer until its Phase 1 migration.
+func (s *AgentSDK) ReadSession(ctx context.Context, req *agentv1.ReadSessionRequest) (*agentv1.ReadSessionResponse, error) {
+	return s.UnimplementedAgentServiceServer.ReadSession(ctx, req)
+}
+
+// ReadSessionLegacy returns all conversation turns logged in <ws_dir>/<agent_id>/session.jsonl.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) ReadSessionLegacy(agentID string) ([]*genai.Content, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
@@ -479,8 +523,16 @@ func (s *AgentSDK) ReadSession(agentID string) ([]*genai.Content, error) {
 	return ReadSessionTurns(agentDir)
 }
 
-// ReadMemory returns the current contents of <ws_dir>/<agent_id>/MEMORY.md.
-func (s *AgentSDK) ReadMemory(agentID string) (string, error) {
+// ReadMemory satisfies agentv1.AgentServiceServer (D112).
+// Delegated to UnimplementedAgentServiceServer until its Phase 1 migration.
+func (s *AgentSDK) ReadMemory(ctx context.Context, req *agentv1.ReadMemoryRequest) (*agentv1.ReadMemoryResponse, error) {
+	return s.UnimplementedAgentServiceServer.ReadMemory(ctx, req)
+}
+
+// ReadMemoryLegacy returns the current contents of <ws_dir>/<agent_id>/MEMORY.md.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) ReadMemoryLegacy(agentID string) (string, error) {
 	if agentID == "" {
 		return "", fmt.Errorf("agentID cannot be empty")
 	}
@@ -496,12 +548,20 @@ func (s *AgentSDK) ReadMemory(agentID string) (string, error) {
 	return ReadMemoryFile(agentDir)
 }
 
-// RenderSystemPrompt returns the fully rendered system prompt for an agent -
+// RenderSystemPrompt satisfies agentv1.AgentServiceServer (D112).
+// Delegated to UnimplementedAgentServiceServer until its Phase 1 migration.
+func (s *AgentSDK) RenderSystemPrompt(ctx context.Context, req *agentv1.RenderSystemPromptRequest) (*agentv1.RenderSystemPromptResponse, error) {
+	return s.UnimplementedAgentServiceServer.RenderSystemPrompt(ctx, req)
+}
+
+// RenderSystemPromptLegacy returns the fully rendered system prompt for an agent -
 // AGENTS.md (or the generic fallback if it doesn't exist) after
 // @<FILE_PATH> macro expansion. Does not construct a model and does not
 // require runtime.json to exist or be valid - useful for validating
 // AGENTS.md/macro output independently of backend configuration.
-func (s *AgentSDK) RenderSystemPrompt(agentID string) (string, error) {
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) RenderSystemPromptLegacy(agentID string) (string, error) {
 	if agentID == "" {
 		return "", fmt.Errorf("agentID cannot be empty")
 	}
@@ -776,8 +836,16 @@ type SessionContextReport struct {
 	LastTotalTokens       int32   `json:"last_total_tokens,omitempty"`
 }
 
-// InspectSessionContext calculates the current token usage, limits, and compaction headroom for an agent (D93).
-func (s *AgentSDK) InspectSessionContext(agentID string) (*SessionContextReport, error) {
+// InspectSessionContext satisfies agentv1.AgentServiceServer (D112).
+// Delegated to UnimplementedAgentServiceServer until its Phase 1 migration.
+func (s *AgentSDK) InspectSessionContext(ctx context.Context, req *agentv1.InspectSessionContextRequest) (*agentv1.InspectSessionContextResponse, error) {
+	return s.UnimplementedAgentServiceServer.InspectSessionContext(ctx, req)
+}
+
+// InspectSessionContextLegacy calculates the current token usage, limits, and compaction headroom for an agent (D93).
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) InspectSessionContextLegacy(agentID string) (*SessionContextReport, error) {
 	agentDir := s.AgentDir(agentID)
 	runtimeCfg, err := LoadRuntimeConfig(agentDir)
 	if err != nil {
@@ -847,3 +915,10 @@ func (s *AgentSDK) InspectSessionContext(agentID string) (*SessionContextReport,
 
 	return report, nil
 }
+
+// InspectAgentLocks satisfies agentv1.AgentServiceServer (D112).
+// Delegated to UnimplementedAgentServiceServer until its Phase 1 migration.
+func (s *AgentSDK) InspectAgentLocks(ctx context.Context, req *agentv1.InspectAgentLocksRequest) (*agentv1.InspectAgentLocksResponse, error) {
+	return s.UnimplementedAgentServiceServer.InspectAgentLocks(ctx, req)
+}
+
