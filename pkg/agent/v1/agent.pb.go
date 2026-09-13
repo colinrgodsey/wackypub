@@ -1439,10 +1439,17 @@ const file_agent_proto_rawDesc = "" +
 	"\x0esession_exists\x18\t \x01(\bR\rsessionExists\x129\n" +
 	"\n" +
 	"last_write\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\tlastWrite2i\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\tlastWrite2\xe2\x05\n" +
 	"\fAgentService\x12Y\n" +
 	"\n" +
-	"ListAgents\x12$.wackypub.agent.v1.ListAgentsRequest\x1a%.wackypub.agent.v1.ListAgentsResponseB7Z5github.com/colinrgodsey/wackypub/pkg/agent/v1;agentv1b\x06proto3"
+	"ListAgents\x12$.wackypub.agent.v1.ListAgentsRequest\x1a%.wackypub.agent.v1.ListAgentsResponse\x12_\n" +
+	"\fInspectAgent\x12&.wackypub.agent.v1.InspectAgentRequest\x1a'.wackypub.agent.v1.InspectAgentResponse\x12\\\n" +
+	"\vReadSession\x12%.wackypub.agent.v1.ReadSessionRequest\x1a&.wackypub.agent.v1.ReadSessionResponse\x12Y\n" +
+	"\n" +
+	"ReadMemory\x12$.wackypub.agent.v1.ReadMemoryRequest\x1a%.wackypub.agent.v1.ReadMemoryResponse\x12q\n" +
+	"\x12RenderSystemPrompt\x12,.wackypub.agent.v1.RenderSystemPromptRequest\x1a-.wackypub.agent.v1.RenderSystemPromptResponse\x12z\n" +
+	"\x15InspectSessionContext\x12/.wackypub.agent.v1.InspectSessionContextRequest\x1a0.wackypub.agent.v1.InspectSessionContextResponse\x12n\n" +
+	"\x11InspectAgentLocks\x12+.wackypub.agent.v1.InspectAgentLocksRequest\x1a,.wackypub.agent.v1.InspectAgentLocksResponseB7Z5github.com/colinrgodsey/wackypub/pkg/agent/v1;agentv1b\x06proto3"
 
 var (
 	file_agent_proto_rawDescOnce sync.Once
@@ -1486,9 +1493,21 @@ var file_agent_proto_depIdxs = []int32{
 	18, // 4: wackypub.agent.v1.AgentLockObservation.lock_held_since:type_name -> google.protobuf.Timestamp
 	18, // 5: wackypub.agent.v1.AgentLockObservation.last_write:type_name -> google.protobuf.Timestamp
 	0,  // 6: wackypub.agent.v1.AgentService.ListAgents:input_type -> wackypub.agent.v1.ListAgentsRequest
-	1,  // 7: wackypub.agent.v1.AgentService.ListAgents:output_type -> wackypub.agent.v1.ListAgentsResponse
-	7,  // [7:8] is the sub-list for method output_type
-	6,  // [6:7] is the sub-list for method input_type
+	2,  // 7: wackypub.agent.v1.AgentService.InspectAgent:input_type -> wackypub.agent.v1.InspectAgentRequest
+	5,  // 8: wackypub.agent.v1.AgentService.ReadSession:input_type -> wackypub.agent.v1.ReadSessionRequest
+	9,  // 9: wackypub.agent.v1.AgentService.ReadMemory:input_type -> wackypub.agent.v1.ReadMemoryRequest
+	11, // 10: wackypub.agent.v1.AgentService.RenderSystemPrompt:input_type -> wackypub.agent.v1.RenderSystemPromptRequest
+	13, // 11: wackypub.agent.v1.AgentService.InspectSessionContext:input_type -> wackypub.agent.v1.InspectSessionContextRequest
+	15, // 12: wackypub.agent.v1.AgentService.InspectAgentLocks:input_type -> wackypub.agent.v1.InspectAgentLocksRequest
+	1,  // 13: wackypub.agent.v1.AgentService.ListAgents:output_type -> wackypub.agent.v1.ListAgentsResponse
+	3,  // 14: wackypub.agent.v1.AgentService.InspectAgent:output_type -> wackypub.agent.v1.InspectAgentResponse
+	6,  // 15: wackypub.agent.v1.AgentService.ReadSession:output_type -> wackypub.agent.v1.ReadSessionResponse
+	10, // 16: wackypub.agent.v1.AgentService.ReadMemory:output_type -> wackypub.agent.v1.ReadMemoryResponse
+	12, // 17: wackypub.agent.v1.AgentService.RenderSystemPrompt:output_type -> wackypub.agent.v1.RenderSystemPromptResponse
+	14, // 18: wackypub.agent.v1.AgentService.InspectSessionContext:output_type -> wackypub.agent.v1.InspectSessionContextResponse
+	16, // 19: wackypub.agent.v1.AgentService.InspectAgentLocks:output_type -> wackypub.agent.v1.InspectAgentLocksResponse
+	13, // [13:20] is the sub-list for method output_type
+	6,  // [6:13] is the sub-list for method input_type
 	6,  // [6:6] is the sub-list for extension type_name
 	6,  // [6:6] is the sub-list for extension extendee
 	0,  // [0:6] is the sub-list for field type_name

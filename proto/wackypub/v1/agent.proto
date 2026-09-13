@@ -13,14 +13,23 @@ service AgentService {
   // ListAgents returns the IDs of agent directories found directly under the workspace directory.
   rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
 
-  // Remaining Phase 1 read-only queries are defined below and will be activated on AgentService
-  // as each method completes its end-to-end caller migration:
-  // rpc InspectAgent(InspectAgentRequest) returns (InspectAgentResponse);
-  // rpc ReadSession(ReadSessionRequest) returns (ReadSessionResponse);
-  // rpc ReadMemory(ReadMemoryRequest) returns (ReadMemoryResponse);
-  // rpc RenderSystemPrompt(RenderSystemPromptRequest) returns (RenderSystemPromptResponse);
-  // rpc InspectSessionContext(InspectSessionContextRequest) returns (InspectSessionContextResponse);
-  // rpc InspectAgentLocks(InspectAgentLocksRequest) returns (InspectAgentLocksResponse);
+  // InspectAgent reports the on-disk state of <ws_dir>/<agent_id>.
+  rpc InspectAgent(InspectAgentRequest) returns (InspectAgentResponse);
+
+  // ReadSession returns every turn currently stored in <ws_dir>/<agent_id>/session.jsonl.
+  rpc ReadSession(ReadSessionRequest) returns (ReadSessionResponse);
+
+  // ReadMemory returns the contents of <ws_dir>/<agent_id>/MEMORY.md.
+  rpc ReadMemory(ReadMemoryRequest) returns (ReadMemoryResponse);
+
+  // RenderSystemPrompt returns the fully rendered system prompt (AGENTS.md after macro expansion).
+  rpc RenderSystemPrompt(RenderSystemPromptRequest) returns (RenderSystemPromptResponse);
+
+  // InspectSessionContext calculates the token usage, limits, and compaction headroom for an agent (D93).
+  rpc InspectSessionContext(InspectSessionContextRequest) returns (InspectSessionContextResponse);
+
+  // InspectAgentLocks reports session lock and session activity for every agent directory (D100).
+  rpc InspectAgentLocks(InspectAgentLocksRequest) returns (InspectAgentLocksResponse);
 }
 
 // ListAgentsRequest specifies parameters for listing agents.

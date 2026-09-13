@@ -56,9 +56,9 @@ func TestIsProtoMethodEnabled(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("WACKYPUB_PROTO_METHODS", tt.envVal)
-			got := IsProtoMethodEnabled(tt.methodName)
+			got := isProtoMethodEnabled(tt.methodName)
 			if got != tt.want {
-				t.Errorf("IsProtoMethodEnabled(%q) with env %q = %v, want %v", tt.methodName, tt.envVal, got, tt.want)
+				t.Errorf("isProtoMethodEnabled(%q) with env %q = %v, want %v", tt.methodName, tt.envVal, got, tt.want)
 			}
 		})
 	}

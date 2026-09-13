@@ -473,7 +473,7 @@ func PushWorkspaceAndAgents(wsDir, remoteName string) error {
 
 	for _, agentID := range agentIDs {
 		agentDir := sdk.AgentDir(agentID)
-		insp, err := sdk.InspectAgent(agentID)
+		insp, err := sdk.InspectAgentLegacy(agentID)
 		if err != nil || !insp.RuntimeJSONExists || !IsWorkspaceGitRepo(agentDir) {
 			continue
 		}

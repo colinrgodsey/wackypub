@@ -75,7 +75,7 @@ var initGitCmd = &cobra.Command{
 func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 	if selfID, ok := adkAgent.CurrentAgentIDFromCWD(); ok {
 		fmt.Printf("You are agent %q.\n", selfID)
-		if insp, err := sdk.InspectAgent(selfID); err == nil {
+		if insp, err := sdk.InspectAgentLegacy(selfID); err == nil {
 			if len(insp.AllowedAgents) > 0 {
 				fmt.Printf("Agents you can talk to: %s\n", strings.Join(insp.AllowedAgents, ", "))
 			} else {
@@ -96,7 +96,7 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 	fmt.Printf("Workspace: %s (git: %s)\n", absDir, gitStatus)
 
 	var ids []string
-	if IsProtoMethodEnabled("ListAgents") {
+	if isProtoMethodEnabled("ListAgents") {
 		ctx := context.Background()
 		resp, err := sdk.ListAgents(ctx, &agentv1.ListAgentsRequest{
 			WorkspaceDir: wsDir,
@@ -125,7 +125,7 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "AGENT_ID\tRUNTIME.JSON\tSESSION TURNS\tMEMORY.MD\tTOOLS\tSKILLS\tALLOWED_AGENTS")
 	for _, id := range ids {
-		insp, err := sdk.InspectAgent(id)
+		insp, err := sdk.InspectAgentLegacy(id)
 		if err != nil {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, "error", "-", "-", "-", "-", "-")
 			continue
@@ -180,7 +180,7 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 }
 
 func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
-	insp, err := sdk.InspectAgent(agentID)
+	insp, err := sdk.InspectAgentLegacy(agentID)
 	if err != nil {
 		return err
 	}

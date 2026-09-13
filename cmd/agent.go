@@ -33,11 +33,11 @@ func newSDK(wsDir string) *adkAgent.AgentSDK {
 	return sdk
 }
 
-// IsProtoMethodEnabled reports whether the given method is enabled for protobuf-service
+// isProtoMethodEnabled reports whether the given method is enabled for protobuf-service
 // in-process dispatch via WACKYPUB_PROTO_METHODS (D112).
 // The environment variable is a comma-separated list of method names (e.g. "ListAgents,InspectAgent").
 // An empty value or omitted variable disables the proto path (legacy positional path used).
-func IsProtoMethodEnabled(methodName string) bool {
+func isProtoMethodEnabled(methodName string) bool {
 	raw := os.Getenv("WACKYPUB_PROTO_METHODS")
 	if raw == "" {
 		return false
@@ -313,7 +313,7 @@ read.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> read-session")
 		}
 
-		turns, err := sdk.ReadSession(agentID)
+		turns, err := sdk.ReadSessionLegacy(agentID)
 		if err != nil {
 			return err
 		}
@@ -355,7 +355,7 @@ modify anything. Acquires the session lock for the duration of the read.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> read-memory")
 		}
 
-		mem, err := sdk.ReadMemory(agentID)
+		mem, err := sdk.ReadMemoryLegacy(agentID)
 		if err != nil {
 			return err
 		}
@@ -398,7 +398,7 @@ Read-only: does not modify anything.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> render-prompt")
 		}
 
-		prompt, err := sdk.RenderSystemPrompt(agentID)
+		prompt, err := sdk.RenderSystemPromptLegacy(agentID)
 		if err != nil {
 			return err
 		}
@@ -1096,7 +1096,7 @@ var agentContextCmd = &cobra.Command{
 			return err
 		}
 		sdk := newSDK(wsDir)
-		report, err := sdk.InspectSessionContext(agentID)
+		report, err := sdk.InspectSessionContextLegacy(agentID)
 		if err != nil {
 			return err
 		}

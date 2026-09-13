@@ -19,7 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AgentService_ListAgents_FullMethodName = "/wackypub.agent.v1.AgentService/ListAgents"
+	AgentService_ListAgents_FullMethodName            = "/wackypub.agent.v1.AgentService/ListAgents"
+	AgentService_InspectAgent_FullMethodName          = "/wackypub.agent.v1.AgentService/InspectAgent"
+	AgentService_ReadSession_FullMethodName           = "/wackypub.agent.v1.AgentService/ReadSession"
+	AgentService_ReadMemory_FullMethodName            = "/wackypub.agent.v1.AgentService/ReadMemory"
+	AgentService_RenderSystemPrompt_FullMethodName    = "/wackypub.agent.v1.AgentService/RenderSystemPrompt"
+	AgentService_InspectSessionContext_FullMethodName = "/wackypub.agent.v1.AgentService/InspectSessionContext"
+	AgentService_InspectAgentLocks_FullMethodName     = "/wackypub.agent.v1.AgentService/InspectAgentLocks"
 )
 
 // AgentServiceClient is the client API for AgentService service.
@@ -32,6 +38,18 @@ const (
 type AgentServiceClient interface {
 	// ListAgents returns the IDs of agent directories found directly under the workspace directory.
 	ListAgents(ctx context.Context, in *ListAgentsRequest, opts ...grpc.CallOption) (*ListAgentsResponse, error)
+	// InspectAgent reports the on-disk state of <ws_dir>/<agent_id>.
+	InspectAgent(ctx context.Context, in *InspectAgentRequest, opts ...grpc.CallOption) (*InspectAgentResponse, error)
+	// ReadSession returns every turn currently stored in <ws_dir>/<agent_id>/session.jsonl.
+	ReadSession(ctx context.Context, in *ReadSessionRequest, opts ...grpc.CallOption) (*ReadSessionResponse, error)
+	// ReadMemory returns the contents of <ws_dir>/<agent_id>/MEMORY.md.
+	ReadMemory(ctx context.Context, in *ReadMemoryRequest, opts ...grpc.CallOption) (*ReadMemoryResponse, error)
+	// RenderSystemPrompt returns the fully rendered system prompt (AGENTS.md after macro expansion).
+	RenderSystemPrompt(ctx context.Context, in *RenderSystemPromptRequest, opts ...grpc.CallOption) (*RenderSystemPromptResponse, error)
+	// InspectSessionContext calculates the token usage, limits, and compaction headroom for an agent (D93).
+	InspectSessionContext(ctx context.Context, in *InspectSessionContextRequest, opts ...grpc.CallOption) (*InspectSessionContextResponse, error)
+	// InspectAgentLocks reports session lock and session activity for every agent directory (D100).
+	InspectAgentLocks(ctx context.Context, in *InspectAgentLocksRequest, opts ...grpc.CallOption) (*InspectAgentLocksResponse, error)
 }
 
 type agentServiceClient struct {
@@ -52,6 +70,66 @@ func (c *agentServiceClient) ListAgents(ctx context.Context, in *ListAgentsReque
 	return out, nil
 }
 
+func (c *agentServiceClient) InspectAgent(ctx context.Context, in *InspectAgentRequest, opts ...grpc.CallOption) (*InspectAgentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InspectAgentResponse)
+	err := c.cc.Invoke(ctx, AgentService_InspectAgent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) ReadSession(ctx context.Context, in *ReadSessionRequest, opts ...grpc.CallOption) (*ReadSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReadSessionResponse)
+	err := c.cc.Invoke(ctx, AgentService_ReadSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) ReadMemory(ctx context.Context, in *ReadMemoryRequest, opts ...grpc.CallOption) (*ReadMemoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReadMemoryResponse)
+	err := c.cc.Invoke(ctx, AgentService_ReadMemory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) RenderSystemPrompt(ctx context.Context, in *RenderSystemPromptRequest, opts ...grpc.CallOption) (*RenderSystemPromptResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RenderSystemPromptResponse)
+	err := c.cc.Invoke(ctx, AgentService_RenderSystemPrompt_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) InspectSessionContext(ctx context.Context, in *InspectSessionContextRequest, opts ...grpc.CallOption) (*InspectSessionContextResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InspectSessionContextResponse)
+	err := c.cc.Invoke(ctx, AgentService_InspectSessionContext_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) InspectAgentLocks(ctx context.Context, in *InspectAgentLocksRequest, opts ...grpc.CallOption) (*InspectAgentLocksResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InspectAgentLocksResponse)
+	err := c.cc.Invoke(ctx, AgentService_InspectAgentLocks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentServiceServer is the server API for AgentService service.
 // All implementations should embed UnimplementedAgentServiceServer
 // for forward compatibility.
@@ -62,6 +140,18 @@ func (c *agentServiceClient) ListAgents(ctx context.Context, in *ListAgentsReque
 type AgentServiceServer interface {
 	// ListAgents returns the IDs of agent directories found directly under the workspace directory.
 	ListAgents(context.Context, *ListAgentsRequest) (*ListAgentsResponse, error)
+	// InspectAgent reports the on-disk state of <ws_dir>/<agent_id>.
+	InspectAgent(context.Context, *InspectAgentRequest) (*InspectAgentResponse, error)
+	// ReadSession returns every turn currently stored in <ws_dir>/<agent_id>/session.jsonl.
+	ReadSession(context.Context, *ReadSessionRequest) (*ReadSessionResponse, error)
+	// ReadMemory returns the contents of <ws_dir>/<agent_id>/MEMORY.md.
+	ReadMemory(context.Context, *ReadMemoryRequest) (*ReadMemoryResponse, error)
+	// RenderSystemPrompt returns the fully rendered system prompt (AGENTS.md after macro expansion).
+	RenderSystemPrompt(context.Context, *RenderSystemPromptRequest) (*RenderSystemPromptResponse, error)
+	// InspectSessionContext calculates the token usage, limits, and compaction headroom for an agent (D93).
+	InspectSessionContext(context.Context, *InspectSessionContextRequest) (*InspectSessionContextResponse, error)
+	// InspectAgentLocks reports session lock and session activity for every agent directory (D100).
+	InspectAgentLocks(context.Context, *InspectAgentLocksRequest) (*InspectAgentLocksResponse, error)
 }
 
 // UnimplementedAgentServiceServer should be embedded to have
@@ -73,6 +163,24 @@ type UnimplementedAgentServiceServer struct{}
 
 func (UnimplementedAgentServiceServer) ListAgents(context.Context, *ListAgentsRequest) (*ListAgentsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListAgents not implemented")
+}
+func (UnimplementedAgentServiceServer) InspectAgent(context.Context, *InspectAgentRequest) (*InspectAgentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InspectAgent not implemented")
+}
+func (UnimplementedAgentServiceServer) ReadSession(context.Context, *ReadSessionRequest) (*ReadSessionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReadSession not implemented")
+}
+func (UnimplementedAgentServiceServer) ReadMemory(context.Context, *ReadMemoryRequest) (*ReadMemoryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReadMemory not implemented")
+}
+func (UnimplementedAgentServiceServer) RenderSystemPrompt(context.Context, *RenderSystemPromptRequest) (*RenderSystemPromptResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RenderSystemPrompt not implemented")
+}
+func (UnimplementedAgentServiceServer) InspectSessionContext(context.Context, *InspectSessionContextRequest) (*InspectSessionContextResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InspectSessionContext not implemented")
+}
+func (UnimplementedAgentServiceServer) InspectAgentLocks(context.Context, *InspectAgentLocksRequest) (*InspectAgentLocksResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InspectAgentLocks not implemented")
 }
 func (UnimplementedAgentServiceServer) testEmbeddedByValue() {}
 
@@ -112,6 +220,114 @@ func _AgentService_ListAgents_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_InspectAgent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InspectAgentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).InspectAgent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_InspectAgent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).InspectAgent(ctx, req.(*InspectAgentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_ReadSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReadSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).ReadSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_ReadSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).ReadSession(ctx, req.(*ReadSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_ReadMemory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReadMemoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).ReadMemory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_ReadMemory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).ReadMemory(ctx, req.(*ReadMemoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_RenderSystemPrompt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RenderSystemPromptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).RenderSystemPrompt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_RenderSystemPrompt_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).RenderSystemPrompt(ctx, req.(*RenderSystemPromptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_InspectSessionContext_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InspectSessionContextRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).InspectSessionContext(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_InspectSessionContext_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).InspectSessionContext(ctx, req.(*InspectSessionContextRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_InspectAgentLocks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InspectAgentLocksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).InspectAgentLocks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_InspectAgentLocks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).InspectAgentLocks(ctx, req.(*InspectAgentLocksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentService_ServiceDesc is the grpc.ServiceDesc for AgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -122,6 +338,30 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListAgents",
 			Handler:    _AgentService_ListAgents_Handler,
+		},
+		{
+			MethodName: "InspectAgent",
+			Handler:    _AgentService_InspectAgent_Handler,
+		},
+		{
+			MethodName: "ReadSession",
+			Handler:    _AgentService_ReadSession_Handler,
+		},
+		{
+			MethodName: "ReadMemory",
+			Handler:    _AgentService_ReadMemory_Handler,
+		},
+		{
+			MethodName: "RenderSystemPrompt",
+			Handler:    _AgentService_RenderSystemPrompt_Handler,
+		},
+		{
+			MethodName: "InspectSessionContext",
+			Handler:    _AgentService_InspectSessionContext_Handler,
+		},
+		{
+			MethodName: "InspectAgentLocks",
+			Handler:    _AgentService_InspectAgentLocks_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
