@@ -14,7 +14,10 @@ import (
 	xdraw "golang.org/x/image/draw"
 )
 
-const DefaultJPEGQuality = 85
+const (
+	DefaultJPEGQuality   = 85
+	MaxMediaPayloadBytes = 10 * 1024 * 1024 // 10MB ceiling (D47, D112)
+)
 
 // NormalizeAndResizeImage reads an image from r, detects format, flattens any transparency onto white,
 // resizes so the longest side does not exceed maxDimension (downscale only), and re-encodes as JPEG.

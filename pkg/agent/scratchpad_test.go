@@ -249,7 +249,7 @@ func TestSDK_ScratchpadOperations(t *testing.T) {
 
 	// 1. CreateScratchpad via SDK
 	text := "Line 1: Hello SDK\nLine 2: Search target\nLine 3: Goodbye SDK\n"
-	entry, err := sdk.CreateScratchpad(agentID, text, "cli_test")
+	entry, err := sdk.createScratchpadLegacy(agentID, text, "cli_test")
 	if err != nil {
 		t.Fatalf("sdk.CreateScratchpad failed: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestSDK_ScratchpadOperations(t *testing.T) {
 	}
 
 	// 2. GetScratchpad via SDK
-	readBack, err := sdk.GetScratchpad(agentID, entry.ID, nil, nil)
+	readBack, err := sdk.getScratchpadLegacy(agentID, entry.ID, nil, nil)
 	if err != nil {
 		t.Fatalf("sdk.GetScratchpad failed: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestSDK_ScratchpadOperations(t *testing.T) {
 	}
 
 	// 3. ListScratchpads via SDK
-	items, count, capVal, err := sdk.ListScratchpads(agentID)
+	items, count, capVal, err := sdk.listScratchpadsLegacy(agentID)
 	if err != nil {
 		t.Fatalf("sdk.ListScratchpads failed: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestSDK_ScratchpadOperations(t *testing.T) {
 	}
 
 	// 4. SearchScratchpad via SDK
-	searchRes, err := sdk.SearchScratchpad(agentID, entry.ID, "target", nil, false, 10)
+	searchRes, err := sdk.searchScratchpadLegacy(agentID, entry.ID, "target", nil, false, 10)
 	if err != nil {
 		t.Fatalf("sdk.SearchScratchpad failed: %v", err)
 	}
@@ -1266,13 +1266,13 @@ func TestSDKDiffScratchpadEntriesRejectsEmptyArguments(t *testing.T) {
 	wsDir, agentID := newDiffTestWorkspace(t)
 	sdk := NewSDK(wsDir)
 
-	if _, err := sdk.DiffScratchpadEntries("", "aaaa", "bbbb"); err == nil {
+	if _, err := sdk.diffScratchpadEntriesLegacy("", "aaaa", "bbbb"); err == nil {
 		t.Error("expected empty agentID to be refused before any authorization check")
 	}
-	if _, err := sdk.DiffScratchpadEntries(agentID, "", "bbbb"); err == nil {
+	if _, err := sdk.diffScratchpadEntriesLegacy(agentID, "", "bbbb"); err == nil {
 		t.Error("expected empty beforeID to be refused")
 	}
-	if _, err := sdk.DiffScratchpadEntries(agentID, "aaaa", ""); err == nil {
+	if _, err := sdk.diffScratchpadEntriesLegacy(agentID, "aaaa", ""); err == nil {
 		t.Error("expected empty afterID to be refused")
 	}
 }

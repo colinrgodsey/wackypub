@@ -778,7 +778,7 @@ func TestD88_ContextCancellationStopsContinuation(t *testing.T) {
 	}
 
 	sdk := NewSDK(wsDir)
-	if _, err := sdk.AddUserTurn(agentID, "Start cancelable task"); err != nil {
+	if _, err := sdk.addUserTurnLegacy(agentID, "Start cancelable task"); err != nil {
 		t.Fatalf("AddUserTurn failed: %v", err)
 	}
 
@@ -801,7 +801,7 @@ func TestD88_ContextCancellationStopsContinuation(t *testing.T) {
 	}
 
 	// Cancel the turn during continuation turn execution
-	if err := sdk.CancelTurn(agentID); err != nil {
+	if err := sdk.cancelTurnLegacy(agentID); err != nil {
 		t.Fatalf("CancelTurn failed: %v", err)
 	}
 

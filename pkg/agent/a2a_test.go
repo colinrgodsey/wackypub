@@ -249,7 +249,7 @@ func TestD59_StatelessA2APropagationAndReadOnlyExemption(t *testing.T) {
 		t.Errorf("unexpected RenderSystemPrompt output: %q", prompt)
 	}
 
-	items, count, _, err := sdk.ListScratchpads("bob")
+	items, count, _, err := sdk.listScratchpadsLegacy("bob")
 	if err != nil {
 		t.Fatalf("ListScratchpads failed: %v", err)
 	}
@@ -326,13 +326,13 @@ func TestD60_ReadOnlyCrossAgentAuthorizationGating(t *testing.T) {
 	if _, err := sdk.renderSystemPromptLegacy("alice"); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
 		t.Fatalf("expected RenderSystemPrompt to fail with missing allowlist, got: %v", err)
 	}
-	if _, _, _, err := sdk.ListScratchpads("alice"); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
+	if _, _, _, err := sdk.listScratchpadsLegacy("alice"); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
 		t.Fatalf("expected ListScratchpads to fail with missing allowlist, got: %v", err)
 	}
-	if _, err := sdk.GetScratchpad("alice", "1234", nil, nil); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
+	if _, err := sdk.getScratchpadLegacy("alice", "1234", nil, nil); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
 		t.Fatalf("expected GetScratchpad to fail with missing allowlist, got: %v", err)
 	}
-	if _, err := sdk.SearchScratchpad("alice", "1234", "secret", nil, false, 10); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
+	if _, err := sdk.searchScratchpadLegacy("alice", "1234", "secret", nil, false, 10); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
 		t.Fatalf("expected SearchScratchpad to fail with missing allowlist, got: %v", err)
 	}
 

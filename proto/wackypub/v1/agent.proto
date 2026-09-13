@@ -16,12 +16,13 @@ option go_package = "github.com/colinrgodsey/wackypub/pkg/agent/v1;agentv1";
 //
 // D112 establishes a unified 26-method service interface replacing the legacy monolithic
 // AgentSDK methods across five staged rollout phases:
-//   - Phase 1 (current): Read-only workspace queries and state inspection (7 methods:
+//   - Phase 1: Read-only workspace queries and state inspection (7 methods:
 //     ListAgents, InspectAgent, ReadSession, ReadMemory, RenderSystemPrompt,
 //     InspectSessionContext, InspectAgentLocks).
-//   - Phase 2: Mutation and session operations (e.g., prompt, generate, compact), including
-//     streaming methods (Phase 2 canary).
-//   - Phase 3: Scratchpad, attachments, and tool discovery operations.
+//   - Phase 2: Streaming turn generation operations (Phase 2 canary).
+//   - Phase 3 (current): Stateful mutations (AddUserTurn, AddMedia, CancelTurn, StripSignatures,
+//     CompactSession) and scratchpad CRUD (CreateScratchpad, GetScratchpad, ListScratchpads,
+//     SearchScratchpad, DiffScratchpadEntries, DeleteScratchpad).
 //   - Phase 4: Side-effectful / background operations (e.g. git commit hooks, compaction runner path).
 //   - Phase 5: Complete cutover and deprecation/removal of legacy SDK entry points.
 //
@@ -81,6 +82,62 @@ service AgentService {
   // release, so lock presence alone does not imply held; callers must check holder_pid_valid, holder_alive,
   // and last_write.
   rpc InspectAgentLocks(InspectAgentLocksRequest) returns (InspectAgentLocksResponse);
+
+  // AddUserTurn appends a new user message turn to the agent's conversational session history (session.jsonl).
+  // Automatically creates the agent directory if it does not yet exist. Executes configured user message
+  // lifecycle hooks before committing the turn, returning any non-fatal hook warnings alongside the committed turn.
+  // Acquires the agent's exclusive session lock for the duration of the append.
+  rpc AddUserTurn(AddUserTurnRequest) returns (AddUserTurnResponse);
+
+  // AddMedia attaches a binary image payload to the agent's conversational session history (session.jsonl).
+  // The image bytes are validated, normalized, and resized to JPEG format according to maxImageDimension
+  // in runtime.json per D47. Payloads exceeding the 10MB ceiling (MaxMediaPayloadBytes) are rejected outright.
+  // Acquires the agent's exclusive session lock for the duration of the operation.
+  rpc AddMedia(AddMediaRequest) returns (AddMediaResponse);
+
+  // CancelTurn cancels an active in-flight turn for the specified agent (D85).
+  // Safe to invoke concurrently from any goroutine. Returns an error if no turn is currently
+  // active for the specified agent.
+  rpc CancelTurn(CancelTurnRequest) returns (CancelTurnResponse);
+
+  // StripSignatures strips provider-specific opaque reasoning/thought signatures (such as Gemini's
+  // ThoughtSignature or OpenRouter reasoning_details) from all turns in session.jsonl, rewriting the file
+  // in place. Readable plain-text reasoning is preserved. Useful when switching an agent between LLM
+  // providers where replaying previous provider signatures causes rejection. Acquires the session lock.
+  rpc StripSignatures(StripSignaturesRequest) returns (StripSignaturesResponse);
+
+  // CompactSession evaluates and triggers session compaction on an agent's history (D44, D83, D84).
+  // Summarizes the oldest turns (default 50%, or compact_pct in COMPACT.md) into MEMORY.md and removes
+  // them from session.jsonl. Callers can force compaction (bypassing token headroom thresholds), provide
+  // an in-memory CompactConfig override, or specify an alternative runtime configuration path.
+  // Acquires the exclusive session lock for the duration of compaction.
+  rpc CompactSession(CompactSessionRequest) returns (CompactSessionResponse);
+
+  // CreateScratchpad writes a new entry to the agent's scratchpad store (<workspace_dir>/<agent_id>/scratchpad/).
+  // Performs atomic creation and enforces store capacity limits (MaxScratchpadEntries). Does not require the
+  // session lock.
+  rpc CreateScratchpad(CreateScratchpadRequest) returns (CreateScratchpadResponse);
+
+  // GetScratchpad retrieves the text content of a specific scratchpad entry from the agent's scratchpad store.
+  // Supports optional pagination via skip_lines and num_lines. Does not require the session lock.
+  rpc GetScratchpad(GetScratchpadRequest) returns (GetScratchpadResponse);
+
+  // ListScratchpads lists metadata for all scratchpad entries present in the agent's scratchpad store.
+  // Returns entries ordered chronologically along with current capacity metrics. Does not require the session lock.
+  rpc ListScratchpads(ListScratchpadsRequest) returns (ListScratchpadsResponse);
+
+  // SearchScratchpad searches the text of a specific scratchpad entry for matching lines.
+  // Supports case-sensitivity toggles, regular expressions, and result limits. Rejects binary entries.
+  // Does not require the session lock.
+  rpc SearchScratchpad(SearchScratchpadRequest) returns (SearchScratchpadResponse);
+
+  // DiffScratchpadEntries computes and returns a unified diff between two scratchpad entries for an agent.
+  // Returns an empty diff string if both entries are byte-identical. Does not require the session lock.
+  rpc DiffScratchpadEntries(DiffScratchpadEntriesRequest) returns (DiffScratchpadEntriesResponse);
+
+  // DeleteScratchpad removes a scratchpad entry from the agent's scratchpad store by its identifier.
+  // Enforces workspace allowlist authorization.
+  rpc DeleteScratchpad(DeleteScratchpadRequest) returns (DeleteScratchpadResponse);
 }
 
 // ListAgentsRequest specifies parameters for listing agent directories in a workspace.
@@ -367,3 +424,318 @@ message AgentLockObservation {
   // last_write is the modification timestamp of session.jsonl, reflecting the most recent session activity.
   google.protobuf.Timestamp last_write = 10;
 }
+
+// AddUserTurnRequest specifies parameters for appending a user message turn.
+message AddUserTurnRequest {
+  // agent_id identifies the agent whose session history will receive the user turn. Required.
+  string agent_id = 1;
+
+  // message contains the user's text message to append to the session. Required.
+  string message = 2;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 3;
+}
+
+// AddUserTurnResponse returns the appended session turn and processing details.
+message AddUserTurnResponse {
+  // turn contains the session turn appended to session.jsonl.
+  SessionTurn turn = 1;
+
+  // text contains the final processed message text after hook execution and macro expansion.
+  string text = 2;
+
+  // warnings contains non-fatal diagnostic or hook execution warnings generated during the operation.
+  repeated string warnings = 3;
+}
+
+// AddMediaRequest specifies parameters for attaching a binary media payload to an agent session.
+message AddMediaRequest {
+  // agent_id identifies the agent whose session history will receive the media attachment. Required.
+  string agent_id = 1;
+
+  // media_data contains the raw binary bytes of the image file to attach (max 10MB). Required.
+  bytes media_data = 2;
+
+  // mime_type optionally specifies the MIME media type of media_data (e.g. "image/png").
+  // If empty, MIME type is detected from the media payload header.
+  string mime_type = 3;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 4;
+}
+
+// AddMediaResponse returns details of the attached media turn.
+message AddMediaResponse {
+  // turn contains the user-role session turn appended to session.jsonl with the inline media attachment.
+  SessionTurn turn = 1;
+
+  // mime_type is the normalized MIME type of the stored attachment (e.g. "image/jpeg").
+  string mime_type = 2;
+
+  // raw_size is the byte count of the processed and stored media payload.
+  int64 raw_size = 3;
+}
+
+// CancelTurnRequest specifies the target agent whose active turn should be cancelled.
+message CancelTurnRequest {
+  // agent_id identifies the agent whose in-flight turn should be cancelled. Required.
+  string agent_id = 1;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 2;
+}
+
+// CancelTurnResponse acknowledges successful cancellation of the active turn.
+message CancelTurnResponse {}
+
+// StripSignaturesRequest specifies the target agent whose session signatures should be stripped.
+message StripSignaturesRequest {
+  // agent_id identifies the agent whose session signatures should be stripped. Required.
+  string agent_id = 1;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 2;
+}
+
+// StripSignaturesResponse reports the number of turns modified during signature stripping.
+message StripSignaturesResponse {
+  // modified_turns is the count of conversation turns that were modified and rewritten.
+  int32 modified_turns = 1;
+}
+
+// CompactSessionRequest specifies parameters for triggering session compaction.
+message CompactSessionRequest {
+  // agent_id identifies the agent whose session should be compacted. Required.
+  string agent_id = 1;
+
+  // force bypasses token threshold checks and forces compaction even if context limits have not been reached.
+  bool force = 2;
+
+  // config_override optionally overrides the agent's COMPACT.md configuration without modifying on-disk files.
+  CompactConfigOverride config_override = 3;
+
+  // runtime_path optionally specifies an alternative runtime.json path to use for compaction execution (D84).
+  string runtime_path = 4;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 5;
+}
+
+// CompactConfigOverride specifies in-memory parameter overrides for session compaction (D83).
+message CompactConfigOverride {
+  // append_only specifies whether persistent memory updates should be append-only.
+  bool append_only = 1;
+
+  // compact_pct is the fraction of turns to compact (0.0 to 1.0, e.g. 0.5 for 50%).
+  double compact_pct = 2;
+
+  // compact_overhead_pct is the safety buffer percentage before the context limit.
+  double compact_overhead_pct = 3;
+
+  // compaction_notice is the text notice injected into the session after compaction.
+  string compaction_notice = 4;
+
+  // prompt is an optional custom compaction prompt override.
+  string prompt = 5;
+}
+
+// CompactSessionResponse reports whether session compaction occurred.
+message CompactSessionResponse {
+  // compacted indicates whether session compaction actually executed (false if session was empty or skipped).
+  bool compacted = 1;
+}
+
+// CreateScratchpadRequest specifies parameters for creating a new scratchpad entry.
+message CreateScratchpadRequest {
+  // agent_id identifies the agent whose scratchpad store will receive the entry. Required.
+  string agent_id = 1;
+
+  // text contains the content to store in the scratchpad entry. Required.
+  string text = 2;
+
+  // created_by identifies the author or tool that created the entry (e.g. "cli"). Defaults to "cli".
+  string created_by = 3;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 4;
+}
+
+// CreateScratchpadResponse returns metadata for the newly created scratchpad entry.
+message CreateScratchpadResponse {
+  // entry contains metadata describing the newly created scratchpad entry.
+  ScratchpadEntry entry = 1;
+}
+
+// ScratchpadEntry represents a stored scratchpad record in <workspace_dir>/<agent_id>/scratchpad/.
+message ScratchpadEntry {
+  // entry_id is the unique 4-character alphanumeric identifier of the scratchpad entry.
+  string entry_id = 1;
+
+  // size is the content size in bytes.
+  int64 size = 2;
+
+  // lines is the line count of the text content.
+  int32 lines = 3;
+
+  // created_by identifies the author or tool that created the entry.
+  string created_by = 4;
+
+  // text contains the stored entry text, if populated.
+  string text = 5;
+
+  // is_binary indicates whether the entry contains binary data.
+  bool is_binary = 6;
+
+  // mime_type is the detected MIME type of the entry.
+  string mime_type = 7;
+
+  // warnings contains any non-fatal warnings generated during entry creation or retrieval.
+  repeated string warnings = 8;
+}
+
+// GetScratchpadRequest specifies parameters for retrieving a scratchpad entry's text content.
+message GetScratchpadRequest {
+  // agent_id identifies the agent owning the scratchpad entry. Required.
+  string agent_id = 1;
+
+  // entry_id is the 4-character identifier of the scratchpad entry to read. Required.
+  string entry_id = 2;
+
+  // skip_lines specifies the number of leading lines to skip (0-indexed). Optional.
+  optional int32 skip_lines = 3;
+
+  // num_lines specifies the maximum number of lines to return. Optional.
+  optional int32 num_lines = 4;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 5;
+}
+
+// GetScratchpadResponse returns the retrieved scratchpad content.
+message GetScratchpadResponse {
+  // text contains the retrieved scratchpad content (or requested line range).
+  string text = 1;
+}
+
+// ListScratchpadsRequest specifies parameters for listing scratchpad entries.
+message ListScratchpadsRequest {
+  // agent_id identifies the agent whose scratchpad store to inspect. Required.
+  string agent_id = 1;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 2;
+}
+
+// ListScratchpadsResponse returns all active scratchpad entries and store capacity metrics.
+message ListScratchpadsResponse {
+  // entries contains metadata for each scratchpad entry found in the store.
+  repeated ScratchpadEntry entries = 1;
+
+  // total_entries is the count of active entries currently in the store.
+  int32 total_entries = 2;
+
+  // max_capacity is the maximum entry limit before eviction occurs (MaxScratchpadEntries).
+  int32 max_capacity = 3;
+}
+
+// SearchScratchpadRequest specifies parameters for searching within a scratchpad entry.
+message SearchScratchpadRequest {
+  // agent_id identifies the agent owning the scratchpad entry. Required.
+  string agent_id = 1;
+
+  // entry_id is the 4-character identifier of the scratchpad entry to search. Required.
+  string entry_id = 2;
+
+  // query is the text string or regex pattern to search for. Required.
+  string query = 3;
+
+  // case_sensitive specifies whether matching is case-sensitive (defaults to true if unset).
+  optional bool case_sensitive = 4;
+
+  // use_regex specifies whether query should be evaluated as a regular expression.
+  bool use_regex = 5;
+
+  // max_results limits the number of matches returned (default 50 if <= 0).
+  int32 max_results = 6;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 7;
+}
+
+// SearchScratchpadResponse returns line match results within the searched scratchpad entry.
+message SearchScratchpadResponse {
+  // entry_id is the identifier of the searched scratchpad entry.
+  string entry_id = 1;
+
+  // query is the query that was searched.
+  string query = 2;
+
+  // total_matches is the total number of matching lines found.
+  int32 total_matches = 3;
+
+  // max_results is the effective maximum results limit applied.
+  int32 max_results = 4;
+
+  // matches contains the individual line match results.
+  repeated ScratchpadMatch matches = 5;
+}
+
+// ScratchpadMatch captures a single matching line in a scratchpad search.
+message ScratchpadMatch {
+  // line is the 1-based line number in the scratchpad entry.
+  int32 line = 1;
+
+  // skip_lines is the 0-based offset for retrieving this match via GetScratchpad.
+  int32 skip_lines = 2;
+
+  // text is the matching line content.
+  string text = 3;
+}
+
+// DiffScratchpadEntriesRequest specifies parameters for computing a diff between two scratchpad entries.
+message DiffScratchpadEntriesRequest {
+  // agent_id identifies the agent owning both scratchpad entries. Required.
+  string agent_id = 1;
+
+  // before_entry_id is the identifier of the base/original scratchpad entry. Required.
+  string before_entry_id = 2;
+
+  // after_entry_id is the identifier of the target/modified scratchpad entry. Required.
+  string after_entry_id = 3;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 4;
+}
+
+// DiffScratchpadEntriesResponse returns the unified diff between two scratchpad entries.
+message DiffScratchpadEntriesResponse {
+  // diff contains the unified diff output comparing the two entries, or empty if identical.
+  string diff = 1;
+}
+
+// DeleteScratchpadRequest specifies parameters for deleting a scratchpad entry.
+message DeleteScratchpadRequest {
+  // agent_id identifies the agent whose scratchpad entry will be deleted. Required.
+  string agent_id = 1;
+
+  // entry_id is the 4-character identifier of the scratchpad entry to delete. Required.
+  string entry_id = 2;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 3;
+}
+
+// DeleteScratchpadResponse acknowledges successful deletion of the scratchpad entry.
+message DeleteScratchpadResponse {}
