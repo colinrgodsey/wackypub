@@ -543,6 +543,12 @@ func (s *AgentSDK) inspectAgentLegacy(agentID string) (*AgentInspection, error) 
 }
 
 // ReadSession satisfies agentv1.AgentServiceServer (D112).
+//
+// NOTE(D112 v1): The conversion from session.jsonl's genai.Content turns to
+// agentv1.SessionTurn is accepted-lossy for v1: it extracts Text and InlineData
+// (data + MIME type) parts, while tool invocations (FunctionCall and FunctionResponse)
+// are omitted in the v1 protobuf schema. The protobuf service interface is canonical
+// going forward; richer part schemas may be introduced in a future revision.
 func (s *AgentSDK) ReadSession(ctx context.Context, req *agentv1.ReadSessionRequest) (*agentv1.ReadSessionResponse, error) {
 	wsDir := s.WorkspaceDir
 	if req != nil && req.GetWorkspaceDir() != "" {

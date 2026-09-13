@@ -273,8 +273,11 @@ var agentReadSessionCmd = &cobra.Command{
 	Use:   "read-session [agent_id]",
 	Short: "Print the agent's session.jsonl turn history as JSON",
 	Long: `Prints every turn currently stored in <ws_dir>/<agent_id>/session.jsonl to stdout, one
-JSON-encoded genai.Content object per line (the same shape used in session.jsonl itself -
-{"role": "user"|"model", "parts": [...]}).
+JSON-encoded agentv1.SessionTurn object per line ({"role": "user"|"model", "parts": [...]}).
+
+Note: in v1, SessionTurn models text and inline data parts. Tool invocations
+(FunctionCall/FunctionResponse) present in session.jsonl are omitted (accepted-lossy
+conversion for v1).
 
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).

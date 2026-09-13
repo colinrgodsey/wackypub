@@ -106,6 +106,12 @@ message SessionTurn {
 }
 
 // SessionPart represents one part of a turn (text or inline data).
+//
+// NOTE(D112 v1): SessionPart currently models plain text and inline data parts.
+// Non-text parts such as tool invocations (FunctionCall and FunctionResponse)
+// stored in session.jsonl are omitted during conversion in v1. This lossy
+// conversion is accepted for v1; this protobuf interface is canonical going forward
+// and richer part schemas may be introduced in a future revision.
 message SessionPart {
   string text = 1;
   bytes inline_data = 2;
