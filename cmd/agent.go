@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	adkAgent "github.com/colinrgodsey/wackypub/pkg/agent"
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 var (
@@ -31,23 +32,6 @@ func newSDK(wsDir string) *adkAgent.AgentSDK {
 	sdk.MaxToolTurns = GetMaxToolTurns()
 	sdk.CommandTimeoutSeconds = GetCommandTimeoutSeconds()
 	return sdk
-}
-
-// isProtoMethodEnabled reports whether the given method is enabled for protobuf-service
-// in-process dispatch via WACKYPUB_PROTO_METHODS (D112).
-// The environment variable is a comma-separated list of method names (e.g. "ListAgents,InspectAgent").
-// An empty value or omitted variable disables the proto path (legacy positional path used).
-func isProtoMethodEnabled(methodName string) bool {
-	raw := os.Getenv("WACKYPUB_PROTO_METHODS")
-	if raw == "" {
-		return false
-	}
-	for _, m := range strings.Split(raw, ",") {
-		if strings.EqualFold(strings.TrimSpace(m), methodName) {
-			return true
-		}
-	}
-	return false
 }
 
 var agentCmd = &cobra.Command{
@@ -289,8 +273,11 @@ var agentReadSessionCmd = &cobra.Command{
 	Use:   "read-session [agent_id]",
 	Short: "Print the agent's session.jsonl turn history as JSON",
 	Long: `Prints every turn currently stored in <ws_dir>/<agent_id>/session.jsonl to stdout, one
-JSON-encoded genai.Content object per line (the same shape used in session.jsonl itself -
-{"role": "user"|"model", "parts": [...]}).
+JSON-encoded agentv1.SessionTurn object per line ({"role": "user"|"model", "parts": [...]}).
+
+Note: in v1, SessionTurn models text and inline data parts. Tool invocations
+(FunctionCall/FunctionResponse) present in session.jsonl are omitted (accepted-lossy
+conversion for v1).
 
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
@@ -313,13 +300,15 @@ read.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> read-session")
 		}
 
-		turns, err := sdk.ReadSessionLegacy(agentID)
+		resp, err := sdk.ReadSession(cmd.Context(), &agentv1.ReadSessionRequest{
+			AgentId: agentID,
+		})
 		if err != nil {
 			return err
 		}
 
 		enc := json.NewEncoder(os.Stdout)
-		for _, t := range turns {
+		for _, t := range resp.GetTurns() {
 			if err := enc.Encode(t); err != nil {
 				return fmt.Errorf("failed to encode turn: %w", err)
 			}
@@ -355,12 +344,14 @@ modify anything. Acquires the session lock for the duration of the read.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> read-memory")
 		}
 
-		mem, err := sdk.ReadMemoryLegacy(agentID)
+		resp, err := sdk.ReadMemory(cmd.Context(), &agentv1.ReadMemoryRequest{
+			AgentId: agentID,
+		})
 		if err != nil {
 			return err
 		}
 
-		fmt.Println(mem)
+		fmt.Println(resp.GetMemoryMd())
 		return nil
 	},
 }
@@ -398,12 +389,14 @@ Read-only: does not modify anything.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> render-prompt")
 		}
 
-		prompt, err := sdk.RenderSystemPromptLegacy(agentID)
+		resp, err := sdk.RenderSystemPrompt(cmd.Context(), &agentv1.RenderSystemPromptRequest{
+			AgentId: agentID,
+		})
 		if err != nil {
 			return err
 		}
 
-		fmt.Println(prompt)
+		fmt.Println(resp.GetRenderedPrompt())
 		return nil
 	},
 }
@@ -1096,7 +1089,9 @@ var agentContextCmd = &cobra.Command{
 			return err
 		}
 		sdk := newSDK(wsDir)
-		report, err := sdk.InspectSessionContextLegacy(agentID)
+		report, err := sdk.InspectSessionContext(cmd.Context(), &agentv1.InspectSessionContextRequest{
+			AgentId: agentID,
+		})
 		if err != nil {
 			return err
 		}
@@ -1106,20 +1101,20 @@ var agentContextCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Printf("Agent:       %s\n", report.AgentID)
-		fmt.Printf("Model:       %s\n", report.Model)
+		fmt.Printf("Agent:       %s\n", report.GetAgentId())
+		fmt.Printf("Model:       %s\n", report.GetModel())
 		fmt.Printf("Context:     %d tokens (Threshold: %d / %.0f%% overhead)\n",
-			report.ContextWindow, report.CompactionThreshold, report.CompactionOverheadPct)
+			report.GetContextWindow(), report.GetCompactionThreshold(), report.GetCompactionOverheadPct())
 		fmt.Printf("Estimated:   %d total tokens (%.1f%% of threshold, %.1f%% of window)\n",
-			report.EstimatedTotalTokens, report.PercentToThreshold, report.PercentToWindow)
+			report.GetEstimatedTotalTokens(), report.GetPercentToThreshold(), report.GetPercentToWindow())
 		fmt.Printf("Breakdown:   %d turns tokens + %d prompt tokens + %d memory tokens\n",
-			report.SessionTurnsTokens, report.PromptTokensEstimate, report.MemoryTokensEstimate)
-		fmt.Printf("Session:     %d turns\n", report.TurnCount)
-		if report.Compacted {
+			report.GetSessionTurnsTokens(), report.GetPromptTokensEstimate(), report.GetMemoryTokensEstimate())
+		fmt.Printf("Session:     %d turns\n", report.GetTurnCount())
+		if report.GetCompacted() {
 			fmt.Printf("Compacted:   yes (session compacted, provider tokens reset)\n")
-		} else if report.LastTotalTokens > 0 {
+		} else if report.GetLastTotalTokens() > 0 {
 			fmt.Printf("Last Call:   %d prompt + %d candidates = %d total tokens\n",
-				report.LastPromptTokens, report.LastCandidatesTokens, report.LastTotalTokens)
+				report.GetLastPromptTokens(), report.GetLastCandidatesTokens(), report.GetLastTotalTokens())
 		}
 		return nil
 	},

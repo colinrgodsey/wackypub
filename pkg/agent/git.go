@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/go-git/go-git/v5/plumbing/object"
+
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 const DefaultWorkspaceDomain = "wackypub.local"
@@ -308,10 +311,11 @@ func CreateWorkspaceSnapshot(wsDir string) (string, error) {
 	}
 
 	sdk := NewSDK(wsDir)
-	agentIDs, err := sdk.ListAgentsLegacy()
+	listResp, err := sdk.ListAgents(context.Background(), &agentv1.ListAgentsRequest{})
 	if err != nil {
 		return "", fmt.Errorf("failed to list agents: %w", err)
 	}
+	agentIDs := listResp.GetAgentIds()
 
 	var sb strings.Builder
 	sb.WriteString("# Workspace Manifest Snapshot\n\n")
@@ -380,10 +384,11 @@ func TagWorkspaceAndAgents(wsDir, tagName string) error {
 
 	// 2. Tag each agent repo with "tag-<agent_id>"
 	sdk := NewSDK(wsDir)
-	agentIDs, err := sdk.ListAgentsLegacy()
+	listResp, err := sdk.ListAgents(context.Background(), &agentv1.ListAgentsRequest{})
 	if err != nil {
 		return fmt.Errorf("failed to list agents: %w", err)
 	}
+	agentIDs := listResp.GetAgentIds()
 
 	for _, agentID := range agentIDs {
 		agentDir := sdk.AgentDir(agentID)
@@ -466,15 +471,16 @@ func PushWorkspaceAndAgents(wsDir, remoteName string) error {
 
 	// 2. Push each agent folder repo to rootRemoteURL under branch <agent_id>
 	sdk := NewSDK(wsDir)
-	agentIDs, err := sdk.ListAgentsLegacy()
+	listResp, err := sdk.ListAgents(context.Background(), &agentv1.ListAgentsRequest{})
 	if err != nil {
 		return fmt.Errorf("failed to list agents: %w", err)
 	}
+	agentIDs := listResp.GetAgentIds()
 
 	for _, agentID := range agentIDs {
 		agentDir := sdk.AgentDir(agentID)
-		insp, err := sdk.InspectAgentLegacy(agentID)
-		if err != nil || !insp.RuntimeJSONExists || !IsWorkspaceGitRepo(agentDir) {
+		insp, err := sdk.InspectAgent(context.Background(), &agentv1.InspectAgentRequest{AgentId: agentID})
+		if err != nil || !insp.GetRuntimeJsonExists() || !IsWorkspaceGitRepo(agentDir) {
 			continue
 		}
 

@@ -3,68 +3,13 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	adkAgent "github.com/colinrgodsey/wackypub/pkg/agent"
 )
 
-func TestIsProtoMethodEnabled(t *testing.T) {
-	tests := []struct {
-		name       string
-		envVal     string
-		methodName string
-		want       bool
-	}{
-		{
-			name:       "empty env var",
-			envVal:     "",
-			methodName: "ListAgents",
-			want:       false,
-		},
-		{
-			name:       "unrelated method enabled",
-			envVal:     "InspectAgent,ReadSession",
-			methodName: "ListAgents",
-			want:       false,
-		},
-		{
-			name:       "single exact match",
-			envVal:     "ListAgents",
-			methodName: "ListAgents",
-			want:       true,
-		},
-		{
-			name:       "in comma-separated list",
-			envVal:     "InspectAgent,ListAgents,ReadSession",
-			methodName: "ListAgents",
-			want:       true,
-		},
-		{
-			name:       "with whitespace around entries",
-			envVal:     "  InspectAgent ,  ListAgents  , ReadSession ",
-			methodName: "ListAgents",
-			want:       true,
-		},
-		{
-			name:       "case-insensitive match",
-			envVal:     "listagents",
-			methodName: "ListAgents",
-			want:       true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("WACKYPUB_PROTO_METHODS", tt.envVal)
-			got := isProtoMethodEnabled(tt.methodName)
-			if got != tt.want {
-				t.Errorf("isProtoMethodEnabled(%q) with env %q = %v, want %v", tt.methodName, tt.envVal, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestListAgentsFlagParity(t *testing.T) {
+func TestWorkspaceOverviewProto(t *testing.T) {
 	wsDir := t.TempDir()
 
 	// Create test agent directories
@@ -80,29 +25,41 @@ func TestListAgentsFlagParity(t *testing.T) {
 
 	sdk := adkAgent.NewSDK(wsDir)
 
-	// 1. Run with proto flag disabled (legacy path)
-	t.Setenv("WACKYPUB_PROTO_METHODS", "")
-	legacyOut, err := captureStdout(t, func() error {
-		return printWorkspaceOverview(sdk, wsDir)
-	})
-	if err != nil {
-		t.Fatalf("legacy path failed: %v", err)
-	}
-
-	// 2. Run with proto flag enabled (proto path)
-	t.Setenv("WACKYPUB_PROTO_METHODS", "ListAgents")
 	protoOut, err := captureStdout(t, func() error {
 		return printWorkspaceOverview(sdk, wsDir)
 	})
 	if err != nil {
-		t.Fatalf("proto path failed: %v", err)
+		t.Fatalf("printWorkspaceOverview failed: %v", err)
 	}
 
-	// 3. Both must be non-empty and byte-for-byte identical
-	if legacyOut == "" {
-		t.Fatal("legacy output is unexpectedly empty")
+	if protoOut == "" {
+		t.Fatal("proto output is unexpectedly empty")
 	}
-	if legacyOut != protoOut {
-		t.Fatalf("output mismatch between flag-off and flag-on paths:\n--- LEGACY ---\n%s\n--- PROTO ---\n%s", legacyOut, protoOut)
+
+	if !strings.Contains(protoOut, "agent-1") || !strings.Contains(protoOut, "agent-2") {
+		t.Fatalf("expected output to contain agent-1 and agent-2, got:\n%s", protoOut)
+	}
+}
+
+func TestAgentInspectionProto(t *testing.T) {
+	wsDir := t.TempDir()
+	agentDir := filepath.Join(wsDir, "testbot")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("You are testbot"), 0644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+
+	sdk := adkAgent.NewSDK(wsDir)
+	out, err := captureStdout(t, func() error {
+		return printAgentInspection(sdk, "testbot")
+	})
+	if err != nil {
+		t.Fatalf("printAgentInspection failed: %v", err)
+	}
+
+	if !strings.Contains(out, "Agent: testbot") || !strings.Contains(out, "AGENTS.md") {
+		t.Fatalf("unexpected agent inspection output:\n%s", out)
 	}
 }

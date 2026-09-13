@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"google.golang.org/genai"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
@@ -441,49 +442,94 @@ func (s *AgentSDK) ListAgents(ctx context.Context, req *agentv1.ListAgentsReques
 	}, nil
 }
 
-// ListAgentsLegacy returns the IDs of agent directories found directly under the
+// listAgentsLegacy returns the IDs of agent directories found directly under the
 // workspace directory using the legacy unparameterized positional signature.
 //
 // TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) ListAgentsLegacy() ([]string, error) {
+func (s *AgentSDK) listAgentsLegacy() ([]string, error) {
 	return ListAgentIDs(s.WorkspaceDir)
 }
 
 // InspectAgent satisfies agentv1.AgentServiceServer (D112).
-// Delegated to UnimplementedAgentServiceServer until its Phase 1 migration.
 func (s *AgentSDK) InspectAgent(ctx context.Context, req *agentv1.InspectAgentRequest) (*agentv1.InspectAgentResponse, error) {
-	return s.UnimplementedAgentServiceServer.InspectAgent(ctx, req)
+	wsDir := s.WorkspaceDir
+	if req != nil && req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	agentID := ""
+	if req != nil {
+		agentID = req.GetAgentId()
+	}
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+
+	agentDir := filepath.Join(wsDir, agentID)
+	if _, err := os.Stat(agentDir); os.IsNotExist(err) {
+		return &agentv1.InspectAgentResponse{
+			AgentId:        agentID,
+			AgentDir:       agentDir,
+			AgentDirExists: false,
+		}, nil
+	}
+
+	insp, err := InspectAgentDir(wsDir, agentID)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &agentv1.InspectAgentResponse{
+		AgentId:              insp.AgentID,
+		AgentDir:             insp.AgentDir,
+		AgentDirExists:       insp.AgentDirExists,
+		AgentsMdExists:       insp.AgentsMDExists,
+		MemoryMdExists:       insp.MemoryMDExists,
+		DotEnvExists:         insp.DotEnvExists,
+		RuntimeJsonExists:    insp.RuntimeJSONExists,
+		RuntimeJsonIsSymlink: insp.RuntimeJSONIsSymlink,
+		RuntimeJsonResolved:  insp.RuntimeJSONResolved,
+		RuntimeJsonValid:     insp.RuntimeJSONValid,
+		RuntimeJsonError:     insp.RuntimeJSONError,
+		SessionJsonlExists:   insp.SessionJSONLExists,
+		SessionTurnCount:     int32(insp.SessionTurnCount),
+		SessionCorruptLines:  int32(insp.SessionCorruptLines),
+		AllowedAgentsExists:  insp.AllowedAgentsExists,
+		AllowedAgents:        insp.AllowedAgents,
+		ToolsDirExists:       insp.ToolsDirExists,
+		DiscoveredTools:      insp.DiscoveredTools,
+		ShadowedTools:        insp.ShadowedTools,
+		SkillsDirExists:      insp.SkillsDirExists,
+		DiscoveredSkills:     insp.DiscoveredSkills,
+		ShadowedSkills:       insp.ShadowedSkills,
+	}
+
+	if insp.RuntimeConfig != nil {
+		resp.RuntimeConfig = &agentv1.AgentRuntimeConfig{
+			Provider:                insp.RuntimeConfig.Provider,
+			Endpoint:                insp.RuntimeConfig.Endpoint,
+			Model:                   insp.RuntimeConfig.Model,
+			ApiKey:                  insp.RuntimeConfig.APIKey,
+			ContextWindow:           int32(insp.RuntimeConfig.ContextWindow),
+			TimeoutSeconds:          int32(insp.RuntimeConfig.TimeoutSeconds),
+			AnthropicThinkingEffort: insp.RuntimeConfig.AnthropicThinkingEffort,
+			AnthropicThinkingMode:   insp.RuntimeConfig.AnthropicThinkingMode,
+		}
+		if insp.RuntimeConfig.AnthropicThinkingBudgetTokens != nil {
+			val := int32(*insp.RuntimeConfig.AnthropicThinkingBudgetTokens)
+			resp.RuntimeConfig.AnthropicThinkingBudgetTokens = &val
+		}
+	}
+
+	return resp, nil
 }
 
-// InspectAgentLegacy reports the on-disk state of <ws_dir>/<agent_id>: which
+// inspectAgentLegacy reports the on-disk state of <ws_dir>/<agent_id>: which
 // expected files are present, whether runtime.json parses, and
 // session/memory stats. Safe to call on an agent that doesn't exist yet or
 // is only partially set up - see AgentInspection.
 //
 // TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-//
-// Deliberately does not go through ValidateAgentTarget's WACKYPUB_ALLOWED_AGENTS
-// check (D16): that authorization boundary exists to gate cross-agent tool
-// invocation/generation, not read-only diagnostic visibility - InspectAgent
-// has no side effects and can't cause another agent to do anything. Gating
-// it the same way surfaces an "unauthorized" failure as a generic parse/
-// config error in wackypub workspace's summary table, which is actively
-// misleading (see D16).
-//
-// Does not create the agent directory as a side effect (unlike most other
-// AgentSDK methods) - if it doesn't exist, returns an AgentInspection with
-// AgentDirExists false and every other field zero-valued.
-//
-// Deliberately does not acquire the session lock. AcquireSessionLock blocks
-// until the lock is free, and InspectAgent is exactly the kind of call an
-// agent's own tool loop can make against itself mid-generation (directly, or
-// via wackypub workspace's no-arg summary, which inspects every agent
-// including the caller) - since GenerateTurn already holds that same lock
-// for the whole call, that blocking acquire deadlocks forever. Reading
-// without the lock is safe: ReadSessionTurns already tolerates a torn read
-// gracefully (see AgentInspection.SessionCorruptLines), and the lock's real
-// job is serializing concurrent writers, not protecting readers.
-func (s *AgentSDK) InspectAgentLegacy(agentID string) (*AgentInspection, error) {
+func (s *AgentSDK) inspectAgentLegacy(agentID string) (*AgentInspection, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
@@ -496,17 +542,69 @@ func (s *AgentSDK) InspectAgentLegacy(agentID string) (*AgentInspection, error) 
 	return InspectAgentDir(s.WorkspaceDir, agentID)
 }
 
-// ReadSession returns all conversation turns logged in <ws_dir>/<agent_id>/session.jsonl.
 // ReadSession satisfies agentv1.AgentServiceServer (D112).
-// Delegated to UnimplementedAgentServiceServer until its Phase 1 migration.
+//
+// NOTE(D112 v1): The conversion from session.jsonl's genai.Content turns to
+// agentv1.SessionTurn is accepted-lossy for v1: it extracts Text and InlineData
+// (data + MIME type) parts, while tool invocations (FunctionCall and FunctionResponse)
+// are omitted in the v1 protobuf schema. The protobuf service interface is canonical
+// going forward; richer part schemas may be introduced in a future revision.
 func (s *AgentSDK) ReadSession(ctx context.Context, req *agentv1.ReadSessionRequest) (*agentv1.ReadSessionResponse, error) {
-	return s.UnimplementedAgentServiceServer.ReadSession(ctx, req)
+	wsDir := s.WorkspaceDir
+	if req != nil && req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	agentID := ""
+	if req != nil {
+		agentID = req.GetAgentId()
+	}
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+
+	if err := AuthorizeAgentTarget(agentID); err != nil {
+		return nil, err
+	}
+
+	agentDir := filepath.Join(wsDir, agentID)
+	turns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		return nil, err
+	}
+
+	var protoTurns []*agentv1.SessionTurn
+	for _, t := range turns {
+		if t == nil {
+			continue
+		}
+		st := &agentv1.SessionTurn{
+			Role: t.Role,
+		}
+		for _, p := range t.Parts {
+			if p == nil {
+				continue
+			}
+			sp := &agentv1.SessionPart{
+				Text: p.Text,
+			}
+			if p.InlineData != nil {
+				sp.InlineData = p.InlineData.Data
+				sp.MimeType = p.InlineData.MIMEType
+			}
+			st.Parts = append(st.Parts, sp)
+		}
+		protoTurns = append(protoTurns, st)
+	}
+
+	return &agentv1.ReadSessionResponse{
+		Turns: protoTurns,
+	}, nil
 }
 
-// ReadSessionLegacy returns all conversation turns logged in <ws_dir>/<agent_id>/session.jsonl.
+// readSessionLegacy returns all conversation turns logged in <ws_dir>/<agent_id>/session.jsonl.
 //
 // TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) ReadSessionLegacy(agentID string) ([]*genai.Content, error) {
+func (s *AgentSDK) readSessionLegacy(agentID string) ([]*genai.Content, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
@@ -524,15 +622,38 @@ func (s *AgentSDK) ReadSessionLegacy(agentID string) ([]*genai.Content, error) {
 }
 
 // ReadMemory satisfies agentv1.AgentServiceServer (D112).
-// Delegated to UnimplementedAgentServiceServer until its Phase 1 migration.
 func (s *AgentSDK) ReadMemory(ctx context.Context, req *agentv1.ReadMemoryRequest) (*agentv1.ReadMemoryResponse, error) {
-	return s.UnimplementedAgentServiceServer.ReadMemory(ctx, req)
+	wsDir := s.WorkspaceDir
+	if req != nil && req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	agentID := ""
+	if req != nil {
+		agentID = req.GetAgentId()
+	}
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+
+	if err := AuthorizeAgentTarget(agentID); err != nil {
+		return nil, err
+	}
+
+	agentDir := filepath.Join(wsDir, agentID)
+	mem, err := ReadMemoryFile(agentDir)
+	if err != nil {
+		return nil, err
+	}
+
+	return &agentv1.ReadMemoryResponse{
+		MemoryMd: mem,
+	}, nil
 }
 
-// ReadMemoryLegacy returns the current contents of <ws_dir>/<agent_id>/MEMORY.md.
+// readMemoryLegacy returns the current contents of <ws_dir>/<agent_id>/MEMORY.md.
 //
 // TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) ReadMemoryLegacy(agentID string) (string, error) {
+func (s *AgentSDK) readMemoryLegacy(agentID string) (string, error) {
 	if agentID == "" {
 		return "", fmt.Errorf("agentID cannot be empty")
 	}
@@ -549,19 +670,41 @@ func (s *AgentSDK) ReadMemoryLegacy(agentID string) (string, error) {
 }
 
 // RenderSystemPrompt satisfies agentv1.AgentServiceServer (D112).
-// Delegated to UnimplementedAgentServiceServer until its Phase 1 migration.
 func (s *AgentSDK) RenderSystemPrompt(ctx context.Context, req *agentv1.RenderSystemPromptRequest) (*agentv1.RenderSystemPromptResponse, error) {
-	return s.UnimplementedAgentServiceServer.RenderSystemPrompt(ctx, req)
+	wsDir := s.WorkspaceDir
+	if req != nil && req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	agentID := ""
+	if req != nil {
+		agentID = req.GetAgentId()
+	}
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+
+	if err := AuthorizeAgentTarget(agentID); err != nil {
+		return nil, err
+	}
+
+	prompt, err := RenderAgentSystemPrompt(wsDir, agentID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &agentv1.RenderSystemPromptResponse{
+		RenderedPrompt: prompt,
+	}, nil
 }
 
-// RenderSystemPromptLegacy returns the fully rendered system prompt for an agent -
+// renderSystemPromptLegacy returns the fully rendered system prompt for an agent -
 // AGENTS.md (or the generic fallback if it doesn't exist) after
 // @<FILE_PATH> macro expansion. Does not construct a model and does not
 // require runtime.json to exist or be valid - useful for validating
 // AGENTS.md/macro output independently of backend configuration.
 //
 // TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) RenderSystemPromptLegacy(agentID string) (string, error) {
+func (s *AgentSDK) renderSystemPromptLegacy(agentID string) (string, error) {
 	if agentID == "" {
 		return "", fmt.Errorf("agentID cannot be empty")
 	}
@@ -837,15 +980,93 @@ type SessionContextReport struct {
 }
 
 // InspectSessionContext satisfies agentv1.AgentServiceServer (D112).
-// Delegated to UnimplementedAgentServiceServer until its Phase 1 migration.
 func (s *AgentSDK) InspectSessionContext(ctx context.Context, req *agentv1.InspectSessionContextRequest) (*agentv1.InspectSessionContextResponse, error) {
-	return s.UnimplementedAgentServiceServer.InspectSessionContext(ctx, req)
+	wsDir := s.WorkspaceDir
+	if req != nil && req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	agentID := ""
+	if req != nil {
+		agentID = req.GetAgentId()
+	}
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+
+	agentDir := filepath.Join(wsDir, agentID)
+	runtimeCfg, err := LoadRuntimeConfig(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load runtime config for %s: %w", agentID, err)
+	}
+
+	compactCfg, err := LoadCompactConfig(agentDir)
+	overheadPct := DefaultCompactionOverheadPct
+	if err == nil && compactCfg != nil {
+		if compactCfg.CompactOverheadPct >= 0 && compactCfg.CompactOverheadPct < 100 {
+			overheadPct = compactCfg.CompactOverheadPct
+		}
+	}
+
+	contextWindow := runtimeCfg.ContextWindow
+	threshold := int(float64(contextWindow) * (1.0 - (overheadPct / 100.0)))
+
+	turns, _ := ReadSessionTurns(agentDir)
+	turnCount := len(turns)
+	sessionTokens := 0
+	if turnCount > 0 {
+		sessionTokens = EstimateTokens(turns, runtimeCfg.PreserveThinking)
+	}
+
+	promptTokens := 0
+	if prompt, err := RenderAgentSystemPrompt(wsDir, agentID); err == nil && prompt != "" {
+		promptTokens = len(prompt) / 4
+	}
+
+	memTokens := 0
+	if memPath := filepath.Join(agentDir, "MEMORY.md"); pathExists(memPath) {
+		if data, err := os.ReadFile(memPath); err == nil {
+			memTokens = len(data) / 4
+		}
+	}
+
+	estimatedTotal := sessionTokens + promptTokens
+
+	resp := &agentv1.InspectSessionContextResponse{
+		AgentId:               agentID,
+		Model:                 runtimeCfg.Model,
+		ContextWindow:         int32(contextWindow),
+		CompactionThreshold:   int32(threshold),
+		CompactionOverheadPct: overheadPct,
+		EstimatedTotalTokens:  int32(estimatedTotal),
+		SessionTurnsTokens:    int32(sessionTokens),
+		PromptTokensEstimate:  int32(promptTokens),
+		MemoryTokensEstimate:  int32(memTokens),
+		TurnCount:             int32(turnCount),
+	}
+
+	if threshold > 0 {
+		resp.PercentToThreshold = (float64(estimatedTotal) / float64(threshold)) * 100.0
+	}
+	if contextWindow > 0 {
+		resp.PercentToWindow = (float64(estimatedTotal) / float64(contextWindow)) * 100.0
+	}
+
+	if lastUsage, err := ReadLastUsage(agentDir); err == nil && lastUsage != nil {
+		resp.Compacted = lastUsage.Compacted
+		if !lastUsage.Compacted {
+			resp.LastPromptTokens = lastUsage.PromptTokens
+			resp.LastCandidatesTokens = lastUsage.CandidatesTokens
+			resp.LastTotalTokens = lastUsage.TotalTokens
+		}
+	}
+
+	return resp, nil
 }
 
-// InspectSessionContextLegacy calculates the current token usage, limits, and compaction headroom for an agent (D93).
+// inspectSessionContextLegacy calculates the current token usage, limits, and compaction headroom for an agent (D93).
 //
 // TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) InspectSessionContextLegacy(agentID string) (*SessionContextReport, error) {
+func (s *AgentSDK) inspectSessionContextLegacy(agentID string) (*SessionContextReport, error) {
 	agentDir := s.AgentDir(agentID)
 	runtimeCfg, err := LoadRuntimeConfig(agentDir)
 	if err != nil {
@@ -917,8 +1138,44 @@ func (s *AgentSDK) InspectSessionContextLegacy(agentID string) (*SessionContextR
 }
 
 // InspectAgentLocks satisfies agentv1.AgentServiceServer (D112).
-// Delegated to UnimplementedAgentServiceServer until its Phase 1 migration.
 func (s *AgentSDK) InspectAgentLocks(ctx context.Context, req *agentv1.InspectAgentLocksRequest) (*agentv1.InspectAgentLocksResponse, error) {
-	return s.UnimplementedAgentServiceServer.InspectAgentLocks(ctx, req)
+	wsDir := s.WorkspaceDir
+	if req != nil && req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	obs, err := InspectAgentLocks(wsDir)
+	if err != nil {
+		return nil, err
+	}
+	var res []*agentv1.AgentLockObservation
+	for _, o := range obs {
+		item := &agentv1.AgentLockObservation{
+			AgentId:        o.AgentID,
+			AgentDir:       o.AgentDir,
+			LockExists:     o.LockExists,
+			HolderPid:      int32(o.HolderPID),
+			HolderPidValid: o.HolderPIDValid,
+			HolderAlive:    o.HolderAlive,
+			HolderCommand:  o.HolderCommand,
+			SessionExists:  o.SessionExists,
+		}
+		if !o.LockHeldSince.IsZero() {
+			item.LockHeldSince = timestamppb.New(o.LockHeldSince)
+		}
+		if !o.LastWrite.IsZero() {
+			item.LastWrite = timestamppb.New(o.LastWrite)
+		}
+		res = append(res, item)
+	}
+	return &agentv1.InspectAgentLocksResponse{
+		Observations: res,
+	}, nil
+}
+
+// inspectAgentLocksLegacy returns lock observations for agents in the workspace.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) inspectAgentLocksLegacy() ([]AgentLockObservation, error) {
+	return InspectAgentLocks(s.WorkspaceDir)
 }
 
