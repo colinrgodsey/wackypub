@@ -7,185 +7,363 @@ import "google/protobuf/timestamp.proto";
 option go_package = "github.com/colinrgodsey/wackypub/pkg/agent/v1;agentv1";
 
 // AgentService defines the interface of record for WackyPub agent operations (D112).
-// In v1, this service is invoked in-process via generated Go interfaces; no network transport
-// or gRPC server is required.
+//
+// In v1, this interface is consumed strictly in-process through generated Go types
+// and interfaces; no network transport (gRPC/HTTP), network listener, or remote daemon
+// is deployed or required. The protobuf definition serves as the canonical contract
+// defining operation semantics, data models, and migration boundaries for the WackyPub
+// agent lifecycle.
+//
+// D112 establishes a unified 26-method service interface replacing the legacy monolithic
+// AgentSDK methods across five staged rollout phases:
+//   - Phase 1 (current): Read-only workspace queries and state inspection (7 methods:
+//     ListAgents, InspectAgent, ReadSession, ReadMemory, RenderSystemPrompt,
+//     InspectSessionContext, InspectAgentLocks).
+//   - Phase 2: Mutation and session operations (e.g., prompt, generate, compact), including
+//     streaming methods (Phase 2 canary).
+//   - Phase 3: Scratchpad, attachments, and tool discovery operations.
+//   - Phase 4: Side-effectful / background operations (e.g. git commit hooks, compaction runner path).
+//   - Phase 5: Complete cutover and deprecation/removal of legacy SDK entry points.
+//
+// Design Decisions:
+//   - Q1: Go code generation produces interface stubs (AgentServiceServer) embedded directly
+//     into AgentSDK without network overhead.
+//   - Q2: Protobuf service definitions are the sole source of truth for method signatures
+//     and wire structures, replacing ad-hoc Go structs.
+//   - Q5: Staged migration permits progressive implementation and contract testing while
+//     keeping existing CLI workflows fully backward-compatible.
 service AgentService {
-  // ListAgents returns the IDs of agent directories found directly under the workspace directory.
+  // ListAgents discovers and returns the identifiers of all agent directories present
+  // directly under the specified workspace root. An agent directory is recognized if it
+  // contains the marker file (AGENTS.md). Callers invoke this method during workspace
+  // discovery, multi-agent orchestration, or status reporting. If the workspace directory
+  // does not exist or contains no valid agent directories, an empty list is returned without error.
   rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
 
-  // InspectAgent reports the on-disk state of <ws_dir>/<agent_id>.
+  // InspectAgent performs an extensive diagnostic audit of an agent directory's filesystem state.
+  // Callers invoke this method to determine configuration completeness, file presence, allowlists,
+  // discovered tools and skills, and session corruption statistics without triggering agent execution
+  // or modifying on-disk state. This call intentionally avoids acquiring session locks to prevent
+  // self-deadlocks when called by an agent inspecting itself mid-turn. If the target agent directory
+  // does not exist, the response sets agent_dir_exists to false with all remaining fields zero-valued.
   rpc InspectAgent(InspectAgentRequest) returns (InspectAgentResponse);
 
-  // ReadSession returns every turn currently stored in <ws_dir>/<agent_id>/session.jsonl.
+  // ReadSession reads and returns the full conversational turn history stored in the agent's
+  // session.jsonl file. Callers use this method to inspect past user/model interactions, replay
+  // conversations, or audit transcripts. In v1, turns and content parts are converted to SessionTurn
+  // structures containing plain text and inline data; tool invocations (FunctionCall and FunctionResponse)
+  // are omitted under accepted-lossy v1 conversion. If session.jsonl does not exist, an empty list
+  // of turns is returned without error.
   rpc ReadSession(ReadSessionRequest) returns (ReadSessionResponse);
 
-  // ReadMemory returns the contents of <ws_dir>/<agent_id>/MEMORY.md.
+  // ReadMemory retrieves the raw markdown content of the agent's long-term memory notes from
+  // MEMORY.md. Callers use this method to read persistent memories across sessions. Read access
+  // is subject to workspace allowlist authorization against the target agent. If MEMORY.md does
+  // not exist, an empty string is returned without error.
   rpc ReadMemory(ReadMemoryRequest) returns (ReadMemoryResponse);
 
-  // RenderSystemPrompt returns the fully rendered system prompt (AGENTS.md after macro expansion).
+  // RenderSystemPrompt renders the agent's complete system prompt from AGENTS.md, expanding
+  // any macro inclusion directives (@<FILE_PATH>) into their referenced file contents. Callers
+  // use this method to view or feed the actual prompt passed to the model backend during generation.
+  // Returns an error if AGENTS.md cannot be read or if cyclic macro references are detected.
   rpc RenderSystemPrompt(RenderSystemPromptRequest) returns (RenderSystemPromptResponse);
 
-  // InspectSessionContext calculates the token usage, limits, and compaction headroom for an agent (D93).
+  // InspectSessionContext calculates current token usage, context window limits, and auto-compaction
+  // headroom for an agent per D93/D101. Callers invoke this method to monitor context window consumption,
+  // plan proactive compaction, or display diagnostics. It estimates token counts across session turns,
+  // the rendered system prompt, and memory files, returning headroom percentages and the most recent turn
+  // token metrics if available.
   rpc InspectSessionContext(InspectSessionContextRequest) returns (InspectSessionContextResponse);
 
-  // InspectAgentLocks reports session lock and session activity for every agent directory (D100).
+  // InspectAgentLocks surveys all agent directories in the workspace and returns lock status and session
+  // activity for each agent per D100. Callers invoke this method to detect active agent executions, identify
+  // stale lock files left behind by dead processes, or debug concurrency contention. The lock file outlives
+  // release, so lock presence alone does not imply held; callers must check holder_pid_valid, holder_alive,
+  // and last_write.
   rpc InspectAgentLocks(InspectAgentLocksRequest) returns (InspectAgentLocksResponse);
 }
 
-// ListAgentsRequest specifies parameters for listing agents.
+// ListAgentsRequest specifies parameters for listing agent directories in a workspace.
 message ListAgentsRequest {
+  // workspace_dir is the filesystem path to the workspace root to inspect.
+  // When empty, the SDK's configured default workspace directory is used.
   string workspace_dir = 1;
 }
 
-// ListAgentsResponse contains the IDs of all discovered agents.
+// ListAgentsResponse returns the discovered agent identifiers.
 message ListAgentsResponse {
+  // agent_ids contains the subdirectory names of all valid agent directories discovered
+  // directly under the workspace root (directories containing AGENTS.md).
   repeated string agent_ids = 1;
 }
 
-// InspectAgentRequest specifies parameters for inspecting an agent.
+// InspectAgentRequest specifies parameters for inspecting an individual agent directory.
 message InspectAgentRequest {
+  // agent_id identifies the agent directory to inspect (<workspace_dir>/<agent_id>). Required.
   string agent_id = 1;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent directory.
+  // When empty, the SDK's configured default workspace directory is used.
   string workspace_dir = 2;
 }
 
-// InspectAgentResponse contains the inspection details of an agent directory.
+// InspectAgentResponse reports the complete on-disk configuration and diagnostic state of an agent.
+// All fields reflect filesystem observations at the time of inspection. To avoid exposing sensitive
+// credentials (such as LLM API keys), structured runtime configurations are not exported here; callers
+// can rely on the boolean and error indicators to confirm whether runtime.json is present and valid.
 message InspectAgentResponse {
+  // agent_id is the identifier of the inspected agent.
   string agent_id = 1;
+
+  // agent_dir is the absolute filesystem path to the agent's directory.
   string agent_dir = 2;
+
+  // agent_dir_exists indicates whether the directory <workspace_dir>/<agent_id> exists on disk.
+  // When false, all subsequent fields remain zero-valued.
   bool agent_dir_exists = 3;
+
+  // agents_md_exists indicates whether AGENTS.md (system prompt template) exists in the agent directory.
   bool agents_md_exists = 4;
+
+  // memory_md_exists indicates whether MEMORY.md (long-term memory) exists in the agent directory.
   bool memory_md_exists = 5;
+
+  // dot_env_exists indicates whether .env exists in the agent directory.
   bool dot_env_exists = 6;
+
+  // runtime_json_exists indicates whether runtime.json exists in the agent directory.
   bool runtime_json_exists = 7;
+
+  // runtime_json_is_symlink indicates whether runtime.json is a symbolic link.
   bool runtime_json_is_symlink = 8;
+
+  // runtime_json_resolved contains the resolved canonical path when runtime_json_is_symlink is true.
   string runtime_json_resolved = 9;
+
+  // runtime_json_valid indicates whether runtime.json successfully parsed into a valid runtime configuration.
   bool runtime_json_valid = 10;
+
+  // runtime_json_error contains the parse or validation error message if runtime_json_exists is true but valid is false.
   string runtime_json_error = 11;
-  AgentRuntimeConfig runtime_config = 12;
+
+  // Field 12 previously held AgentRuntimeConfig runtime_config, which was removed because it exposed
+  // sensitive API keys (api_key) in cleartext and duplicated the validation signals above.
+  reserved 12;
+  reserved "runtime_config";
+
+  // session_jsonl_exists indicates whether session.jsonl exists in the agent directory.
   bool session_jsonl_exists = 13;
+
+  // session_turn_count is the number of conversation turns successfully parsed from session.jsonl.
   int32 session_turn_count = 14;
+
+  // session_corrupt_lines is the count of non-empty lines in session.jsonl skipped due to JSON parse failures.
   int32 session_corrupt_lines = 15;
+
+  // allowed_agents_exists indicates whether .allowed_agents exists in the agent directory.
   bool allowed_agents_exists = 16;
+
+  // allowed_agents lists the agent IDs permitted for cross-agent communication if allowed_agents_exists is true.
   repeated string allowed_agents = 17;
+
+  // tools_dir_exists indicates whether the tools/ subdirectory exists in the agent directory.
   bool tools_dir_exists = 18;
+
+  // discovered_tools contains the names of executable tools discovered in tools/.
   repeated string discovered_tools = 19;
+
+  // shadowed_tools contains warning messages for any tool names shadowed by higher-precedence tools.
   repeated string shadowed_tools = 20;
+
+  // skills_dir_exists indicates whether the skills/ subdirectory exists in the agent directory.
   bool skills_dir_exists = 21;
+
+  // discovered_skills contains the names of valid skills discovered in skills/.
   repeated string discovered_skills = 22;
+
+  // shadowed_skills contains warning messages for any skill names shadowed by higher-precedence skills.
   repeated string shadowed_skills = 23;
 }
 
-// AgentRuntimeConfig represents parsed runtime.json configuration.
-message AgentRuntimeConfig {
-  string provider = 1;
-  string endpoint = 2;
-  string model = 3;
-  string api_key = 4;
-  int32 context_window = 5;
-  int32 timeout_seconds = 6;
-  optional int32 anthropic_thinking_budget_tokens = 7;
-  string anthropic_thinking_effort = 8;
-  string anthropic_thinking_mode = 9;
-}
-
-// ReadSessionRequest specifies parameters for reading an agent's session turns.
+// ReadSessionRequest specifies parameters for reading an agent's conversational turns.
 message ReadSessionRequest {
+  // agent_id identifies the agent whose session turns should be read. Required.
   string agent_id = 1;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
   string workspace_dir = 2;
 }
 
-// ReadSessionResponse contains the parsed turns of an agent session.
+// ReadSessionResponse contains the parsed conversation turns from session.jsonl.
 message ReadSessionResponse {
+  // turns contains every conversation turn recorded in session.jsonl in chronological order.
   repeated SessionTurn turns = 1;
 }
 
 // SessionTurn represents a single conversational turn in session.jsonl.
 message SessionTurn {
+  // role identifies the author of the turn, typically "user" or "model".
   string role = 1;
+
+  // parts contains the ordered sequence of content parts comprising this turn.
   repeated SessionPart parts = 2;
 }
 
-// SessionPart represents one part of a turn (text or inline data).
+// SessionPart represents one content component of a conversation turn (text or inline data).
 //
-// NOTE(D112 v1): SessionPart currently models plain text and inline data parts.
-// Non-text parts such as tool invocations (FunctionCall and FunctionResponse)
-// stored in session.jsonl are omitted during conversion in v1. This lossy
-// conversion is accepted for v1; this protobuf interface is canonical going forward
-// and richer part schemas may be introduced in a future revision.
+// NOTE(D112 v1): In v1, SessionPart models plain text and inline data parts. Non-text parts
+// such as tool invocations (FunctionCall and FunctionResponse) stored in session.jsonl are
+// omitted during conversion. This lossy conversion is accepted for v1; this protobuf interface
+// is canonical going forward, and richer part schemas may be introduced in a future revision.
 message SessionPart {
+  // text contains the plain text content of this part, if applicable.
   string text = 1;
+
+  // inline_data contains raw binary data for media attachments (e.g. image payloads).
   bytes inline_data = 2;
+
+  // mime_type specifies the MIME media type of inline_data (e.g. "image/png").
   string mime_type = 3;
 }
 
-// ReadMemoryRequest specifies parameters for reading an agent's memory.
+// ReadMemoryRequest specifies parameters for reading an agent's long-term memory.
 message ReadMemoryRequest {
+  // agent_id identifies the agent whose MEMORY.md should be read. Required.
   string agent_id = 1;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
   string workspace_dir = 2;
 }
 
-// ReadMemoryResponse contains the memory markdown content.
+// ReadMemoryResponse returns the contents of MEMORY.md.
 message ReadMemoryResponse {
+  // memory_md contains the raw markdown text stored in <workspace_dir>/<agent_id>/MEMORY.md.
+  // Empty if the file does not exist.
   string memory_md = 1;
 }
 
-// RenderSystemPromptRequest specifies parameters for rendering an agent's prompt.
+// RenderSystemPromptRequest specifies parameters for rendering an agent's system prompt.
 message RenderSystemPromptRequest {
+  // agent_id identifies the agent whose system prompt should be rendered. Required.
   string agent_id = 1;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
   string workspace_dir = 2;
 }
 
-// RenderSystemPromptResponse contains the rendered prompt string.
+// RenderSystemPromptResponse returns the rendered system prompt.
 message RenderSystemPromptResponse {
+  // rendered_prompt contains the prompt from AGENTS.md after expanding all @<FILE_PATH> macros.
   string rendered_prompt = 1;
 }
 
-// InspectSessionContextRequest specifies parameters for inspecting session context.
+// InspectSessionContextRequest specifies parameters for inspecting session token usage and headroom.
 message InspectSessionContextRequest {
+  // agent_id identifies the agent whose session context should be analyzed. Required.
   string agent_id = 1;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
   string workspace_dir = 2;
 }
 
-// InspectSessionContextResponse contains context window and token usage estimates.
+// InspectSessionContextResponse reports token estimation metrics, compaction limits, and headroom.
 message InspectSessionContextResponse {
+  // agent_id is the identifier of the analyzed agent.
   string agent_id = 1;
+
+  // model is the LLM model identifier configured in runtime.json (e.g. "gemini-2.5-flash").
   string model = 2;
+
+  // context_window is the total maximum token capacity configured for the model.
   int32 context_window = 3;
+
+  // compaction_threshold is the calculated token count that triggers automatic session compaction.
   int32 compaction_threshold = 4;
+
+  // compaction_overhead_pct is the safety buffer percentage reserved before context limit (e.g. 20.0).
   double compaction_overhead_pct = 5;
+
+  // estimated_total_tokens is the sum of estimated session turns and prompt tokens.
   int32 estimated_total_tokens = 6;
+
+  // session_turns_tokens is the estimated token count consumed by turns in session.jsonl.
   int32 session_turns_tokens = 7;
+
+  // prompt_tokens_estimate is the estimated token count of the rendered system prompt.
   int32 prompt_tokens_estimate = 8;
+
+  // memory_tokens_estimate is the estimated token count of MEMORY.md content.
   int32 memory_tokens_estimate = 9;
+
+  // percent_to_threshold is the percentage of the compaction threshold utilized (0.0 to 100.0+).
   double percent_to_threshold = 10;
+
+  // percent_to_window is the percentage of the full context window utilized (0.0 to 100.0+).
   double percent_to_window = 11;
+
+  // turn_count is the total number of turns parsed from session.jsonl.
   int32 turn_count = 12;
+
+  // compacted indicates whether the last generation turn resulted in session compaction.
   bool compacted = 13;
+
+  // last_prompt_tokens is the provider-reported input prompt tokens from the last non-compacted turn.
   int32 last_prompt_tokens = 14;
+
+  // last_candidates_tokens is the provider-reported output tokens from the last non-compacted turn.
   int32 last_candidates_tokens = 15;
+
+  // last_total_tokens is the provider-reported total tokens from the last non-compacted turn.
   int32 last_total_tokens = 16;
 }
 
-// InspectAgentLocksRequest specifies parameters for inspecting workspace agent locks.
+// InspectAgentLocksRequest specifies parameters for inspecting workspace agent session locks.
 message InspectAgentLocksRequest {
+  // workspace_dir is the filesystem path to the workspace root to inspect.
+  // When empty, the SDK's configured default workspace directory is used.
   string workspace_dir = 1;
 }
 
-// InspectAgentLocksResponse contains lock observations for agents in the workspace.
+// InspectAgentLocksResponse contains session lock observations for all agents in the workspace.
 message InspectAgentLocksResponse {
+  // observations contains one lock observation per discovered agent directory in the workspace.
   repeated AgentLockObservation observations = 1;
 }
 
-// AgentLockObservation captures session lock status and activity for an agent.
+// AgentLockObservation captures a read-only snapshot of an agent directory's session lock and activity.
 message AgentLockObservation {
+  // agent_id is the identifier of the agent.
   string agent_id = 1;
+
+  // agent_dir is the filesystem path to the agent directory.
   string agent_dir = 2;
+
+  // lock_exists indicates whether <agent_dir>/session.lock is present on disk.
+  // Note: lock files are not deleted on release, so presence does not imply the lock is currently held.
   bool lock_exists = 3;
+
+  // holder_pid is the process ID recorded in the lock file by the last acquiring process, or 0 if absent/unparseable.
   int32 holder_pid = 4;
+
+  // holder_pid_valid indicates whether holder_pid was successfully parsed from the lock file.
   bool holder_pid_valid = 5;
+
+  // holder_alive indicates whether the process identified by holder_pid is currently running.
   bool holder_alive = 6;
+
+  // holder_command contains the sanitized command line of the process holding the lock (credentials redacted).
   string holder_command = 7;
+
+  // lock_held_since is the modification timestamp of session.lock, reflecting when the holder acquired the lock.
   google.protobuf.Timestamp lock_held_since = 8;
+
+  // session_exists indicates whether <agent_dir>/session.jsonl is present on disk.
   bool session_exists = 9;
+
+  // last_write is the modification timestamp of session.jsonl, reflecting the most recent session activity.
   google.protobuf.Timestamp last_write = 10;
 }

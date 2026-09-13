@@ -22,10 +22,12 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// ListAgentsRequest specifies parameters for listing agents.
+// ListAgentsRequest specifies parameters for listing agent directories in a workspace.
 type ListAgentsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	WorkspaceDir  string                 `protobuf:"bytes,1,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// workspace_dir is the filesystem path to the workspace root to inspect.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,1,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -67,10 +69,12 @@ func (x *ListAgentsRequest) GetWorkspaceDir() string {
 	return ""
 }
 
-// ListAgentsResponse contains the IDs of all discovered agents.
+// ListAgentsResponse returns the discovered agent identifiers.
 type ListAgentsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AgentIds      []string               `protobuf:"bytes,1,rep,name=agent_ids,json=agentIds,proto3" json:"agent_ids,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_ids contains the subdirectory names of all valid agent directories discovered
+	// directly under the workspace root (directories containing AGENTS.md).
+	AgentIds      []string `protobuf:"bytes,1,rep,name=agent_ids,json=agentIds,proto3" json:"agent_ids,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -112,11 +116,14 @@ func (x *ListAgentsResponse) GetAgentIds() []string {
 	return nil
 }
 
-// InspectAgentRequest specifies parameters for inspecting an agent.
+// InspectAgentRequest specifies parameters for inspecting an individual agent directory.
 type InspectAgentRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AgentId       string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	WorkspaceDir  string                 `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent directory to inspect (<workspace_dir>/<agent_id>). Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent directory.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -165,34 +172,59 @@ func (x *InspectAgentRequest) GetWorkspaceDir() string {
 	return ""
 }
 
-// InspectAgentResponse contains the inspection details of an agent directory.
+// InspectAgentResponse reports the complete on-disk configuration and diagnostic state of an agent.
+// All fields reflect filesystem observations at the time of inspection. To avoid exposing sensitive
+// credentials (such as LLM API keys), structured runtime configurations are not exported here; callers
+// can rely on the boolean and error indicators to confirm whether runtime.json is present and valid.
 type InspectAgentResponse struct {
-	state                protoimpl.MessageState `protogen:"open.v1"`
-	AgentId              string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	AgentDir             string                 `protobuf:"bytes,2,opt,name=agent_dir,json=agentDir,proto3" json:"agent_dir,omitempty"`
-	AgentDirExists       bool                   `protobuf:"varint,3,opt,name=agent_dir_exists,json=agentDirExists,proto3" json:"agent_dir_exists,omitempty"`
-	AgentsMdExists       bool                   `protobuf:"varint,4,opt,name=agents_md_exists,json=agentsMdExists,proto3" json:"agents_md_exists,omitempty"`
-	MemoryMdExists       bool                   `protobuf:"varint,5,opt,name=memory_md_exists,json=memoryMdExists,proto3" json:"memory_md_exists,omitempty"`
-	DotEnvExists         bool                   `protobuf:"varint,6,opt,name=dot_env_exists,json=dotEnvExists,proto3" json:"dot_env_exists,omitempty"`
-	RuntimeJsonExists    bool                   `protobuf:"varint,7,opt,name=runtime_json_exists,json=runtimeJsonExists,proto3" json:"runtime_json_exists,omitempty"`
-	RuntimeJsonIsSymlink bool                   `protobuf:"varint,8,opt,name=runtime_json_is_symlink,json=runtimeJsonIsSymlink,proto3" json:"runtime_json_is_symlink,omitempty"`
-	RuntimeJsonResolved  string                 `protobuf:"bytes,9,opt,name=runtime_json_resolved,json=runtimeJsonResolved,proto3" json:"runtime_json_resolved,omitempty"`
-	RuntimeJsonValid     bool                   `protobuf:"varint,10,opt,name=runtime_json_valid,json=runtimeJsonValid,proto3" json:"runtime_json_valid,omitempty"`
-	RuntimeJsonError     string                 `protobuf:"bytes,11,opt,name=runtime_json_error,json=runtimeJsonError,proto3" json:"runtime_json_error,omitempty"`
-	RuntimeConfig        *AgentRuntimeConfig    `protobuf:"bytes,12,opt,name=runtime_config,json=runtimeConfig,proto3" json:"runtime_config,omitempty"`
-	SessionJsonlExists   bool                   `protobuf:"varint,13,opt,name=session_jsonl_exists,json=sessionJsonlExists,proto3" json:"session_jsonl_exists,omitempty"`
-	SessionTurnCount     int32                  `protobuf:"varint,14,opt,name=session_turn_count,json=sessionTurnCount,proto3" json:"session_turn_count,omitempty"`
-	SessionCorruptLines  int32                  `protobuf:"varint,15,opt,name=session_corrupt_lines,json=sessionCorruptLines,proto3" json:"session_corrupt_lines,omitempty"`
-	AllowedAgentsExists  bool                   `protobuf:"varint,16,opt,name=allowed_agents_exists,json=allowedAgentsExists,proto3" json:"allowed_agents_exists,omitempty"`
-	AllowedAgents        []string               `protobuf:"bytes,17,rep,name=allowed_agents,json=allowedAgents,proto3" json:"allowed_agents,omitempty"`
-	ToolsDirExists       bool                   `protobuf:"varint,18,opt,name=tools_dir_exists,json=toolsDirExists,proto3" json:"tools_dir_exists,omitempty"`
-	DiscoveredTools      []string               `protobuf:"bytes,19,rep,name=discovered_tools,json=discoveredTools,proto3" json:"discovered_tools,omitempty"`
-	ShadowedTools        []string               `protobuf:"bytes,20,rep,name=shadowed_tools,json=shadowedTools,proto3" json:"shadowed_tools,omitempty"`
-	SkillsDirExists      bool                   `protobuf:"varint,21,opt,name=skills_dir_exists,json=skillsDirExists,proto3" json:"skills_dir_exists,omitempty"`
-	DiscoveredSkills     []string               `protobuf:"bytes,22,rep,name=discovered_skills,json=discoveredSkills,proto3" json:"discovered_skills,omitempty"`
-	ShadowedSkills       []string               `protobuf:"bytes,23,rep,name=shadowed_skills,json=shadowedSkills,proto3" json:"shadowed_skills,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id is the identifier of the inspected agent.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// agent_dir is the absolute filesystem path to the agent's directory.
+	AgentDir string `protobuf:"bytes,2,opt,name=agent_dir,json=agentDir,proto3" json:"agent_dir,omitempty"`
+	// agent_dir_exists indicates whether the directory <workspace_dir>/<agent_id> exists on disk.
+	// When false, all subsequent fields remain zero-valued.
+	AgentDirExists bool `protobuf:"varint,3,opt,name=agent_dir_exists,json=agentDirExists,proto3" json:"agent_dir_exists,omitempty"`
+	// agents_md_exists indicates whether AGENTS.md (system prompt template) exists in the agent directory.
+	AgentsMdExists bool `protobuf:"varint,4,opt,name=agents_md_exists,json=agentsMdExists,proto3" json:"agents_md_exists,omitempty"`
+	// memory_md_exists indicates whether MEMORY.md (long-term memory) exists in the agent directory.
+	MemoryMdExists bool `protobuf:"varint,5,opt,name=memory_md_exists,json=memoryMdExists,proto3" json:"memory_md_exists,omitempty"`
+	// dot_env_exists indicates whether .env exists in the agent directory.
+	DotEnvExists bool `protobuf:"varint,6,opt,name=dot_env_exists,json=dotEnvExists,proto3" json:"dot_env_exists,omitempty"`
+	// runtime_json_exists indicates whether runtime.json exists in the agent directory.
+	RuntimeJsonExists bool `protobuf:"varint,7,opt,name=runtime_json_exists,json=runtimeJsonExists,proto3" json:"runtime_json_exists,omitempty"`
+	// runtime_json_is_symlink indicates whether runtime.json is a symbolic link.
+	RuntimeJsonIsSymlink bool `protobuf:"varint,8,opt,name=runtime_json_is_symlink,json=runtimeJsonIsSymlink,proto3" json:"runtime_json_is_symlink,omitempty"`
+	// runtime_json_resolved contains the resolved canonical path when runtime_json_is_symlink is true.
+	RuntimeJsonResolved string `protobuf:"bytes,9,opt,name=runtime_json_resolved,json=runtimeJsonResolved,proto3" json:"runtime_json_resolved,omitempty"`
+	// runtime_json_valid indicates whether runtime.json successfully parsed into a valid runtime configuration.
+	RuntimeJsonValid bool `protobuf:"varint,10,opt,name=runtime_json_valid,json=runtimeJsonValid,proto3" json:"runtime_json_valid,omitempty"`
+	// runtime_json_error contains the parse or validation error message if runtime_json_exists is true but valid is false.
+	RuntimeJsonError string `protobuf:"bytes,11,opt,name=runtime_json_error,json=runtimeJsonError,proto3" json:"runtime_json_error,omitempty"`
+	// session_jsonl_exists indicates whether session.jsonl exists in the agent directory.
+	SessionJsonlExists bool `protobuf:"varint,13,opt,name=session_jsonl_exists,json=sessionJsonlExists,proto3" json:"session_jsonl_exists,omitempty"`
+	// session_turn_count is the number of conversation turns successfully parsed from session.jsonl.
+	SessionTurnCount int32 `protobuf:"varint,14,opt,name=session_turn_count,json=sessionTurnCount,proto3" json:"session_turn_count,omitempty"`
+	// session_corrupt_lines is the count of non-empty lines in session.jsonl skipped due to JSON parse failures.
+	SessionCorruptLines int32 `protobuf:"varint,15,opt,name=session_corrupt_lines,json=sessionCorruptLines,proto3" json:"session_corrupt_lines,omitempty"`
+	// allowed_agents_exists indicates whether .allowed_agents exists in the agent directory.
+	AllowedAgentsExists bool `protobuf:"varint,16,opt,name=allowed_agents_exists,json=allowedAgentsExists,proto3" json:"allowed_agents_exists,omitempty"`
+	// allowed_agents lists the agent IDs permitted for cross-agent communication if allowed_agents_exists is true.
+	AllowedAgents []string `protobuf:"bytes,17,rep,name=allowed_agents,json=allowedAgents,proto3" json:"allowed_agents,omitempty"`
+	// tools_dir_exists indicates whether the tools/ subdirectory exists in the agent directory.
+	ToolsDirExists bool `protobuf:"varint,18,opt,name=tools_dir_exists,json=toolsDirExists,proto3" json:"tools_dir_exists,omitempty"`
+	// discovered_tools contains the names of executable tools discovered in tools/.
+	DiscoveredTools []string `protobuf:"bytes,19,rep,name=discovered_tools,json=discoveredTools,proto3" json:"discovered_tools,omitempty"`
+	// shadowed_tools contains warning messages for any tool names shadowed by higher-precedence tools.
+	ShadowedTools []string `protobuf:"bytes,20,rep,name=shadowed_tools,json=shadowedTools,proto3" json:"shadowed_tools,omitempty"`
+	// skills_dir_exists indicates whether the skills/ subdirectory exists in the agent directory.
+	SkillsDirExists bool `protobuf:"varint,21,opt,name=skills_dir_exists,json=skillsDirExists,proto3" json:"skills_dir_exists,omitempty"`
+	// discovered_skills contains the names of valid skills discovered in skills/.
+	DiscoveredSkills []string `protobuf:"bytes,22,rep,name=discovered_skills,json=discoveredSkills,proto3" json:"discovered_skills,omitempty"`
+	// shadowed_skills contains warning messages for any skill names shadowed by higher-precedence skills.
+	ShadowedSkills []string `protobuf:"bytes,23,rep,name=shadowed_skills,json=shadowedSkills,proto3" json:"shadowed_skills,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *InspectAgentResponse) Reset() {
@@ -302,13 +334,6 @@ func (x *InspectAgentResponse) GetRuntimeJsonError() string {
 	return ""
 }
 
-func (x *InspectAgentResponse) GetRuntimeConfig() *AgentRuntimeConfig {
-	if x != nil {
-		return x.RuntimeConfig
-	}
-	return nil
-}
-
 func (x *InspectAgentResponse) GetSessionJsonlExists() bool {
 	if x != nil {
 		return x.SessionJsonlExists
@@ -386,127 +411,21 @@ func (x *InspectAgentResponse) GetShadowedSkills() []string {
 	return nil
 }
 
-// AgentRuntimeConfig represents parsed runtime.json configuration.
-type AgentRuntimeConfig struct {
-	state                         protoimpl.MessageState `protogen:"open.v1"`
-	Provider                      string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
-	Endpoint                      string                 `protobuf:"bytes,2,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
-	Model                         string                 `protobuf:"bytes,3,opt,name=model,proto3" json:"model,omitempty"`
-	ApiKey                        string                 `protobuf:"bytes,4,opt,name=api_key,json=apiKey,proto3" json:"api_key,omitempty"`
-	ContextWindow                 int32                  `protobuf:"varint,5,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`
-	TimeoutSeconds                int32                  `protobuf:"varint,6,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
-	AnthropicThinkingBudgetTokens *int32                 `protobuf:"varint,7,opt,name=anthropic_thinking_budget_tokens,json=anthropicThinkingBudgetTokens,proto3,oneof" json:"anthropic_thinking_budget_tokens,omitempty"`
-	AnthropicThinkingEffort       string                 `protobuf:"bytes,8,opt,name=anthropic_thinking_effort,json=anthropicThinkingEffort,proto3" json:"anthropic_thinking_effort,omitempty"`
-	AnthropicThinkingMode         string                 `protobuf:"bytes,9,opt,name=anthropic_thinking_mode,json=anthropicThinkingMode,proto3" json:"anthropic_thinking_mode,omitempty"`
-	unknownFields                 protoimpl.UnknownFields
-	sizeCache                     protoimpl.SizeCache
-}
-
-func (x *AgentRuntimeConfig) Reset() {
-	*x = AgentRuntimeConfig{}
-	mi := &file_agent_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AgentRuntimeConfig) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AgentRuntimeConfig) ProtoMessage() {}
-
-func (x *AgentRuntimeConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AgentRuntimeConfig.ProtoReflect.Descriptor instead.
-func (*AgentRuntimeConfig) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *AgentRuntimeConfig) GetProvider() string {
-	if x != nil {
-		return x.Provider
-	}
-	return ""
-}
-
-func (x *AgentRuntimeConfig) GetEndpoint() string {
-	if x != nil {
-		return x.Endpoint
-	}
-	return ""
-}
-
-func (x *AgentRuntimeConfig) GetModel() string {
-	if x != nil {
-		return x.Model
-	}
-	return ""
-}
-
-func (x *AgentRuntimeConfig) GetApiKey() string {
-	if x != nil {
-		return x.ApiKey
-	}
-	return ""
-}
-
-func (x *AgentRuntimeConfig) GetContextWindow() int32 {
-	if x != nil {
-		return x.ContextWindow
-	}
-	return 0
-}
-
-func (x *AgentRuntimeConfig) GetTimeoutSeconds() int32 {
-	if x != nil {
-		return x.TimeoutSeconds
-	}
-	return 0
-}
-
-func (x *AgentRuntimeConfig) GetAnthropicThinkingBudgetTokens() int32 {
-	if x != nil && x.AnthropicThinkingBudgetTokens != nil {
-		return *x.AnthropicThinkingBudgetTokens
-	}
-	return 0
-}
-
-func (x *AgentRuntimeConfig) GetAnthropicThinkingEffort() string {
-	if x != nil {
-		return x.AnthropicThinkingEffort
-	}
-	return ""
-}
-
-func (x *AgentRuntimeConfig) GetAnthropicThinkingMode() string {
-	if x != nil {
-		return x.AnthropicThinkingMode
-	}
-	return ""
-}
-
-// ReadSessionRequest specifies parameters for reading an agent's session turns.
+// ReadSessionRequest specifies parameters for reading an agent's conversational turns.
 type ReadSessionRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AgentId       string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	WorkspaceDir  string                 `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose session turns should be read. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReadSessionRequest) Reset() {
 	*x = ReadSessionRequest{}
-	mi := &file_agent_proto_msgTypes[5]
+	mi := &file_agent_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -518,7 +437,7 @@ func (x *ReadSessionRequest) String() string {
 func (*ReadSessionRequest) ProtoMessage() {}
 
 func (x *ReadSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[5]
+	mi := &file_agent_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -531,7 +450,7 @@ func (x *ReadSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadSessionRequest.ProtoReflect.Descriptor instead.
 func (*ReadSessionRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{5}
+	return file_agent_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ReadSessionRequest) GetAgentId() string {
@@ -548,17 +467,18 @@ func (x *ReadSessionRequest) GetWorkspaceDir() string {
 	return ""
 }
 
-// ReadSessionResponse contains the parsed turns of an agent session.
+// ReadSessionResponse contains the parsed conversation turns from session.jsonl.
 type ReadSessionResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Turns         []*SessionTurn         `protobuf:"bytes,1,rep,name=turns,proto3" json:"turns,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// turns contains every conversation turn recorded in session.jsonl in chronological order.
+	Turns         []*SessionTurn `protobuf:"bytes,1,rep,name=turns,proto3" json:"turns,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReadSessionResponse) Reset() {
 	*x = ReadSessionResponse{}
-	mi := &file_agent_proto_msgTypes[6]
+	mi := &file_agent_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -570,7 +490,7 @@ func (x *ReadSessionResponse) String() string {
 func (*ReadSessionResponse) ProtoMessage() {}
 
 func (x *ReadSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[6]
+	mi := &file_agent_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -583,7 +503,7 @@ func (x *ReadSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadSessionResponse.ProtoReflect.Descriptor instead.
 func (*ReadSessionResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{6}
+	return file_agent_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ReadSessionResponse) GetTurns() []*SessionTurn {
@@ -595,16 +515,18 @@ func (x *ReadSessionResponse) GetTurns() []*SessionTurn {
 
 // SessionTurn represents a single conversational turn in session.jsonl.
 type SessionTurn struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Role          string                 `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
-	Parts         []*SessionPart         `protobuf:"bytes,2,rep,name=parts,proto3" json:"parts,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// role identifies the author of the turn, typically "user" or "model".
+	Role string `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
+	// parts contains the ordered sequence of content parts comprising this turn.
+	Parts         []*SessionPart `protobuf:"bytes,2,rep,name=parts,proto3" json:"parts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SessionTurn) Reset() {
 	*x = SessionTurn{}
-	mi := &file_agent_proto_msgTypes[7]
+	mi := &file_agent_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -616,7 +538,7 @@ func (x *SessionTurn) String() string {
 func (*SessionTurn) ProtoMessage() {}
 
 func (x *SessionTurn) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[7]
+	mi := &file_agent_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -629,7 +551,7 @@ func (x *SessionTurn) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionTurn.ProtoReflect.Descriptor instead.
 func (*SessionTurn) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{7}
+	return file_agent_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *SessionTurn) GetRole() string {
@@ -646,25 +568,27 @@ func (x *SessionTurn) GetParts() []*SessionPart {
 	return nil
 }
 
-// SessionPart represents one part of a turn (text or inline data).
+// SessionPart represents one content component of a conversation turn (text or inline data).
 //
-// NOTE(D112 v1): SessionPart currently models plain text and inline data parts.
-// Non-text parts such as tool invocations (FunctionCall and FunctionResponse)
-// stored in session.jsonl are omitted during conversion in v1. This lossy
-// conversion is accepted for v1; this protobuf interface is canonical going forward
-// and richer part schemas may be introduced in a future revision.
+// NOTE(D112 v1): In v1, SessionPart models plain text and inline data parts. Non-text parts
+// such as tool invocations (FunctionCall and FunctionResponse) stored in session.jsonl are
+// omitted during conversion. This lossy conversion is accepted for v1; this protobuf interface
+// is canonical going forward, and richer part schemas may be introduced in a future revision.
 type SessionPart struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Text          string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
-	InlineData    []byte                 `protobuf:"bytes,2,opt,name=inline_data,json=inlineData,proto3" json:"inline_data,omitempty"`
-	MimeType      string                 `protobuf:"bytes,3,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// text contains the plain text content of this part, if applicable.
+	Text string `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
+	// inline_data contains raw binary data for media attachments (e.g. image payloads).
+	InlineData []byte `protobuf:"bytes,2,opt,name=inline_data,json=inlineData,proto3" json:"inline_data,omitempty"`
+	// mime_type specifies the MIME media type of inline_data (e.g. "image/png").
+	MimeType      string `protobuf:"bytes,3,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SessionPart) Reset() {
 	*x = SessionPart{}
-	mi := &file_agent_proto_msgTypes[8]
+	mi := &file_agent_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -676,7 +600,7 @@ func (x *SessionPart) String() string {
 func (*SessionPart) ProtoMessage() {}
 
 func (x *SessionPart) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[8]
+	mi := &file_agent_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -689,7 +613,7 @@ func (x *SessionPart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionPart.ProtoReflect.Descriptor instead.
 func (*SessionPart) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{8}
+	return file_agent_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SessionPart) GetText() string {
@@ -713,18 +637,21 @@ func (x *SessionPart) GetMimeType() string {
 	return ""
 }
 
-// ReadMemoryRequest specifies parameters for reading an agent's memory.
+// ReadMemoryRequest specifies parameters for reading an agent's long-term memory.
 type ReadMemoryRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AgentId       string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	WorkspaceDir  string                 `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose MEMORY.md should be read. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReadMemoryRequest) Reset() {
 	*x = ReadMemoryRequest{}
-	mi := &file_agent_proto_msgTypes[9]
+	mi := &file_agent_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -736,7 +663,7 @@ func (x *ReadMemoryRequest) String() string {
 func (*ReadMemoryRequest) ProtoMessage() {}
 
 func (x *ReadMemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[9]
+	mi := &file_agent_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -749,7 +676,7 @@ func (x *ReadMemoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadMemoryRequest.ProtoReflect.Descriptor instead.
 func (*ReadMemoryRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{9}
+	return file_agent_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ReadMemoryRequest) GetAgentId() string {
@@ -766,17 +693,19 @@ func (x *ReadMemoryRequest) GetWorkspaceDir() string {
 	return ""
 }
 
-// ReadMemoryResponse contains the memory markdown content.
+// ReadMemoryResponse returns the contents of MEMORY.md.
 type ReadMemoryResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	MemoryMd      string                 `protobuf:"bytes,1,opt,name=memory_md,json=memoryMd,proto3" json:"memory_md,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// memory_md contains the raw markdown text stored in <workspace_dir>/<agent_id>/MEMORY.md.
+	// Empty if the file does not exist.
+	MemoryMd      string `protobuf:"bytes,1,opt,name=memory_md,json=memoryMd,proto3" json:"memory_md,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReadMemoryResponse) Reset() {
 	*x = ReadMemoryResponse{}
-	mi := &file_agent_proto_msgTypes[10]
+	mi := &file_agent_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -788,7 +717,7 @@ func (x *ReadMemoryResponse) String() string {
 func (*ReadMemoryResponse) ProtoMessage() {}
 
 func (x *ReadMemoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[10]
+	mi := &file_agent_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -801,7 +730,7 @@ func (x *ReadMemoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadMemoryResponse.ProtoReflect.Descriptor instead.
 func (*ReadMemoryResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{10}
+	return file_agent_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ReadMemoryResponse) GetMemoryMd() string {
@@ -811,18 +740,21 @@ func (x *ReadMemoryResponse) GetMemoryMd() string {
 	return ""
 }
 
-// RenderSystemPromptRequest specifies parameters for rendering an agent's prompt.
+// RenderSystemPromptRequest specifies parameters for rendering an agent's system prompt.
 type RenderSystemPromptRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AgentId       string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	WorkspaceDir  string                 `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose system prompt should be rendered. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RenderSystemPromptRequest) Reset() {
 	*x = RenderSystemPromptRequest{}
-	mi := &file_agent_proto_msgTypes[11]
+	mi := &file_agent_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -834,7 +766,7 @@ func (x *RenderSystemPromptRequest) String() string {
 func (*RenderSystemPromptRequest) ProtoMessage() {}
 
 func (x *RenderSystemPromptRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[11]
+	mi := &file_agent_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -847,7 +779,7 @@ func (x *RenderSystemPromptRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenderSystemPromptRequest.ProtoReflect.Descriptor instead.
 func (*RenderSystemPromptRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{11}
+	return file_agent_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *RenderSystemPromptRequest) GetAgentId() string {
@@ -864,17 +796,18 @@ func (x *RenderSystemPromptRequest) GetWorkspaceDir() string {
 	return ""
 }
 
-// RenderSystemPromptResponse contains the rendered prompt string.
+// RenderSystemPromptResponse returns the rendered system prompt.
 type RenderSystemPromptResponse struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	RenderedPrompt string                 `protobuf:"bytes,1,opt,name=rendered_prompt,json=renderedPrompt,proto3" json:"rendered_prompt,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// rendered_prompt contains the prompt from AGENTS.md after expanding all @<FILE_PATH> macros.
+	RenderedPrompt string `protobuf:"bytes,1,opt,name=rendered_prompt,json=renderedPrompt,proto3" json:"rendered_prompt,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
 
 func (x *RenderSystemPromptResponse) Reset() {
 	*x = RenderSystemPromptResponse{}
-	mi := &file_agent_proto_msgTypes[12]
+	mi := &file_agent_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -886,7 +819,7 @@ func (x *RenderSystemPromptResponse) String() string {
 func (*RenderSystemPromptResponse) ProtoMessage() {}
 
 func (x *RenderSystemPromptResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[12]
+	mi := &file_agent_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -899,7 +832,7 @@ func (x *RenderSystemPromptResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenderSystemPromptResponse.ProtoReflect.Descriptor instead.
 func (*RenderSystemPromptResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{12}
+	return file_agent_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *RenderSystemPromptResponse) GetRenderedPrompt() string {
@@ -909,18 +842,21 @@ func (x *RenderSystemPromptResponse) GetRenderedPrompt() string {
 	return ""
 }
 
-// InspectSessionContextRequest specifies parameters for inspecting session context.
+// InspectSessionContextRequest specifies parameters for inspecting session token usage and headroom.
 type InspectSessionContextRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AgentId       string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	WorkspaceDir  string                 `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose session context should be analyzed. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *InspectSessionContextRequest) Reset() {
 	*x = InspectSessionContextRequest{}
-	mi := &file_agent_proto_msgTypes[13]
+	mi := &file_agent_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -932,7 +868,7 @@ func (x *InspectSessionContextRequest) String() string {
 func (*InspectSessionContextRequest) ProtoMessage() {}
 
 func (x *InspectSessionContextRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[13]
+	mi := &file_agent_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -945,7 +881,7 @@ func (x *InspectSessionContextRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectSessionContextRequest.ProtoReflect.Descriptor instead.
 func (*InspectSessionContextRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{13}
+	return file_agent_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *InspectSessionContextRequest) GetAgentId() string {
@@ -962,32 +898,48 @@ func (x *InspectSessionContextRequest) GetWorkspaceDir() string {
 	return ""
 }
 
-// InspectSessionContextResponse contains context window and token usage estimates.
+// InspectSessionContextResponse reports token estimation metrics, compaction limits, and headroom.
 type InspectSessionContextResponse struct {
-	state                 protoimpl.MessageState `protogen:"open.v1"`
-	AgentId               string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	Model                 string                 `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
-	ContextWindow         int32                  `protobuf:"varint,3,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`
-	CompactionThreshold   int32                  `protobuf:"varint,4,opt,name=compaction_threshold,json=compactionThreshold,proto3" json:"compaction_threshold,omitempty"`
-	CompactionOverheadPct float64                `protobuf:"fixed64,5,opt,name=compaction_overhead_pct,json=compactionOverheadPct,proto3" json:"compaction_overhead_pct,omitempty"`
-	EstimatedTotalTokens  int32                  `protobuf:"varint,6,opt,name=estimated_total_tokens,json=estimatedTotalTokens,proto3" json:"estimated_total_tokens,omitempty"`
-	SessionTurnsTokens    int32                  `protobuf:"varint,7,opt,name=session_turns_tokens,json=sessionTurnsTokens,proto3" json:"session_turns_tokens,omitempty"`
-	PromptTokensEstimate  int32                  `protobuf:"varint,8,opt,name=prompt_tokens_estimate,json=promptTokensEstimate,proto3" json:"prompt_tokens_estimate,omitempty"`
-	MemoryTokensEstimate  int32                  `protobuf:"varint,9,opt,name=memory_tokens_estimate,json=memoryTokensEstimate,proto3" json:"memory_tokens_estimate,omitempty"`
-	PercentToThreshold    float64                `protobuf:"fixed64,10,opt,name=percent_to_threshold,json=percentToThreshold,proto3" json:"percent_to_threshold,omitempty"`
-	PercentToWindow       float64                `protobuf:"fixed64,11,opt,name=percent_to_window,json=percentToWindow,proto3" json:"percent_to_window,omitempty"`
-	TurnCount             int32                  `protobuf:"varint,12,opt,name=turn_count,json=turnCount,proto3" json:"turn_count,omitempty"`
-	Compacted             bool                   `protobuf:"varint,13,opt,name=compacted,proto3" json:"compacted,omitempty"`
-	LastPromptTokens      int32                  `protobuf:"varint,14,opt,name=last_prompt_tokens,json=lastPromptTokens,proto3" json:"last_prompt_tokens,omitempty"`
-	LastCandidatesTokens  int32                  `protobuf:"varint,15,opt,name=last_candidates_tokens,json=lastCandidatesTokens,proto3" json:"last_candidates_tokens,omitempty"`
-	LastTotalTokens       int32                  `protobuf:"varint,16,opt,name=last_total_tokens,json=lastTotalTokens,proto3" json:"last_total_tokens,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id is the identifier of the analyzed agent.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// model is the LLM model identifier configured in runtime.json (e.g. "gemini-2.5-flash").
+	Model string `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
+	// context_window is the total maximum token capacity configured for the model.
+	ContextWindow int32 `protobuf:"varint,3,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`
+	// compaction_threshold is the calculated token count that triggers automatic session compaction.
+	CompactionThreshold int32 `protobuf:"varint,4,opt,name=compaction_threshold,json=compactionThreshold,proto3" json:"compaction_threshold,omitempty"`
+	// compaction_overhead_pct is the safety buffer percentage reserved before context limit (e.g. 20.0).
+	CompactionOverheadPct float64 `protobuf:"fixed64,5,opt,name=compaction_overhead_pct,json=compactionOverheadPct,proto3" json:"compaction_overhead_pct,omitempty"`
+	// estimated_total_tokens is the sum of estimated session turns and prompt tokens.
+	EstimatedTotalTokens int32 `protobuf:"varint,6,opt,name=estimated_total_tokens,json=estimatedTotalTokens,proto3" json:"estimated_total_tokens,omitempty"`
+	// session_turns_tokens is the estimated token count consumed by turns in session.jsonl.
+	SessionTurnsTokens int32 `protobuf:"varint,7,opt,name=session_turns_tokens,json=sessionTurnsTokens,proto3" json:"session_turns_tokens,omitempty"`
+	// prompt_tokens_estimate is the estimated token count of the rendered system prompt.
+	PromptTokensEstimate int32 `protobuf:"varint,8,opt,name=prompt_tokens_estimate,json=promptTokensEstimate,proto3" json:"prompt_tokens_estimate,omitempty"`
+	// memory_tokens_estimate is the estimated token count of MEMORY.md content.
+	MemoryTokensEstimate int32 `protobuf:"varint,9,opt,name=memory_tokens_estimate,json=memoryTokensEstimate,proto3" json:"memory_tokens_estimate,omitempty"`
+	// percent_to_threshold is the percentage of the compaction threshold utilized (0.0 to 100.0+).
+	PercentToThreshold float64 `protobuf:"fixed64,10,opt,name=percent_to_threshold,json=percentToThreshold,proto3" json:"percent_to_threshold,omitempty"`
+	// percent_to_window is the percentage of the full context window utilized (0.0 to 100.0+).
+	PercentToWindow float64 `protobuf:"fixed64,11,opt,name=percent_to_window,json=percentToWindow,proto3" json:"percent_to_window,omitempty"`
+	// turn_count is the total number of turns parsed from session.jsonl.
+	TurnCount int32 `protobuf:"varint,12,opt,name=turn_count,json=turnCount,proto3" json:"turn_count,omitempty"`
+	// compacted indicates whether the last generation turn resulted in session compaction.
+	Compacted bool `protobuf:"varint,13,opt,name=compacted,proto3" json:"compacted,omitempty"`
+	// last_prompt_tokens is the provider-reported input prompt tokens from the last non-compacted turn.
+	LastPromptTokens int32 `protobuf:"varint,14,opt,name=last_prompt_tokens,json=lastPromptTokens,proto3" json:"last_prompt_tokens,omitempty"`
+	// last_candidates_tokens is the provider-reported output tokens from the last non-compacted turn.
+	LastCandidatesTokens int32 `protobuf:"varint,15,opt,name=last_candidates_tokens,json=lastCandidatesTokens,proto3" json:"last_candidates_tokens,omitempty"`
+	// last_total_tokens is the provider-reported total tokens from the last non-compacted turn.
+	LastTotalTokens int32 `protobuf:"varint,16,opt,name=last_total_tokens,json=lastTotalTokens,proto3" json:"last_total_tokens,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *InspectSessionContextResponse) Reset() {
 	*x = InspectSessionContextResponse{}
-	mi := &file_agent_proto_msgTypes[14]
+	mi := &file_agent_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -999,7 +951,7 @@ func (x *InspectSessionContextResponse) String() string {
 func (*InspectSessionContextResponse) ProtoMessage() {}
 
 func (x *InspectSessionContextResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[14]
+	mi := &file_agent_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1012,7 +964,7 @@ func (x *InspectSessionContextResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectSessionContextResponse.ProtoReflect.Descriptor instead.
 func (*InspectSessionContextResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{14}
+	return file_agent_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *InspectSessionContextResponse) GetAgentId() string {
@@ -1127,17 +1079,19 @@ func (x *InspectSessionContextResponse) GetLastTotalTokens() int32 {
 	return 0
 }
 
-// InspectAgentLocksRequest specifies parameters for inspecting workspace agent locks.
+// InspectAgentLocksRequest specifies parameters for inspecting workspace agent session locks.
 type InspectAgentLocksRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	WorkspaceDir  string                 `protobuf:"bytes,1,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// workspace_dir is the filesystem path to the workspace root to inspect.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,1,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *InspectAgentLocksRequest) Reset() {
 	*x = InspectAgentLocksRequest{}
-	mi := &file_agent_proto_msgTypes[15]
+	mi := &file_agent_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1149,7 +1103,7 @@ func (x *InspectAgentLocksRequest) String() string {
 func (*InspectAgentLocksRequest) ProtoMessage() {}
 
 func (x *InspectAgentLocksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[15]
+	mi := &file_agent_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1162,7 +1116,7 @@ func (x *InspectAgentLocksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectAgentLocksRequest.ProtoReflect.Descriptor instead.
 func (*InspectAgentLocksRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{15}
+	return file_agent_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *InspectAgentLocksRequest) GetWorkspaceDir() string {
@@ -1172,9 +1126,10 @@ func (x *InspectAgentLocksRequest) GetWorkspaceDir() string {
 	return ""
 }
 
-// InspectAgentLocksResponse contains lock observations for agents in the workspace.
+// InspectAgentLocksResponse contains session lock observations for all agents in the workspace.
 type InspectAgentLocksResponse struct {
-	state         protoimpl.MessageState  `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// observations contains one lock observation per discovered agent directory in the workspace.
 	Observations  []*AgentLockObservation `protobuf:"bytes,1,rep,name=observations,proto3" json:"observations,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1182,7 +1137,7 @@ type InspectAgentLocksResponse struct {
 
 func (x *InspectAgentLocksResponse) Reset() {
 	*x = InspectAgentLocksResponse{}
-	mi := &file_agent_proto_msgTypes[16]
+	mi := &file_agent_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1194,7 +1149,7 @@ func (x *InspectAgentLocksResponse) String() string {
 func (*InspectAgentLocksResponse) ProtoMessage() {}
 
 func (x *InspectAgentLocksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[16]
+	mi := &file_agent_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1207,7 +1162,7 @@ func (x *InspectAgentLocksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectAgentLocksResponse.ProtoReflect.Descriptor instead.
 func (*InspectAgentLocksResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{16}
+	return file_agent_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *InspectAgentLocksResponse) GetObservations() []*AgentLockObservation {
@@ -1217,26 +1172,37 @@ func (x *InspectAgentLocksResponse) GetObservations() []*AgentLockObservation {
 	return nil
 }
 
-// AgentLockObservation captures session lock status and activity for an agent.
+// AgentLockObservation captures a read-only snapshot of an agent directory's session lock and activity.
 type AgentLockObservation struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	AgentId        string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	AgentDir       string                 `protobuf:"bytes,2,opt,name=agent_dir,json=agentDir,proto3" json:"agent_dir,omitempty"`
-	LockExists     bool                   `protobuf:"varint,3,opt,name=lock_exists,json=lockExists,proto3" json:"lock_exists,omitempty"`
-	HolderPid      int32                  `protobuf:"varint,4,opt,name=holder_pid,json=holderPid,proto3" json:"holder_pid,omitempty"`
-	HolderPidValid bool                   `protobuf:"varint,5,opt,name=holder_pid_valid,json=holderPidValid,proto3" json:"holder_pid_valid,omitempty"`
-	HolderAlive    bool                   `protobuf:"varint,6,opt,name=holder_alive,json=holderAlive,proto3" json:"holder_alive,omitempty"`
-	HolderCommand  string                 `protobuf:"bytes,7,opt,name=holder_command,json=holderCommand,proto3" json:"holder_command,omitempty"`
-	LockHeldSince  *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=lock_held_since,json=lockHeldSince,proto3" json:"lock_held_since,omitempty"`
-	SessionExists  bool                   `protobuf:"varint,9,opt,name=session_exists,json=sessionExists,proto3" json:"session_exists,omitempty"`
-	LastWrite      *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=last_write,json=lastWrite,proto3" json:"last_write,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id is the identifier of the agent.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// agent_dir is the filesystem path to the agent directory.
+	AgentDir string `protobuf:"bytes,2,opt,name=agent_dir,json=agentDir,proto3" json:"agent_dir,omitempty"`
+	// lock_exists indicates whether <agent_dir>/session.lock is present on disk.
+	// Note: lock files are not deleted on release, so presence does not imply the lock is currently held.
+	LockExists bool `protobuf:"varint,3,opt,name=lock_exists,json=lockExists,proto3" json:"lock_exists,omitempty"`
+	// holder_pid is the process ID recorded in the lock file by the last acquiring process, or 0 if absent/unparseable.
+	HolderPid int32 `protobuf:"varint,4,opt,name=holder_pid,json=holderPid,proto3" json:"holder_pid,omitempty"`
+	// holder_pid_valid indicates whether holder_pid was successfully parsed from the lock file.
+	HolderPidValid bool `protobuf:"varint,5,opt,name=holder_pid_valid,json=holderPidValid,proto3" json:"holder_pid_valid,omitempty"`
+	// holder_alive indicates whether the process identified by holder_pid is currently running.
+	HolderAlive bool `protobuf:"varint,6,opt,name=holder_alive,json=holderAlive,proto3" json:"holder_alive,omitempty"`
+	// holder_command contains the sanitized command line of the process holding the lock (credentials redacted).
+	HolderCommand string `protobuf:"bytes,7,opt,name=holder_command,json=holderCommand,proto3" json:"holder_command,omitempty"`
+	// lock_held_since is the modification timestamp of session.lock, reflecting when the holder acquired the lock.
+	LockHeldSince *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=lock_held_since,json=lockHeldSince,proto3" json:"lock_held_since,omitempty"`
+	// session_exists indicates whether <agent_dir>/session.jsonl is present on disk.
+	SessionExists bool `protobuf:"varint,9,opt,name=session_exists,json=sessionExists,proto3" json:"session_exists,omitempty"`
+	// last_write is the modification timestamp of session.jsonl, reflecting the most recent session activity.
+	LastWrite     *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=last_write,json=lastWrite,proto3" json:"last_write,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AgentLockObservation) Reset() {
 	*x = AgentLockObservation{}
-	mi := &file_agent_proto_msgTypes[17]
+	mi := &file_agent_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1248,7 +1214,7 @@ func (x *AgentLockObservation) String() string {
 func (*AgentLockObservation) ProtoMessage() {}
 
 func (x *AgentLockObservation) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[17]
+	mi := &file_agent_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1261,7 +1227,7 @@ func (x *AgentLockObservation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentLockObservation.ProtoReflect.Descriptor instead.
 func (*AgentLockObservation) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{17}
+	return file_agent_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *AgentLockObservation) GetAgentId() string {
@@ -1345,7 +1311,7 @@ const file_agent_proto_rawDesc = "" +
 	"\tagent_ids\x18\x01 \x03(\tR\bagentIds\"U\n" +
 	"\x13InspectAgentRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
-	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\"\xa4\b\n" +
+	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\"\xec\a\n" +
 	"\x14InspectAgentResponse\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x1b\n" +
 	"\tagent_dir\x18\x02 \x01(\tR\bagentDir\x12(\n" +
@@ -1358,8 +1324,7 @@ const file_agent_proto_rawDesc = "" +
 	"\x15runtime_json_resolved\x18\t \x01(\tR\x13runtimeJsonResolved\x12,\n" +
 	"\x12runtime_json_valid\x18\n" +
 	" \x01(\bR\x10runtimeJsonValid\x12,\n" +
-	"\x12runtime_json_error\x18\v \x01(\tR\x10runtimeJsonError\x12L\n" +
-	"\x0eruntime_config\x18\f \x01(\v2%.wackypub.agent.v1.AgentRuntimeConfigR\rruntimeConfig\x120\n" +
+	"\x12runtime_json_error\x18\v \x01(\tR\x10runtimeJsonError\x120\n" +
 	"\x14session_jsonl_exists\x18\r \x01(\bR\x12sessionJsonlExists\x12,\n" +
 	"\x12session_turn_count\x18\x0e \x01(\x05R\x10sessionTurnCount\x122\n" +
 	"\x15session_corrupt_lines\x18\x0f \x01(\x05R\x13sessionCorruptLines\x122\n" +
@@ -1370,18 +1335,7 @@ const file_agent_proto_rawDesc = "" +
 	"\x0eshadowed_tools\x18\x14 \x03(\tR\rshadowedTools\x12*\n" +
 	"\x11skills_dir_exists\x18\x15 \x01(\bR\x0fskillsDirExists\x12+\n" +
 	"\x11discovered_skills\x18\x16 \x03(\tR\x10discoveredSkills\x12'\n" +
-	"\x0fshadowed_skills\x18\x17 \x03(\tR\x0eshadowedSkills\"\xb2\x03\n" +
-	"\x12AgentRuntimeConfig\x12\x1a\n" +
-	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x1a\n" +
-	"\bendpoint\x18\x02 \x01(\tR\bendpoint\x12\x14\n" +
-	"\x05model\x18\x03 \x01(\tR\x05model\x12\x17\n" +
-	"\aapi_key\x18\x04 \x01(\tR\x06apiKey\x12%\n" +
-	"\x0econtext_window\x18\x05 \x01(\x05R\rcontextWindow\x12'\n" +
-	"\x0ftimeout_seconds\x18\x06 \x01(\x05R\x0etimeoutSeconds\x12L\n" +
-	" anthropic_thinking_budget_tokens\x18\a \x01(\x05H\x00R\x1danthropicThinkingBudgetTokens\x88\x01\x01\x12:\n" +
-	"\x19anthropic_thinking_effort\x18\b \x01(\tR\x17anthropicThinkingEffort\x126\n" +
-	"\x17anthropic_thinking_mode\x18\t \x01(\tR\x15anthropicThinkingModeB#\n" +
-	"!_anthropic_thinking_budget_tokens\"T\n" +
+	"\x0fshadowed_skills\x18\x17 \x03(\tR\x0eshadowedSkillsJ\x04\b\f\x10\rR\x0eruntime_config\"T\n" +
 	"\x12ReadSessionRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
 	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\"K\n" +
@@ -1469,54 +1423,52 @@ func file_agent_proto_rawDescGZIP() []byte {
 	return file_agent_proto_rawDescData
 }
 
-var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_agent_proto_goTypes = []any{
 	(*ListAgentsRequest)(nil),             // 0: wackypub.agent.v1.ListAgentsRequest
 	(*ListAgentsResponse)(nil),            // 1: wackypub.agent.v1.ListAgentsResponse
 	(*InspectAgentRequest)(nil),           // 2: wackypub.agent.v1.InspectAgentRequest
 	(*InspectAgentResponse)(nil),          // 3: wackypub.agent.v1.InspectAgentResponse
-	(*AgentRuntimeConfig)(nil),            // 4: wackypub.agent.v1.AgentRuntimeConfig
-	(*ReadSessionRequest)(nil),            // 5: wackypub.agent.v1.ReadSessionRequest
-	(*ReadSessionResponse)(nil),           // 6: wackypub.agent.v1.ReadSessionResponse
-	(*SessionTurn)(nil),                   // 7: wackypub.agent.v1.SessionTurn
-	(*SessionPart)(nil),                   // 8: wackypub.agent.v1.SessionPart
-	(*ReadMemoryRequest)(nil),             // 9: wackypub.agent.v1.ReadMemoryRequest
-	(*ReadMemoryResponse)(nil),            // 10: wackypub.agent.v1.ReadMemoryResponse
-	(*RenderSystemPromptRequest)(nil),     // 11: wackypub.agent.v1.RenderSystemPromptRequest
-	(*RenderSystemPromptResponse)(nil),    // 12: wackypub.agent.v1.RenderSystemPromptResponse
-	(*InspectSessionContextRequest)(nil),  // 13: wackypub.agent.v1.InspectSessionContextRequest
-	(*InspectSessionContextResponse)(nil), // 14: wackypub.agent.v1.InspectSessionContextResponse
-	(*InspectAgentLocksRequest)(nil),      // 15: wackypub.agent.v1.InspectAgentLocksRequest
-	(*InspectAgentLocksResponse)(nil),     // 16: wackypub.agent.v1.InspectAgentLocksResponse
-	(*AgentLockObservation)(nil),          // 17: wackypub.agent.v1.AgentLockObservation
-	(*timestamppb.Timestamp)(nil),         // 18: google.protobuf.Timestamp
+	(*ReadSessionRequest)(nil),            // 4: wackypub.agent.v1.ReadSessionRequest
+	(*ReadSessionResponse)(nil),           // 5: wackypub.agent.v1.ReadSessionResponse
+	(*SessionTurn)(nil),                   // 6: wackypub.agent.v1.SessionTurn
+	(*SessionPart)(nil),                   // 7: wackypub.agent.v1.SessionPart
+	(*ReadMemoryRequest)(nil),             // 8: wackypub.agent.v1.ReadMemoryRequest
+	(*ReadMemoryResponse)(nil),            // 9: wackypub.agent.v1.ReadMemoryResponse
+	(*RenderSystemPromptRequest)(nil),     // 10: wackypub.agent.v1.RenderSystemPromptRequest
+	(*RenderSystemPromptResponse)(nil),    // 11: wackypub.agent.v1.RenderSystemPromptResponse
+	(*InspectSessionContextRequest)(nil),  // 12: wackypub.agent.v1.InspectSessionContextRequest
+	(*InspectSessionContextResponse)(nil), // 13: wackypub.agent.v1.InspectSessionContextResponse
+	(*InspectAgentLocksRequest)(nil),      // 14: wackypub.agent.v1.InspectAgentLocksRequest
+	(*InspectAgentLocksResponse)(nil),     // 15: wackypub.agent.v1.InspectAgentLocksResponse
+	(*AgentLockObservation)(nil),          // 16: wackypub.agent.v1.AgentLockObservation
+	(*timestamppb.Timestamp)(nil),         // 17: google.protobuf.Timestamp
 }
 var file_agent_proto_depIdxs = []int32{
-	4,  // 0: wackypub.agent.v1.InspectAgentResponse.runtime_config:type_name -> wackypub.agent.v1.AgentRuntimeConfig
-	7,  // 1: wackypub.agent.v1.ReadSessionResponse.turns:type_name -> wackypub.agent.v1.SessionTurn
-	8,  // 2: wackypub.agent.v1.SessionTurn.parts:type_name -> wackypub.agent.v1.SessionPart
-	17, // 3: wackypub.agent.v1.InspectAgentLocksResponse.observations:type_name -> wackypub.agent.v1.AgentLockObservation
-	18, // 4: wackypub.agent.v1.AgentLockObservation.lock_held_since:type_name -> google.protobuf.Timestamp
-	18, // 5: wackypub.agent.v1.AgentLockObservation.last_write:type_name -> google.protobuf.Timestamp
-	0,  // 6: wackypub.agent.v1.AgentService.ListAgents:input_type -> wackypub.agent.v1.ListAgentsRequest
-	2,  // 7: wackypub.agent.v1.AgentService.InspectAgent:input_type -> wackypub.agent.v1.InspectAgentRequest
-	5,  // 8: wackypub.agent.v1.AgentService.ReadSession:input_type -> wackypub.agent.v1.ReadSessionRequest
-	9,  // 9: wackypub.agent.v1.AgentService.ReadMemory:input_type -> wackypub.agent.v1.ReadMemoryRequest
-	11, // 10: wackypub.agent.v1.AgentService.RenderSystemPrompt:input_type -> wackypub.agent.v1.RenderSystemPromptRequest
-	13, // 11: wackypub.agent.v1.AgentService.InspectSessionContext:input_type -> wackypub.agent.v1.InspectSessionContextRequest
-	15, // 12: wackypub.agent.v1.AgentService.InspectAgentLocks:input_type -> wackypub.agent.v1.InspectAgentLocksRequest
-	1,  // 13: wackypub.agent.v1.AgentService.ListAgents:output_type -> wackypub.agent.v1.ListAgentsResponse
-	3,  // 14: wackypub.agent.v1.AgentService.InspectAgent:output_type -> wackypub.agent.v1.InspectAgentResponse
-	6,  // 15: wackypub.agent.v1.AgentService.ReadSession:output_type -> wackypub.agent.v1.ReadSessionResponse
-	10, // 16: wackypub.agent.v1.AgentService.ReadMemory:output_type -> wackypub.agent.v1.ReadMemoryResponse
-	12, // 17: wackypub.agent.v1.AgentService.RenderSystemPrompt:output_type -> wackypub.agent.v1.RenderSystemPromptResponse
-	14, // 18: wackypub.agent.v1.AgentService.InspectSessionContext:output_type -> wackypub.agent.v1.InspectSessionContextResponse
-	16, // 19: wackypub.agent.v1.AgentService.InspectAgentLocks:output_type -> wackypub.agent.v1.InspectAgentLocksResponse
-	13, // [13:20] is the sub-list for method output_type
-	6,  // [6:13] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	6,  // 0: wackypub.agent.v1.ReadSessionResponse.turns:type_name -> wackypub.agent.v1.SessionTurn
+	7,  // 1: wackypub.agent.v1.SessionTurn.parts:type_name -> wackypub.agent.v1.SessionPart
+	16, // 2: wackypub.agent.v1.InspectAgentLocksResponse.observations:type_name -> wackypub.agent.v1.AgentLockObservation
+	17, // 3: wackypub.agent.v1.AgentLockObservation.lock_held_since:type_name -> google.protobuf.Timestamp
+	17, // 4: wackypub.agent.v1.AgentLockObservation.last_write:type_name -> google.protobuf.Timestamp
+	0,  // 5: wackypub.agent.v1.AgentService.ListAgents:input_type -> wackypub.agent.v1.ListAgentsRequest
+	2,  // 6: wackypub.agent.v1.AgentService.InspectAgent:input_type -> wackypub.agent.v1.InspectAgentRequest
+	4,  // 7: wackypub.agent.v1.AgentService.ReadSession:input_type -> wackypub.agent.v1.ReadSessionRequest
+	8,  // 8: wackypub.agent.v1.AgentService.ReadMemory:input_type -> wackypub.agent.v1.ReadMemoryRequest
+	10, // 9: wackypub.agent.v1.AgentService.RenderSystemPrompt:input_type -> wackypub.agent.v1.RenderSystemPromptRequest
+	12, // 10: wackypub.agent.v1.AgentService.InspectSessionContext:input_type -> wackypub.agent.v1.InspectSessionContextRequest
+	14, // 11: wackypub.agent.v1.AgentService.InspectAgentLocks:input_type -> wackypub.agent.v1.InspectAgentLocksRequest
+	1,  // 12: wackypub.agent.v1.AgentService.ListAgents:output_type -> wackypub.agent.v1.ListAgentsResponse
+	3,  // 13: wackypub.agent.v1.AgentService.InspectAgent:output_type -> wackypub.agent.v1.InspectAgentResponse
+	5,  // 14: wackypub.agent.v1.AgentService.ReadSession:output_type -> wackypub.agent.v1.ReadSessionResponse
+	9,  // 15: wackypub.agent.v1.AgentService.ReadMemory:output_type -> wackypub.agent.v1.ReadMemoryResponse
+	11, // 16: wackypub.agent.v1.AgentService.RenderSystemPrompt:output_type -> wackypub.agent.v1.RenderSystemPromptResponse
+	13, // 17: wackypub.agent.v1.AgentService.InspectSessionContext:output_type -> wackypub.agent.v1.InspectSessionContextResponse
+	15, // 18: wackypub.agent.v1.AgentService.InspectAgentLocks:output_type -> wackypub.agent.v1.InspectAgentLocksResponse
+	12, // [12:19] is the sub-list for method output_type
+	5,  // [5:12] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_agent_proto_init() }
@@ -1524,14 +1476,13 @@ func file_agent_proto_init() {
 	if File_agent_proto != nil {
 		return
 	}
-	file_agent_proto_msgTypes[4].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   18,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
