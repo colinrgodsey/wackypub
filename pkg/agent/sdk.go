@@ -915,3 +915,10 @@ func (s *AgentSDK) InspectSessionContextLegacy(agentID string) (*SessionContextR
 
 	return report, nil
 }
+
+// InspectAgentLocks satisfies agentv1.AgentServiceServer (D112).
+// Delegated to UnimplementedAgentServiceServer until its Phase 1 migration.
+func (s *AgentSDK) InspectAgentLocks(ctx context.Context, req *agentv1.InspectAgentLocksRequest) (*agentv1.InspectAgentLocksResponse, error) {
+	return s.UnimplementedAgentServiceServer.InspectAgentLocks(ctx, req)
+}
+
