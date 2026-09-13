@@ -43,9 +43,12 @@ func newSDK(wsDir string) *adkAgent.AgentSDK {
 func generateTurnStreamProto(sdk *adkAgent.AgentSDK, ctx context.Context, agentID string) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		stream := adkAgent.NewInProcessStream[agentv1.GenerateTurnStreamResponse](ctx, 16)
-		defer stream.Close()
 		errCh := make(chan error, 1)
 		go func() {
+			// The producer owns Close: the consumer's range over Chunks() only terminates
+			// when this closes the channel. Deferring Close in the ranging closure (as in the
+			// original) deadlocks - the loop waits on a channel nobody ever closes.
+			defer stream.Close()
 			errCh <- sdk.GenerateTurnStream(&agentv1.GenerateTurnStreamRequest{AgentId: agentID}, stream)
 		}()
 		for chunk := range stream.Chunks() {
@@ -59,15 +62,13 @@ func generateTurnStreamProto(sdk *adkAgent.AgentSDK, ctx context.Context, agentI
 	}
 }
 
-// addAndGenerateTurnStreamProto drives the D112 Phase 2 streaming RPC that appends a user
-// message and streams the assistant response. Warning-bearing stream responses are routed to
-// onWarning (if provided) instead of the text loop; text chunks are yielded as they arrive.
 func addAndGenerateTurnStreamProto(sdk *adkAgent.AgentSDK, ctx context.Context, agentID, userMsg string, onWarning func(string)) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		stream := adkAgent.NewInProcessStream[agentv1.AddAndGenerateTurnStreamResponse](ctx, 16)
-		defer stream.Close()
 		errCh := make(chan error, 1)
 		go func() {
+			// Producer owns Close, same deadlock rationale as generateTurnStreamProto.
+			defer stream.Close()
 			errCh <- sdk.AddAndGenerateTurnStream(&agentv1.AddAndGenerateTurnStreamRequest{
 				AgentId:     agentID,
 				UserMessage: userMsg,
