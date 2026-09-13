@@ -33,22 +33,73 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
 // AgentService defines the interface of record for WackyPub agent operations (D112).
-// In v1, this service is invoked in-process via generated Go interfaces; no network transport
-// or gRPC server is required.
+//
+// In v1, this interface is consumed strictly in-process through generated Go types
+// and interfaces; no network transport (gRPC/HTTP), network listener, or remote daemon
+// is deployed or required. The protobuf definition serves as the canonical contract
+// defining operation semantics, data models, and migration boundaries for the WackyPub
+// agent lifecycle.
+//
+// D112 establishes a unified 26-method service interface replacing the legacy monolithic
+// AgentSDK methods across five staged rollout phases:
+//   - Phase 1 (current): Read-only workspace queries and state inspection (7 methods:
+//     ListAgents, InspectAgent, ReadSession, ReadMemory, RenderSystemPrompt,
+//     InspectSessionContext, InspectAgentLocks).
+//   - Phase 2: Mutation and session operations (e.g., prompt, generate, compact), including
+//     streaming methods (Phase 2 canary).
+//   - Phase 3: Scratchpad, attachments, and tool discovery operations.
+//   - Phase 4: Side-effectful / background operations (e.g. git commit hooks, compaction runner path).
+//   - Phase 5: Complete cutover and deprecation/removal of legacy SDK entry points.
+//
+// Design Decisions:
+//   - Q1: Go code generation produces interface stubs (AgentServiceServer) embedded directly
+//     into AgentSDK without network overhead.
+//   - Q2: Protobuf service definitions are the sole source of truth for method signatures
+//     and wire structures, replacing ad-hoc Go structs.
+//   - Q5: Staged migration permits progressive implementation and contract testing while
+//     keeping existing CLI workflows fully backward-compatible.
 type AgentServiceClient interface {
-	// ListAgents returns the IDs of agent directories found directly under the workspace directory.
+	// ListAgents discovers and returns the identifiers of all agent directories present
+	// directly under the specified workspace root. An agent directory is recognized if it
+	// contains the marker file (AGENTS.md). Callers invoke this method during workspace
+	// discovery, multi-agent orchestration, or status reporting. If the workspace directory
+	// does not exist or contains no valid agent directories, an empty list is returned without error.
 	ListAgents(ctx context.Context, in *ListAgentsRequest, opts ...grpc.CallOption) (*ListAgentsResponse, error)
-	// InspectAgent reports the on-disk state of <ws_dir>/<agent_id>.
+	// InspectAgent performs an extensive diagnostic audit of an agent directory's filesystem state.
+	// Callers invoke this method to determine configuration completeness, file presence, allowlists,
+	// discovered tools and skills, and session corruption statistics without triggering agent execution
+	// or modifying on-disk state. This call intentionally avoids acquiring session locks to prevent
+	// self-deadlocks when called by an agent inspecting itself mid-turn. If the target agent directory
+	// does not exist, the response sets agent_dir_exists to false with all remaining fields zero-valued.
 	InspectAgent(ctx context.Context, in *InspectAgentRequest, opts ...grpc.CallOption) (*InspectAgentResponse, error)
-	// ReadSession returns every turn currently stored in <ws_dir>/<agent_id>/session.jsonl.
+	// ReadSession reads and returns the full conversational turn history stored in the agent's
+	// session.jsonl file. Callers use this method to inspect past user/model interactions, replay
+	// conversations, or audit transcripts. In v1, turns and content parts are converted to SessionTurn
+	// structures containing plain text and inline data; tool invocations (FunctionCall and FunctionResponse)
+	// are omitted under accepted-lossy v1 conversion. If session.jsonl does not exist, an empty list
+	// of turns is returned without error.
 	ReadSession(ctx context.Context, in *ReadSessionRequest, opts ...grpc.CallOption) (*ReadSessionResponse, error)
-	// ReadMemory returns the contents of <ws_dir>/<agent_id>/MEMORY.md.
+	// ReadMemory retrieves the raw markdown content of the agent's long-term memory notes from
+	// MEMORY.md. Callers use this method to read persistent memories across sessions. Read access
+	// is subject to workspace allowlist authorization against the target agent. If MEMORY.md does
+	// not exist, an empty string is returned without error.
 	ReadMemory(ctx context.Context, in *ReadMemoryRequest, opts ...grpc.CallOption) (*ReadMemoryResponse, error)
-	// RenderSystemPrompt returns the fully rendered system prompt (AGENTS.md after macro expansion).
+	// RenderSystemPrompt renders the agent's complete system prompt from AGENTS.md, expanding
+	// any macro inclusion directives (@<FILE_PATH>) into their referenced file contents. Callers
+	// use this method to view or feed the actual prompt passed to the model backend during generation.
+	// Returns an error if AGENTS.md cannot be read or if cyclic macro references are detected.
 	RenderSystemPrompt(ctx context.Context, in *RenderSystemPromptRequest, opts ...grpc.CallOption) (*RenderSystemPromptResponse, error)
-	// InspectSessionContext calculates the token usage, limits, and compaction headroom for an agent (D93).
+	// InspectSessionContext calculates current token usage, context window limits, and auto-compaction
+	// headroom for an agent per D93/D101. Callers invoke this method to monitor context window consumption,
+	// plan proactive compaction, or display diagnostics. It estimates token counts across session turns,
+	// the rendered system prompt, and memory files, returning headroom percentages and the most recent turn
+	// token metrics if available.
 	InspectSessionContext(ctx context.Context, in *InspectSessionContextRequest, opts ...grpc.CallOption) (*InspectSessionContextResponse, error)
-	// InspectAgentLocks reports session lock and session activity for every agent directory (D100).
+	// InspectAgentLocks surveys all agent directories in the workspace and returns lock status and session
+	// activity for each agent per D100. Callers invoke this method to detect active agent executions, identify
+	// stale lock files left behind by dead processes, or debug concurrency contention. The lock file outlives
+	// release, so lock presence alone does not imply held; callers must check holder_pid_valid, holder_alive,
+	// and last_write.
 	InspectAgentLocks(ctx context.Context, in *InspectAgentLocksRequest, opts ...grpc.CallOption) (*InspectAgentLocksResponse, error)
 }
 
@@ -135,22 +186,73 @@ func (c *agentServiceClient) InspectAgentLocks(ctx context.Context, in *InspectA
 // for forward compatibility.
 //
 // AgentService defines the interface of record for WackyPub agent operations (D112).
-// In v1, this service is invoked in-process via generated Go interfaces; no network transport
-// or gRPC server is required.
+//
+// In v1, this interface is consumed strictly in-process through generated Go types
+// and interfaces; no network transport (gRPC/HTTP), network listener, or remote daemon
+// is deployed or required. The protobuf definition serves as the canonical contract
+// defining operation semantics, data models, and migration boundaries for the WackyPub
+// agent lifecycle.
+//
+// D112 establishes a unified 26-method service interface replacing the legacy monolithic
+// AgentSDK methods across five staged rollout phases:
+//   - Phase 1 (current): Read-only workspace queries and state inspection (7 methods:
+//     ListAgents, InspectAgent, ReadSession, ReadMemory, RenderSystemPrompt,
+//     InspectSessionContext, InspectAgentLocks).
+//   - Phase 2: Mutation and session operations (e.g., prompt, generate, compact), including
+//     streaming methods (Phase 2 canary).
+//   - Phase 3: Scratchpad, attachments, and tool discovery operations.
+//   - Phase 4: Side-effectful / background operations (e.g. git commit hooks, compaction runner path).
+//   - Phase 5: Complete cutover and deprecation/removal of legacy SDK entry points.
+//
+// Design Decisions:
+//   - Q1: Go code generation produces interface stubs (AgentServiceServer) embedded directly
+//     into AgentSDK without network overhead.
+//   - Q2: Protobuf service definitions are the sole source of truth for method signatures
+//     and wire structures, replacing ad-hoc Go structs.
+//   - Q5: Staged migration permits progressive implementation and contract testing while
+//     keeping existing CLI workflows fully backward-compatible.
 type AgentServiceServer interface {
-	// ListAgents returns the IDs of agent directories found directly under the workspace directory.
+	// ListAgents discovers and returns the identifiers of all agent directories present
+	// directly under the specified workspace root. An agent directory is recognized if it
+	// contains the marker file (AGENTS.md). Callers invoke this method during workspace
+	// discovery, multi-agent orchestration, or status reporting. If the workspace directory
+	// does not exist or contains no valid agent directories, an empty list is returned without error.
 	ListAgents(context.Context, *ListAgentsRequest) (*ListAgentsResponse, error)
-	// InspectAgent reports the on-disk state of <ws_dir>/<agent_id>.
+	// InspectAgent performs an extensive diagnostic audit of an agent directory's filesystem state.
+	// Callers invoke this method to determine configuration completeness, file presence, allowlists,
+	// discovered tools and skills, and session corruption statistics without triggering agent execution
+	// or modifying on-disk state. This call intentionally avoids acquiring session locks to prevent
+	// self-deadlocks when called by an agent inspecting itself mid-turn. If the target agent directory
+	// does not exist, the response sets agent_dir_exists to false with all remaining fields zero-valued.
 	InspectAgent(context.Context, *InspectAgentRequest) (*InspectAgentResponse, error)
-	// ReadSession returns every turn currently stored in <ws_dir>/<agent_id>/session.jsonl.
+	// ReadSession reads and returns the full conversational turn history stored in the agent's
+	// session.jsonl file. Callers use this method to inspect past user/model interactions, replay
+	// conversations, or audit transcripts. In v1, turns and content parts are converted to SessionTurn
+	// structures containing plain text and inline data; tool invocations (FunctionCall and FunctionResponse)
+	// are omitted under accepted-lossy v1 conversion. If session.jsonl does not exist, an empty list
+	// of turns is returned without error.
 	ReadSession(context.Context, *ReadSessionRequest) (*ReadSessionResponse, error)
-	// ReadMemory returns the contents of <ws_dir>/<agent_id>/MEMORY.md.
+	// ReadMemory retrieves the raw markdown content of the agent's long-term memory notes from
+	// MEMORY.md. Callers use this method to read persistent memories across sessions. Read access
+	// is subject to workspace allowlist authorization against the target agent. If MEMORY.md does
+	// not exist, an empty string is returned without error.
 	ReadMemory(context.Context, *ReadMemoryRequest) (*ReadMemoryResponse, error)
-	// RenderSystemPrompt returns the fully rendered system prompt (AGENTS.md after macro expansion).
+	// RenderSystemPrompt renders the agent's complete system prompt from AGENTS.md, expanding
+	// any macro inclusion directives (@<FILE_PATH>) into their referenced file contents. Callers
+	// use this method to view or feed the actual prompt passed to the model backend during generation.
+	// Returns an error if AGENTS.md cannot be read or if cyclic macro references are detected.
 	RenderSystemPrompt(context.Context, *RenderSystemPromptRequest) (*RenderSystemPromptResponse, error)
-	// InspectSessionContext calculates the token usage, limits, and compaction headroom for an agent (D93).
+	// InspectSessionContext calculates current token usage, context window limits, and auto-compaction
+	// headroom for an agent per D93/D101. Callers invoke this method to monitor context window consumption,
+	// plan proactive compaction, or display diagnostics. It estimates token counts across session turns,
+	// the rendered system prompt, and memory files, returning headroom percentages and the most recent turn
+	// token metrics if available.
 	InspectSessionContext(context.Context, *InspectSessionContextRequest) (*InspectSessionContextResponse, error)
-	// InspectAgentLocks reports session lock and session activity for every agent directory (D100).
+	// InspectAgentLocks surveys all agent directories in the workspace and returns lock status and session
+	// activity for each agent per D100. Callers invoke this method to detect active agent executions, identify
+	// stale lock files left behind by dead processes, or debug concurrency contention. The lock file outlives
+	// release, so lock presence alone does not imply held; callers must check holder_pid_valid, holder_alive,
+	// and last_write.
 	InspectAgentLocks(context.Context, *InspectAgentLocksRequest) (*InspectAgentLocksResponse, error)
 }
 

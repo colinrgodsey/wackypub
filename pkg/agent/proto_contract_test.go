@@ -407,44 +407,6 @@ func TestPhase1MethodParity(t *testing.T) {
 			t.Errorf("[%s] ShadowedSkills mismatch: %v vs %v", targetID, protoInsp.GetShadowedSkills(), legacyInsp.ShadowedSkills)
 		}
 
-		if (protoInsp.GetRuntimeConfig() == nil) != (legacyInsp.RuntimeConfig == nil) {
-			t.Fatalf("[%s] RuntimeConfig nilness mismatch: proto=%v, legacy=%v", targetID, protoInsp.GetRuntimeConfig(), legacyInsp.RuntimeConfig)
-		}
-		if legacyInsp.RuntimeConfig != nil {
-			pcfg := protoInsp.GetRuntimeConfig()
-			lcfg := legacyInsp.RuntimeConfig
-			if pcfg.GetProvider() != lcfg.Provider {
-				t.Errorf("[%s] Provider mismatch: %q vs %q", targetID, pcfg.GetProvider(), lcfg.Provider)
-			}
-			if pcfg.GetEndpoint() != lcfg.Endpoint {
-				t.Errorf("[%s] Endpoint mismatch: %q vs %q", targetID, pcfg.GetEndpoint(), lcfg.Endpoint)
-			}
-			if pcfg.GetModel() != lcfg.Model {
-				t.Errorf("[%s] Model mismatch: %q vs %q", targetID, pcfg.GetModel(), lcfg.Model)
-			}
-			if pcfg.GetApiKey() != lcfg.APIKey {
-				t.Errorf("[%s] ApiKey mismatch: %q vs %q", targetID, pcfg.GetApiKey(), lcfg.APIKey)
-			}
-			if pcfg.GetContextWindow() != int32(lcfg.ContextWindow) {
-				t.Errorf("[%s] ContextWindow mismatch: %d vs %d", targetID, pcfg.GetContextWindow(), lcfg.ContextWindow)
-			}
-			if pcfg.GetTimeoutSeconds() != int32(lcfg.TimeoutSeconds) {
-				t.Errorf("[%s] TimeoutSeconds mismatch: %d vs %d", targetID, pcfg.GetTimeoutSeconds(), lcfg.TimeoutSeconds)
-			}
-			if pcfg.GetAnthropicThinkingEffort() != lcfg.AnthropicThinkingEffort {
-				t.Errorf("[%s] ThinkingEffort mismatch: %q vs %q", targetID, pcfg.GetAnthropicThinkingEffort(), lcfg.AnthropicThinkingEffort)
-			}
-			if pcfg.GetAnthropicThinkingMode() != lcfg.AnthropicThinkingMode {
-				t.Errorf("[%s] ThinkingMode mismatch: %q vs %q", targetID, pcfg.GetAnthropicThinkingMode(), lcfg.AnthropicThinkingMode)
-			}
-			if (pcfg.AnthropicThinkingBudgetTokens == nil) != (lcfg.AnthropicThinkingBudgetTokens == nil) {
-				t.Errorf("[%s] ThinkingBudget nilness mismatch: %v vs %v", targetID, pcfg.AnthropicThinkingBudgetTokens, lcfg.AnthropicThinkingBudgetTokens)
-			} else if lcfg.AnthropicThinkingBudgetTokens != nil {
-				if pcfg.GetAnthropicThinkingBudgetTokens() != int32(*lcfg.AnthropicThinkingBudgetTokens) {
-					t.Errorf("[%s] ThinkingBudget mismatch: %d vs %d", targetID, pcfg.GetAnthropicThinkingBudgetTokens(), *lcfg.AnthropicThinkingBudgetTokens)
-				}
-			}
-		}
 	}
 
 	// ==========================================
@@ -721,3 +683,16 @@ func TestReadSession_AcceptedLossyConversion(t *testing.T) {
 	}
 }
 
+func TestProtoContract_InspectAgentResponse_NoSensitiveRuntimeConfig(t *testing.T) {
+	// D112: InspectAgentResponse must not expose raw structured runtime config
+	// containing sensitive API keys. Verify that the descriptor has reserved field 12
+	// and does not declare runtime_config.
+	resp := &agentv1.InspectAgentResponse{}
+	desc := resp.ProtoReflect().Descriptor()
+	if desc.Fields().ByName("runtime_config") != nil {
+		t.Fatal("InspectAgentResponse must not expose sensitive runtime_config field")
+	}
+	if desc.Fields().ByNumber(12) != nil {
+		t.Fatal("field number 12 must remain reserved and unassigned in InspectAgentResponse")
+	}
+}

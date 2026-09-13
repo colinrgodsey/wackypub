@@ -503,23 +503,6 @@ func (s *AgentSDK) InspectAgent(ctx context.Context, req *agentv1.InspectAgentRe
 		ShadowedSkills:       insp.ShadowedSkills,
 	}
 
-	if insp.RuntimeConfig != nil {
-		resp.RuntimeConfig = &agentv1.AgentRuntimeConfig{
-			Provider:                insp.RuntimeConfig.Provider,
-			Endpoint:                insp.RuntimeConfig.Endpoint,
-			Model:                   insp.RuntimeConfig.Model,
-			ApiKey:                  insp.RuntimeConfig.APIKey,
-			ContextWindow:           int32(insp.RuntimeConfig.ContextWindow),
-			TimeoutSeconds:          int32(insp.RuntimeConfig.TimeoutSeconds),
-			AnthropicThinkingEffort: insp.RuntimeConfig.AnthropicThinkingEffort,
-			AnthropicThinkingMode:   insp.RuntimeConfig.AnthropicThinkingMode,
-		}
-		if insp.RuntimeConfig.AnthropicThinkingBudgetTokens != nil {
-			val := int32(*insp.RuntimeConfig.AnthropicThinkingBudgetTokens)
-			resp.RuntimeConfig.AnthropicThinkingBudgetTokens = &val
-		}
-	}
-
 	return resp, nil
 }
 
@@ -1178,4 +1161,3 @@ func (s *AgentSDK) InspectAgentLocks(ctx context.Context, req *agentv1.InspectAg
 func (s *AgentSDK) inspectAgentLocksLegacy() ([]AgentLockObservation, error) {
 	return InspectAgentLocks(s.WorkspaceDir)
 }
-
