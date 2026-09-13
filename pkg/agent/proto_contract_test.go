@@ -1107,3 +1107,122 @@ func TestAddMedia_CeilingCheck(t *testing.T) {
 		t.Fatalf("expected error message mentioning 10MB limit, got: %v", err)
 	}
 }
+
+// TestProtoContract_CompactSession_CrossAgentAuthorization verifies D60 cross-agent
+// authorization gating on CompactSession: when invoked from a caller agent directory,
+// cross-agent compaction of a target agent is rejected unless the target is explicitly
+// permitted in the caller's allowed_agents allowlist. Internal/self-compaction paths
+// and authorized cross-agent invocations remain functional.
+func TestProtoContract_CompactSession_CrossAgentAuthorization(t *testing.T) {
+	wsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), []byte(""), 0644); err != nil {
+		t.Fatalf("write root marker: %v", err)
+	}
+
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer os.Chdir(origCwd)
+
+	origA2A := os.Getenv(Agent2AgentEnvVar)
+	defer os.Setenv(Agent2AgentEnvVar, origA2A)
+	os.Setenv(Agent2AgentEnvVar, "")
+
+	origChain := os.Getenv(CallChainEnvVar)
+	defer os.Setenv(CallChainEnvVar, origChain)
+	os.Setenv(CallChainEnvVar, "")
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"* compacted summary"},"finish_reason":"stop"}]}`)
+	}))
+	defer mockServer.Close()
+
+	// Caller agent: bob
+	bobDir := filepath.Join(wsDir, "bob")
+	if err := os.MkdirAll(bobDir, 0755); err != nil {
+		t.Fatalf("mkdir bob: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bobDir, "AGENTS.md"), []byte("You are Bob"), 0644); err != nil {
+		t.Fatalf("write bob AGENTS.md: %v", err)
+	}
+
+	// Target agent: alice
+	aliceDir := filepath.Join(wsDir, "alice")
+	if err := os.MkdirAll(aliceDir, 0755); err != nil {
+		t.Fatalf("mkdir alice: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(aliceDir, "AGENTS.md"), []byte("You are Alice"), 0644); err != nil {
+		t.Fatalf("write alice AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(aliceDir, AllowedAgentsFile), []byte("alice\n"), 0644); err != nil {
+		t.Fatalf("write alice allowed_agents: %v", err)
+	}
+	rtJSON := fmt.Sprintf(`{"model":"test-model","endpoint":%q,"contextWindow":128000,"maxImageDimension":400}`, mockServer.URL)
+	if err := os.WriteFile(filepath.Join(aliceDir, "runtime.json"), []byte(rtJSON), 0644); err != nil {
+		t.Fatalf("write alice runtime.json: %v", err)
+	}
+	if err := AppendSessionTurn(aliceDir, "user", "Alice turn 1"); err != nil {
+		t.Fatalf("write alice session turn: %v", err)
+	}
+
+	sdk := NewSDK(wsDir)
+	ctx := context.Background()
+
+	// Switch CWD to bob's directory
+	if err := os.Chdir(bobDir); err != nil {
+		t.Fatalf("chdir bobDir: %v", err)
+	}
+
+	// 1. Without allowed_agents in bob's directory, CompactSession targeting alice must fail
+	_, err = sdk.CompactSession(ctx, &agentv1.CompactSessionRequest{
+		AgentId: "alice",
+		Force:   false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "has no "+AllowedAgentsFile+" allowlist") {
+		t.Fatalf("expected CompactSession to fail with missing allowlist, got err: %v", err)
+	}
+
+	// 2. With an allowed_agents file that does NOT include alice (e.g. only charlie), it must fail
+	if err := os.WriteFile(filepath.Join(bobDir, AllowedAgentsFile), []byte("charlie\n"), 0644); err != nil {
+		t.Fatalf("write bob allowed_agents: %v", err)
+	}
+	_, err = sdk.CompactSession(ctx, &agentv1.CompactSessionRequest{
+		AgentId: "alice",
+		Force:   false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "not in "+AllowedAgentsFile+" allowlist") {
+		t.Fatalf("expected CompactSession to fail when target not in allowlist, got err: %v", err)
+	}
+
+	// 3. Grant alice in bob's allowlist -> CompactSession targeting alice must now SUCCEED
+	if err := os.WriteFile(filepath.Join(bobDir, AllowedAgentsFile), []byte("alice\n"), 0644); err != nil {
+		t.Fatalf("write bob allowed_agents: %v", err)
+	}
+	resp, err := sdk.CompactSession(ctx, &agentv1.CompactSessionRequest{
+		AgentId: "alice",
+		Force:   false,
+	})
+	if err != nil {
+		t.Fatalf("expected CompactSession to succeed once authorized in allowlist, got err: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil CompactSessionResponse")
+	}
+
+	// 4. Self-compaction from alice's own directory succeeds
+	if err := os.Chdir(aliceDir); err != nil {
+		t.Fatalf("chdir aliceDir: %v", err)
+	}
+	selfResp, err := sdk.CompactSession(ctx, &agentv1.CompactSessionRequest{
+		AgentId: "alice",
+		Force:   false,
+	})
+	if err != nil {
+		t.Fatalf("expected self-compaction from target agent directory to succeed, got err: %v", err)
+	}
+	if selfResp == nil {
+		t.Fatal("expected non-nil response for self-compaction")
+	}
+}
