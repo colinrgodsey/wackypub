@@ -1,3 +1,9 @@
+// Package agent provides the Go implementation for folder-based agent orchestration.
+//
+// NOTE(D112): Authoritative behavior and contract documentation for AgentSDK methods
+// lives in the protobuf service definition at proto/wackypub/v1/agent.proto.
+// That file is canonical; this file provides the concrete in-process Go implementation.
+// Method godocs for service interface methods are pointers, not standalone definitions.
 package agent
 
 import (
@@ -423,11 +429,7 @@ func (s *AgentSDK) GetAgent(agentID string) (*FolderAgent, error) {
 	return LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
 }
 
-// ListAgents returns the IDs of agent directories found directly under the
-// workspace directory (see ListAgentIDs for how a directory is recognized as
-// an agent). Does not acquire any lock - it only reads directory names.
-//
-// In D112, this signature satisfies agentv1.AgentServiceServer.
+// ListAgents implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) ListAgents(ctx context.Context, req *agentv1.ListAgentsRequest) (*agentv1.ListAgentsResponse, error) {
 	wsDir := s.WorkspaceDir
 	if req != nil && req.GetWorkspaceDir() != "" {
@@ -450,7 +452,7 @@ func (s *AgentSDK) listAgentsLegacy() ([]string, error) {
 	return ListAgentIDs(s.WorkspaceDir)
 }
 
-// InspectAgent satisfies agentv1.AgentServiceServer (D112).
+// InspectAgent implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) InspectAgent(ctx context.Context, req *agentv1.InspectAgentRequest) (*agentv1.InspectAgentResponse, error) {
 	wsDir := s.WorkspaceDir
 	if req != nil && req.GetWorkspaceDir() != "" {
@@ -525,13 +527,7 @@ func (s *AgentSDK) inspectAgentLegacy(agentID string) (*AgentInspection, error) 
 	return InspectAgentDir(s.WorkspaceDir, agentID)
 }
 
-// ReadSession satisfies agentv1.AgentServiceServer (D112).
-//
-// NOTE(D112 v1): The conversion from session.jsonl's genai.Content turns to
-// agentv1.SessionTurn is accepted-lossy for v1: it extracts Text and InlineData
-// (data + MIME type) parts, while tool invocations (FunctionCall and FunctionResponse)
-// are omitted in the v1 protobuf schema. The protobuf service interface is canonical
-// going forward; richer part schemas may be introduced in a future revision.
+// ReadSession implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) ReadSession(ctx context.Context, req *agentv1.ReadSessionRequest) (*agentv1.ReadSessionResponse, error) {
 	wsDir := s.WorkspaceDir
 	if req != nil && req.GetWorkspaceDir() != "" {
@@ -604,7 +600,7 @@ func (s *AgentSDK) readSessionLegacy(agentID string) ([]*genai.Content, error) {
 	return ReadSessionTurns(agentDir)
 }
 
-// ReadMemory satisfies agentv1.AgentServiceServer (D112).
+// ReadMemory implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) ReadMemory(ctx context.Context, req *agentv1.ReadMemoryRequest) (*agentv1.ReadMemoryResponse, error) {
 	wsDir := s.WorkspaceDir
 	if req != nil && req.GetWorkspaceDir() != "" {
@@ -652,7 +648,7 @@ func (s *AgentSDK) readMemoryLegacy(agentID string) (string, error) {
 	return ReadMemoryFile(agentDir)
 }
 
-// RenderSystemPrompt satisfies agentv1.AgentServiceServer (D112).
+// RenderSystemPrompt implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) RenderSystemPrompt(ctx context.Context, req *agentv1.RenderSystemPromptRequest) (*agentv1.RenderSystemPromptResponse, error) {
 	wsDir := s.WorkspaceDir
 	if req != nil && req.GetWorkspaceDir() != "" {
@@ -962,7 +958,7 @@ type SessionContextReport struct {
 	LastTotalTokens       int32   `json:"last_total_tokens,omitempty"`
 }
 
-// InspectSessionContext satisfies agentv1.AgentServiceServer (D112).
+// InspectSessionContext implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) InspectSessionContext(ctx context.Context, req *agentv1.InspectSessionContextRequest) (*agentv1.InspectSessionContextResponse, error) {
 	wsDir := s.WorkspaceDir
 	if req != nil && req.GetWorkspaceDir() != "" {
@@ -1120,7 +1116,7 @@ func (s *AgentSDK) inspectSessionContextLegacy(agentID string) (*SessionContextR
 	return report, nil
 }
 
-// InspectAgentLocks satisfies agentv1.AgentServiceServer (D112).
+// InspectAgentLocks implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) InspectAgentLocks(ctx context.Context, req *agentv1.InspectAgentLocksRequest) (*agentv1.InspectAgentLocksResponse, error) {
 	wsDir := s.WorkspaceDir
 	if req != nil && req.GetWorkspaceDir() != "" {
