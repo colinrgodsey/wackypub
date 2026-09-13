@@ -538,7 +538,7 @@ func ListScratchpads(agentDir string) ([]ScratchpadItem, int, int, error) {
 }
 
 var (
-	scratchpadMacroRegex = regexp.MustCompile(`(\\?)<SCRATCHPAD_DATA\s+([^>]+)\s*/?>`)
+	scratchpadMacroRegex = regexp.MustCompile(`(?:<<SCRATCHPAD_DATA\s+([^>]+?)\s*/>>|<SCRATCHPAD_DATA\s+([^>]+?)\s*/>)`)
 	macroIDRegex         = regexp.MustCompile(`id=\\?"([^"\\]+)\\?"`)
 	macroSkipLinesRegex  = regexp.MustCompile(`skip_lines=\\?"(\d+)\\?"`)
 	macroNumLinesRegex   = regexp.MustCompile(`num_lines=\\?"(\d+)\\?"`)
@@ -548,7 +548,8 @@ var (
 // ExpandScratchpadMacros replaces any inline <SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" json_escape="true" /> macros
 // in text with the corresponding scratchpad text content according to D18/D28/D30/D37/D90.
 // Non-escaped macros whose IDs do not exist pass through literally and emit warnings.
-// A leading backslash (\) escapes the macro, rendering it literally without warnings even if the ID exists.
+// Additionally, a doubled-token form <<...>> is recognized and emitted as
+// a single <...> tag (one pair stripped) for readability.
 func ExpandScratchpadMacros(agentDir string, text string) (string, []string, error) {
 	if !strings.Contains(text, "<SCRATCHPAD_DATA") {
 		return text, nil, nil
@@ -561,8 +562,8 @@ func ExpandScratchpadMacros(agentDir string, text string) (string, []string, err
 			return match
 		}
 
-		if strings.HasPrefix(match, "\\") {
-			return strings.TrimPrefix(match, "\\")
+		if strings.HasPrefix(match, "<<") && strings.HasSuffix(match, ">>") {
+			return match[1 : len(match)-1]
 		}
 
 		idMatch := macroIDRegex.FindStringSubmatch(match)
