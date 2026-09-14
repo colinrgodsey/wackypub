@@ -11,6 +11,11 @@ import (
 
 const (
 	Agent2AgentEnvVar = "AGENT2AGENT"
+	// CorrelationIDMetadataKey is the A2AMetadata.Metadata key for a per-request
+	// correlation ID (D103). Distinct from the chain-level TraceID: a detached
+	// dispatch mints its own correlation ID so logs, session records, and git
+	// trailers for one request are traceable without conflating chains.
+	CorrelationIDMetadataKey = "correlation_id"
 )
 
 // A2AMetadata defines the minified Agent2Agent context payload passed between agent calls via AGENT2AGENT env var according to D33.
