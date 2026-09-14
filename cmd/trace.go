@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
 	adkAgent "github.com/colinrgodsey/wackypub/pkg/agent"
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 var (
@@ -46,12 +48,21 @@ Flags:
 			Verbosity: traceVerbosity,
 		}
 
-		var res *adkAgent.TraceResult
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+
+		var resp *agentv1.TraceResponse
 
 		if len(args) == 1 {
 			// Single argument: trace_id
 			traceID := args[0]
-			res, err = sdk.Trace("", "", traceID, opts)
+			resp, err = sdk.Trace(ctx, &agentv1.TraceRequest{
+				Target:    &agentv1.TraceRequest_TraceId{TraceId: traceID},
+				MaxSteps:  int32(traceMaxSteps),
+				Verbosity: int32(traceVerbosity),
+			})
 			if err != nil {
 				return err
 			}
@@ -59,12 +70,18 @@ Flags:
 			// Two arguments: agent_id, commit
 			agentID := args[0]
 			commitSpec := args[1]
-			res, err = sdk.Trace(agentID, commitSpec, "", opts)
+			resp, err = sdk.Trace(ctx, &agentv1.TraceRequest{
+				AgentId:   agentID,
+				Target:    &agentv1.TraceRequest_CommitSpec{CommitSpec: commitSpec},
+				MaxSteps:  int32(traceMaxSteps),
+				Verbosity: int32(traceVerbosity),
+			})
 			if err != nil {
 				return err
 			}
 		}
 
+		res := adkAgent.TraceProtoToResult(resp)
 		output := adkAgent.FormatTraceResult(wsDir, res, opts)
 		fmt.Print(output)
 		return nil

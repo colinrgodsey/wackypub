@@ -19,11 +19,10 @@ option go_package = "github.com/colinrgodsey/wackypub/pkg/agent/v1;agentv1";
 //   - Phase 1: Read-only workspace queries and state inspection (7 methods:
 //     ListAgents, InspectAgent, ReadSession, ReadMemory, RenderSystemPrompt,
 //     InspectSessionContext, InspectAgentLocks).
-//   - Phase 2: Streaming turn generation operations (Phase 2 canary).
-//   - Phase 3 (current): Stateful mutations (AddUserTurn, AddMedia, CancelTurn, StripSignatures,
+//   - Phase 3: Stateful mutations (AddUserTurn, AddMedia, CancelTurn, StripSignatures,
 //     CompactSession) and scratchpad CRUD (CreateScratchpad, GetScratchpad, ListScratchpads,
 //     SearchScratchpad, DiffScratchpadEntries, DeleteScratchpad).
-//   - Phase 4: Side-effectful / background operations (e.g. git commit hooks, compaction runner path).
+//   - Phase 4 (current): Side-effectful / background operations (GetAgent, Trace).
 //   - Phase 5: Complete cutover and deprecation/removal of legacy SDK entry points.
 //
 // Design Decisions:
@@ -162,6 +161,18 @@ service AgentService {
   // the user message, runs the full generation, and returns the complete assistant text
   // plus any hook warnings on the response.
   rpc AddAndGenerateTurn(AddAndGenerateTurnRequest) returns (AddAndGenerateTurnResponse);
+
+  // GetAgent loads and returns the structured configuration, filesystem locations, and prompt
+  // metadata for an agent directory. Callers invoke this method to inspect agent execution parameters,
+  // initialize runner contexts, or access agent settings without executing model generations.
+  // Performs workspace target allowlist authorization.
+  rpc GetAgent(GetAgentRequest) returns (GetAgentResponse);
+
+  // Trace performs backward causal graph traversal starting from an agent's git commit or a global
+  // correlation trace identifier (D36). Callers invoke this method to audit cross-agent workflows,
+  // inspect multi-hop turn histories, and reconstruct causal chains. The request uses a oneof to enforce
+  // that callers specify either an agent commit specifier or a trace ID.
+  rpc Trace(TraceRequest) returns (TraceResponse);
 }
 
 // ListAgentsRequest specifies parameters for listing agent directories in a workspace.
@@ -840,4 +851,125 @@ message AddAndGenerateTurnResponse {
 
   // warnings are hook execution warnings collected during the turn.
   repeated string warnings = 2;
+}
+
+// GetAgentRequest specifies parameters for loading agent configuration and metadata.
+message GetAgentRequest {
+  // agent_id identifies the agent directory to load. Required.
+  string agent_id = 1;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 2;
+}
+
+// GetAgentResponse returns the structured metadata and runtime configuration of a loaded agent.
+message GetAgentResponse {
+  // agent_id identifies the loaded agent.
+  string agent_id = 1;
+
+  // agent_dir is the absolute filesystem directory of the agent.
+  string agent_dir = 2;
+
+  // system_prompt is the raw system prompt content loaded from AGENTS.md.
+  string system_prompt = 3;
+
+  // memory_prompt is the persistent memory notes loaded from MEMORY.md if present.
+  string memory_prompt = 4;
+
+  // model identifies the configured LLM model name from runtime.json.
+  string model = 5;
+
+  // max_tool_turns is the configured limit on tool executions per generation turn.
+  int32 max_tool_turns = 6;
+
+  // command_timeout_seconds is the configured command execution timeout in seconds.
+  int32 command_timeout_seconds = 7;
+
+  // disable_auto_continuation indicates whether automatic turn continuation is disabled.
+  bool disable_auto_continuation = 8;
+}
+
+// A2AMetadata represents minified Agent2Agent context propagated across agent calls (D33).
+message A2AMetadata {
+  // caller_id is the identifier of the calling agent that initiated the request.
+  string caller_id = 1;
+
+  // call_chain contains the ordered chain of agent IDs participating in the call sequence.
+  repeated string call_chain = 2;
+
+  // trace_id is the causal correlation trace identifier.
+  string trace_id = 3;
+
+  // metadata contains arbitrary key-value context attributes propagated across hops.
+  map<string, string> metadata = 4;
+}
+
+// TraceStep represents a single hop in the backward causal trace chain.
+message TraceStep {
+  // step_index is the 1-based sequential hop index in the causal trace.
+  int32 step_index = 1;
+
+  // agent_id identifies the agent repository where this commit occurred.
+  string agent_id = 2;
+
+  // commit_sha is the full 40-character git commit object hash.
+  string commit_sha = 3;
+
+  // short_sha is the abbreviated 7-character commit hash prefix.
+  string short_sha = 4;
+
+  // event_type is the classified event category (e.g. user, model, system, compaction).
+  string event_type = 5;
+
+  // a2a_metadata contains the parsed Agent2Agent context if present in the commit message.
+  A2AMetadata a2a_metadata = 6;
+
+  // raw_commit_message contains the complete raw git commit message body.
+  string raw_commit_message = 7;
+
+  // turn_contents contains the session turns added or modified at this commit.
+  repeated SessionTurn turn_contents = 8;
+}
+
+// TraceRequest specifies parameters for backward causal tracing through git history.
+message TraceRequest {
+  // agent_id identifies the agent whose git history to trace.
+  // Required when commit_spec is specified.
+  string agent_id = 1;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent repositories.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 2;
+
+  // max_steps is the maximum number of causal trace hops to traverse backward (default 20).
+  int32 max_steps = 3;
+
+  // verbosity is the formatting verbosity level from 0 to 4 (default 1).
+  int32 verbosity = 4;
+
+  // target specifies whether to trace from an agent's commit or from a global trace identifier.
+  // Exactly one target must be set.
+  oneof target {
+    // commit_spec is the git commit hash, prefix, suffix, branch, tag, or revision (e.g. HEAD~1).
+    string commit_spec = 5;
+
+    // trace_id is the global correlation trace ID across agent causal chains (e.g. a2a-12345).
+    string trace_id = 6;
+  }
+}
+
+// TraceResponse returns the ordered sequence of causal steps discovered by the trace.
+message TraceResponse {
+  // target_agent_id is the agent where the trace originated (when tracing by commit).
+  string target_agent_id = 1;
+
+  // target_commit is the resolved initial commit SHA where the trace originated.
+  string target_commit = 2;
+
+  // trace_id is the causal trace ID (when tracing by trace ID or parsed from root commit).
+  string trace_id = 3;
+
+  // steps contains the ordered causal steps traversed backward in time.
+  repeated TraceStep steps = 4;
 }

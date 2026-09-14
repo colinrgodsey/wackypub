@@ -1226,3 +1226,265 @@ func TestProtoContract_CompactSession_CrossAgentAuthorization(t *testing.T) {
 		t.Fatal("expected non-nil response for self-compaction")
 	}
 }
+
+// TestPhase4MethodParity verifies field-by-field parity between proto methods and legacy methods
+// for the 2 Phase 4 operations: GetAgent and Trace.
+func TestPhase4MethodParity(t *testing.T) {
+	wsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), []byte(""), 0644); err != nil {
+		t.Fatalf("failed writing root marker: %v", err)
+	}
+
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer os.Chdir(origCwd)
+
+	if err := os.Chdir(wsDir); err != nil {
+		t.Fatalf("chdir wsDir: %v", err)
+	}
+
+	// 1. Setup git repos for bob and jax
+	if err := InitAgentGit(wsDir, "bob"); err != nil {
+		t.Fatalf("failed initializing bob git: %v", err)
+	}
+	if err := InitAgentGit(wsDir, "jax"); err != nil {
+		t.Fatalf("failed initializing jax git: %v", err)
+	}
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"* summary"},"finish_reason":"stop"}]}`)
+	}))
+	defer mockServer.Close()
+
+	bobDir := filepath.Join(wsDir, "bob")
+	jaxDir := filepath.Join(wsDir, "jax")
+
+	if err := os.WriteFile(filepath.Join(bobDir, "AGENTS.md"), []byte("You are Bob"), 0644); err != nil {
+		t.Fatalf("write bob AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bobDir, "MEMORY.md"), []byte("Bob memory notes"), 0644); err != nil {
+		t.Fatalf("write bob MEMORY.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bobDir, AllowedAgentsFile), []byte("bob\njax\n"), 0644); err != nil {
+		t.Fatalf("write bob allowed_agents: %v", err)
+	}
+	bobRtJSON := fmt.Sprintf(`{"model":"test-model","endpoint":%q,"contextWindow":128000}`, mockServer.URL)
+	if err := os.WriteFile(filepath.Join(bobDir, "runtime.json"), []byte(bobRtJSON), 0644); err != nil {
+		t.Fatalf("write bob runtime.json: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(jaxDir, "AGENTS.md"), []byte("You are Jax"), 0644); err != nil {
+		t.Fatalf("write jax AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(jaxDir, "MEMORY.md"), []byte("Jax memory notes"), 0644); err != nil {
+		t.Fatalf("write jax MEMORY.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(jaxDir, AllowedAgentsFile), []byte("bob\njax\n"), 0644); err != nil {
+		t.Fatalf("write jax allowed_agents: %v", err)
+	}
+	jaxRtJSON := fmt.Sprintf(`{"model":"test-model","endpoint":%q,"contextWindow":64000}`, mockServer.URL)
+	if err := os.WriteFile(filepath.Join(jaxDir, "runtime.json"), []byte(jaxRtJSON), 0644); err != nil {
+		t.Fatalf("write jax runtime.json: %v", err)
+	}
+
+	// Commit turns for causal tracing
+	if err := AppendSessionTurn(bobDir, "user", "Bob start prompt"); err != nil {
+		t.Fatalf("appending bob turn: %v", err)
+	}
+	// Inject a trace ID into A2A metadata for bob's commit
+	origA2A := os.Getenv(Agent2AgentEnvVar)
+	defer os.Setenv(Agent2AgentEnvVar, origA2A)
+	metaJSON := `{"trace_id":"trace-parity-phase4","caller_id":"user"}`
+	os.Setenv(Agent2AgentEnvVar, metaJSON)
+
+	if err := CommitWorkspaceEvent(wsDir, "bob", "user"); err != nil {
+		t.Fatalf("committing bob event: %v", err)
+	}
+	bobHeadSHA, err := GetWorkspaceHeadCommit(bobDir)
+	if err != nil || bobHeadSHA == "" {
+		t.Fatalf("bob head SHA: %v", err)
+	}
+
+	// Jax commit referencing bob
+	metaJax := fmt.Sprintf(`{"trace_id":"trace-parity-phase4","caller_id":"bob","metadata":{"workspace_revision":%q}}`, bobHeadSHA)
+	os.Setenv(Agent2AgentEnvVar, metaJax)
+
+	if err := AppendSessionTurn(jaxDir, "user", "Jax received request from Bob"); err != nil {
+		t.Fatalf("appending jax turn: %v", err)
+	}
+	if err := CommitWorkspaceEvent(wsDir, "jax", "user"); err != nil {
+		t.Fatalf("committing jax event: %v", err)
+	}
+	jaxHeadSHA, err := GetWorkspaceHeadCommit(jaxDir)
+	if err != nil || jaxHeadSHA == "" {
+		t.Fatalf("jax head SHA: %v", err)
+	}
+
+	sdk := NewSDK(wsDir)
+	ctx := context.Background()
+
+	// ==========================================
+	// Parity 1: GetAgent vs getAgentLegacy
+	// ==========================================
+	legBob, err := sdk.getAgentLegacy("bob")
+	if err != nil {
+		t.Fatalf("getAgentLegacy failed: %v", err)
+	}
+	protoBob, err := sdk.GetAgent(ctx, &agentv1.GetAgentRequest{AgentId: "bob"})
+	if err != nil {
+		t.Fatalf("GetAgent proto failed: %v", err)
+	}
+
+	if protoBob.GetAgentId() != legBob.AgentID {
+		t.Errorf("GetAgent AgentId mismatch: %q vs %q", protoBob.GetAgentId(), legBob.AgentID)
+	}
+	if protoBob.GetAgentDir() != legBob.AgentDir {
+		t.Errorf("GetAgent AgentDir mismatch: %q vs %q", protoBob.GetAgentDir(), legBob.AgentDir)
+	}
+	if protoBob.GetSystemPrompt() != legBob.SystemPrompt {
+		t.Errorf("GetAgent SystemPrompt mismatch: %q vs %q", protoBob.GetSystemPrompt(), legBob.SystemPrompt)
+	}
+	if protoBob.GetMemoryPrompt() != legBob.MemoryPrompt {
+		t.Errorf("GetAgent MemoryPrompt mismatch: %q vs %q", protoBob.GetMemoryPrompt(), legBob.MemoryPrompt)
+	}
+	if protoBob.GetMaxToolTurns() != int32(legBob.MaxToolTurns) {
+		t.Errorf("GetAgent MaxToolTurns mismatch: %d vs %d", protoBob.GetMaxToolTurns(), legBob.MaxToolTurns)
+	}
+	if protoBob.GetCommandTimeoutSeconds() != int32(legBob.CommandTimeoutSeconds) {
+		t.Errorf("GetAgent CommandTimeoutSeconds mismatch: %d vs %d", protoBob.GetCommandTimeoutSeconds(), legBob.CommandTimeoutSeconds)
+	}
+	if protoBob.GetDisableAutoContinuation() != legBob.DisableAutoContinuation {
+		t.Errorf("GetAgent DisableAutoContinuation mismatch: %v vs %v", protoBob.GetDisableAutoContinuation(), legBob.DisableAutoContinuation)
+	}
+	if legBob.RuntimeConfig != nil && protoBob.GetModel() != legBob.RuntimeConfig.Model {
+		t.Errorf("GetAgent Model mismatch: %q vs %q", protoBob.GetModel(), legBob.RuntimeConfig.Model)
+	}
+
+	// ==========================================
+	// Parity 2: Trace vs traceLegacy (by commit)
+	// ==========================================
+	opts := TraceOptions{MaxSteps: 10, Verbosity: 1}
+	legTrace, err := sdk.traceLegacy("jax", jaxHeadSHA, "", opts)
+	if err != nil {
+		t.Fatalf("traceLegacy failed: %v", err)
+	}
+	protoTrace, err := sdk.Trace(ctx, &agentv1.TraceRequest{
+		AgentId:   "jax",
+		Target:    &agentv1.TraceRequest_CommitSpec{CommitSpec: jaxHeadSHA},
+		MaxSteps:  int32(opts.MaxSteps),
+		Verbosity: int32(opts.Verbosity),
+	})
+	if err != nil {
+		t.Fatalf("Trace proto failed: %v", err)
+	}
+
+	if protoTrace.GetTargetAgentId() != legTrace.TargetAgentID {
+		t.Errorf("Trace TargetAgentId mismatch: %q vs %q", protoTrace.GetTargetAgentId(), legTrace.TargetAgentID)
+	}
+	if protoTrace.GetTargetCommit() != legTrace.TargetCommit {
+		t.Errorf("Trace TargetCommit mismatch: %q vs %q", protoTrace.GetTargetCommit(), legTrace.TargetCommit)
+	}
+	if len(protoTrace.GetSteps()) != len(legTrace.Steps) {
+		t.Fatalf("Trace steps count mismatch: %d vs %d", len(protoTrace.GetSteps()), len(legTrace.Steps))
+	}
+	for i := range legTrace.Steps {
+		pStep := protoTrace.GetSteps()[i]
+		lStep := legTrace.Steps[i]
+		if pStep.GetStepIndex() != int32(lStep.StepIndex) {
+			t.Errorf("step %d index mismatch: %d vs %d", i, pStep.GetStepIndex(), lStep.StepIndex)
+		}
+		if pStep.GetAgentId() != lStep.AgentID {
+			t.Errorf("step %d agentId mismatch: %q vs %q", i, pStep.GetAgentId(), lStep.AgentID)
+		}
+		if pStep.GetCommitSha() != lStep.CommitSHA {
+			t.Errorf("step %d commitSha mismatch: %q vs %q", i, pStep.GetCommitSha(), lStep.CommitSHA)
+		}
+		if pStep.GetShortSha() != lStep.ShortSHA {
+			t.Errorf("step %d shortSha mismatch: %q vs %q", i, pStep.GetShortSha(), lStep.ShortSHA)
+		}
+		if pStep.GetEventType() != lStep.EventType {
+			t.Errorf("step %d eventType mismatch: %q vs %q", i, pStep.GetEventType(), lStep.EventType)
+		}
+		if pStep.GetRawCommitMessage() != lStep.RawCommitMessage {
+			t.Errorf("step %d rawCommitMessage mismatch: %q vs %q", i, pStep.GetRawCommitMessage(), lStep.RawCommitMessage)
+		}
+		if lStep.A2AMetadata != nil {
+			if pStep.GetA2AMetadata() == nil {
+				t.Errorf("step %d expected A2AMetadata, got nil", i)
+			} else if pStep.GetA2AMetadata().GetTraceId() != lStep.A2AMetadata.TraceID {
+				t.Errorf("step %d A2AMetadata traceId mismatch: %q vs %q", i, pStep.GetA2AMetadata().GetTraceId(), lStep.A2AMetadata.TraceID)
+			}
+		}
+	}
+
+	// ==========================================
+	// Parity 3: Trace vs traceLegacy (by trace_id)
+	// ==========================================
+	legTraceID, err := sdk.traceLegacy("", "", "trace-parity-phase4", opts)
+	if err != nil {
+		t.Fatalf("traceLegacy by trace_id failed: %v", err)
+	}
+	protoTraceID, err := sdk.Trace(ctx, &agentv1.TraceRequest{
+		Target:    &agentv1.TraceRequest_TraceId{TraceId: "trace-parity-phase4"},
+		MaxSteps:  int32(opts.MaxSteps),
+		Verbosity: int32(opts.Verbosity),
+	})
+	if err != nil {
+		t.Fatalf("Trace proto by trace_id failed: %v", err)
+	}
+
+	if protoTraceID.GetTraceId() != legTraceID.TraceID {
+		t.Errorf("Trace trace_id mismatch: %q vs %q", protoTraceID.GetTraceId(), legTraceID.TraceID)
+	}
+	if len(protoTraceID.GetSteps()) != len(legTraceID.Steps) {
+		t.Fatalf("Trace by trace_id steps count mismatch: %d vs %d", len(protoTraceID.GetSteps()), len(legTraceID.Steps))
+	}
+}
+
+// TestTrace_OneofTarget verifies that the oneof target in TraceRequest enforces
+// that exactly one of commit_spec or trace_id is specified.
+func TestTrace_OneofTarget(t *testing.T) {
+	wsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), []byte(""), 0644); err != nil {
+		t.Fatalf("failed writing root marker: %v", err)
+	}
+
+	sdk := NewSDK(wsDir)
+	ctx := context.Background()
+
+	// 1. Neither target set: should fail with error
+	_, err := sdk.Trace(ctx, &agentv1.TraceRequest{
+		AgentId: "testagent",
+	})
+	if err == nil || !strings.Contains(err.Error(), "must specify either commit_spec or trace_id") {
+		t.Fatalf("expected error for neither target specified, got: %v", err)
+	}
+
+	// 2. Commit spec set but agent_id empty: should fail requiring agent_id
+	_, err = sdk.Trace(ctx, &agentv1.TraceRequest{
+		Target: &agentv1.TraceRequest_CommitSpec{CommitSpec: "HEAD"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "agent_id is required") {
+		t.Fatalf("expected error for commit_spec without agent_id, got: %v", err)
+	}
+
+	// 3. Commit spec set with empty string: should fail with empty commit_spec error
+	_, err = sdk.Trace(ctx, &agentv1.TraceRequest{
+		AgentId: "testagent",
+		Target:  &agentv1.TraceRequest_CommitSpec{CommitSpec: ""},
+	})
+	if err == nil || !strings.Contains(err.Error(), "commit_spec cannot be empty") {
+		t.Fatalf("expected error for empty commit_spec, got: %v", err)
+	}
+
+	// 4. Trace ID set with empty string: should fail with empty trace_id error
+	_, err = sdk.Trace(ctx, &agentv1.TraceRequest{
+		Target: &agentv1.TraceRequest_TraceId{TraceId: ""},
+	})
+	if err == nil || !strings.Contains(err.Error(), "trace_id cannot be empty") {
+		t.Fatalf("expected error for empty trace_id, got: %v", err)
+	}
+}

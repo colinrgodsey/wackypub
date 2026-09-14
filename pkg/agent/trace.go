@@ -51,6 +51,123 @@ type TraceResult struct {
 	Steps         []TraceStep `json:"steps"`
 }
 
+// TraceResultToProto converts an internal TraceResult domain struct into a protobuf TraceResponse message.
+func TraceResultToProto(res *TraceResult) *agentv1.TraceResponse {
+	if res == nil {
+		return nil
+	}
+	resp := &agentv1.TraceResponse{
+		TargetAgentId: res.TargetAgentID,
+		TargetCommit:  res.TargetCommit,
+		TraceId:       res.TraceID,
+	}
+	for _, s := range res.Steps {
+		step := &agentv1.TraceStep{
+			StepIndex:        int32(s.StepIndex),
+			AgentId:          s.AgentID,
+			CommitSha:        s.CommitSHA,
+			ShortSha:         s.ShortSHA,
+			EventType:        s.EventType,
+			RawCommitMessage: s.RawCommitMessage,
+		}
+		if s.A2AMetadata != nil {
+			step.A2AMetadata = &agentv1.A2AMetadata{
+				CallerId:  s.A2AMetadata.CallerID,
+				CallChain: s.A2AMetadata.CallChain,
+				TraceId:   s.A2AMetadata.TraceID,
+				Metadata:  s.A2AMetadata.Metadata,
+			}
+		}
+		turns := s.TurnContents
+		if len(turns) == 0 && s.TurnContent != nil {
+			turns = []*genai.Content{s.TurnContent}
+		}
+		for _, t := range turns {
+			if t == nil {
+				continue
+			}
+			st := &agentv1.SessionTurn{
+				Role: t.Role,
+			}
+			for _, p := range t.Parts {
+				if p == nil {
+					continue
+				}
+				sp := &agentv1.SessionPart{
+					Text: p.Text,
+				}
+				if p.InlineData != nil {
+					sp.InlineData = p.InlineData.Data
+					sp.MimeType = p.InlineData.MIMEType
+				}
+				st.Parts = append(st.Parts, sp)
+			}
+			step.TurnContents = append(step.TurnContents, st)
+		}
+		resp.Steps = append(resp.Steps, step)
+	}
+	return resp
+}
+
+// TraceProtoToResult converts a protobuf TraceResponse message into an internal TraceResult domain struct.
+func TraceProtoToResult(resp *agentv1.TraceResponse) *TraceResult {
+	if resp == nil {
+		return nil
+	}
+	res := &TraceResult{
+		TargetAgentID: resp.GetTargetAgentId(),
+		TargetCommit:  resp.GetTargetCommit(),
+		TraceID:       resp.GetTraceId(),
+	}
+	for _, s := range resp.GetSteps() {
+		step := TraceStep{
+			StepIndex:        int(s.GetStepIndex()),
+			AgentID:          s.GetAgentId(),
+			CommitSHA:        s.GetCommitSha(),
+			ShortSHA:         s.GetShortSha(),
+			EventType:        s.GetEventType(),
+			RawCommitMessage: s.GetRawCommitMessage(),
+		}
+		if a2a := s.GetA2AMetadata(); a2a != nil {
+			step.A2AMetadata = &A2AMetadata{
+				CallerID:  a2a.GetCallerId(),
+				CallChain: a2a.GetCallChain(),
+				TraceID:   a2a.GetTraceId(),
+				Metadata:  a2a.GetMetadata(),
+			}
+		}
+		for _, t := range s.GetTurnContents() {
+			if t == nil {
+				continue
+			}
+			c := &genai.Content{
+				Role: t.GetRole(),
+			}
+			for _, p := range t.GetParts() {
+				if p == nil {
+					continue
+				}
+				gp := &genai.Part{
+					Text: p.GetText(),
+				}
+				if len(p.GetInlineData()) > 0 {
+					gp.InlineData = &genai.Blob{
+						Data:     p.GetInlineData(),
+						MIMEType: p.GetMimeType(),
+					}
+				}
+				c.Parts = append(c.Parts, gp)
+			}
+			step.TurnContents = append(step.TurnContents, c)
+		}
+		if len(step.TurnContents) > 0 {
+			step.TurnContent = step.TurnContents[0]
+		}
+		res.Steps = append(res.Steps, step)
+	}
+	return res
+}
+
 // ResolveCommitHash resolves a commit specifier (SHA, prefix, suffix, branch, tag, HEAD~N) in repo.
 func ResolveCommitHash(repo *git.Repository, spec string) (plumbing.Hash, error) {
 	spec = strings.TrimSpace(spec)

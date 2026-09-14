@@ -688,8 +688,51 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, req *agentv1.AddAndGe
 	}, nil
 }
 
-// GetAgent loads and returns the FolderAgent object for low-level ADK runner interactions.
-func (s *AgentSDK) GetAgent(agentID string) (*FolderAgent, error) {
+// GetAgent implements the behavior defined in proto/wackypub/v1/agent.proto.
+func (s *AgentSDK) GetAgent(ctx context.Context, req *agentv1.GetAgentRequest) (*agentv1.GetAgentResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+	agentID := req.GetAgentId()
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+
+	a2aMeta, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return nil, err
+	}
+
+	wsDir := s.WorkspaceDir
+	if req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+
+	fa, err := LoadFolderAgentWithA2A(wsDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &agentv1.GetAgentResponse{
+		AgentId:                 fa.AgentID,
+		AgentDir:                fa.AgentDir,
+		SystemPrompt:            fa.SystemPrompt,
+		MemoryPrompt:            fa.MemoryPrompt,
+		MaxToolTurns:            int32(fa.MaxToolTurns),
+		CommandTimeoutSeconds:   int32(fa.CommandTimeoutSeconds),
+		DisableAutoContinuation: fa.DisableAutoContinuation,
+	}
+	if fa.RuntimeConfig != nil {
+		resp.Model = fa.RuntimeConfig.Model
+	}
+	return resp, nil
+}
+
+// getAgentLegacy loads and returns the FolderAgent object for low-level ADK runner interactions
+// using the legacy positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) getAgentLegacy(agentID string) (*FolderAgent, error) {
 	a2aMeta, err := ValidateAgentTarget(agentID)
 	if err != nil {
 		return nil, err
@@ -1580,8 +1623,69 @@ func (s *AgentSDK) deleteScratchpadLegacy(agentID string, entryID string) error 
 	return DeleteScratchpad(agentDir, entryID)
 }
 
-// Trace performs backward causal tracing starting from an agent commit specifier or global trace ID according to D36.
-func (s *AgentSDK) Trace(agentID string, commitSpec string, traceID string, opts TraceOptions) (*TraceResult, error) {
+// Trace implements the behavior defined in proto/wackypub/v1/agent.proto.
+func (s *AgentSDK) Trace(ctx context.Context, req *agentv1.TraceRequest) (*agentv1.TraceResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+
+	wsDir := s.WorkspaceDir
+	if req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+
+	opts := DefaultTraceOptions()
+	if req.GetMaxSteps() > 0 {
+		opts.MaxSteps = int(req.GetMaxSteps())
+	}
+	if req.GetVerbosity() > 0 {
+		opts.Verbosity = int(req.GetVerbosity())
+	}
+
+	var res *TraceResult
+	var err error
+
+	switch t := req.GetTarget().(type) {
+	case *agentv1.TraceRequest_TraceId:
+		if t.TraceId == "" {
+			return nil, fmt.Errorf("trace_id cannot be empty")
+		}
+		res, err = TraceByTraceID(wsDir, t.TraceId, opts)
+	case *agentv1.TraceRequest_CommitSpec:
+		if t.CommitSpec == "" {
+			return nil, fmt.Errorf("commit_spec cannot be empty")
+		}
+		agentID := req.GetAgentId()
+		if agentID == "" {
+			return nil, fmt.Errorf("agent_id is required when commit_spec is specified")
+		}
+		res, err = TraceAgentCommit(wsDir, agentID, t.CommitSpec, opts)
+	default:
+		if traceID := req.GetTraceId(); traceID != "" {
+			res, err = TraceByTraceID(wsDir, traceID, opts)
+		} else if commitSpec := req.GetCommitSpec(); commitSpec != "" {
+			agentID := req.GetAgentId()
+			if agentID == "" {
+				return nil, fmt.Errorf("agent_id is required when commit_spec is specified")
+			}
+			res, err = TraceAgentCommit(wsDir, agentID, commitSpec, opts)
+		} else {
+			return nil, fmt.Errorf("must specify either commit_spec or trace_id")
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return TraceResultToProto(res), nil
+}
+
+// traceLegacy performs backward causal tracing starting from an agent commit specifier
+// or global trace ID using the legacy positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) traceLegacy(agentID string, commitSpec string, traceID string, opts TraceOptions) (*TraceResult, error) {
 	if traceID != "" {
 		return TraceByTraceID(s.WorkspaceDir, traceID, opts)
 	}

@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 func TestTraceAgentCommitAndTraceID(t *testing.T) {
@@ -60,11 +63,18 @@ func TestTraceAgentCommitAndTraceID(t *testing.T) {
 
 	// 2. Trace targeted commit from jax
 	sdk := NewSDK(wsDir)
+	ctx := context.Background()
 	opts := TraceOptions{MaxSteps: 10, Verbosity: 1}
-	res, err := sdk.Trace("jax", jaxHeadSHA, "", opts)
+	protoResp, err := sdk.Trace(ctx, &agentv1.TraceRequest{
+		AgentId:   "jax",
+		Target:    &agentv1.TraceRequest_CommitSpec{CommitSpec: jaxHeadSHA},
+		MaxSteps:  int32(opts.MaxSteps),
+		Verbosity: int32(opts.Verbosity),
+	})
 	if err != nil {
 		t.Fatalf("Trace failed: %v", err)
 	}
+	res := TraceProtoToResult(protoResp)
 
 	if len(res.Steps) != 2 {
 		t.Fatalf("expected 2 trace steps, got %d", len(res.Steps))
@@ -78,10 +88,15 @@ func TestTraceAgentCommitAndTraceID(t *testing.T) {
 	}
 
 	// 3. Trace by trace_id
-	traceRes, err := sdk.Trace("", "", "trace-12345", opts)
+	protoTraceResp, err := sdk.Trace(ctx, &agentv1.TraceRequest{
+		Target:    &agentv1.TraceRequest_TraceId{TraceId: "trace-12345"},
+		MaxSteps:  int32(opts.MaxSteps),
+		Verbosity: int32(opts.Verbosity),
+	})
 	if err != nil {
 		t.Fatalf("TraceByTraceID failed: %v", err)
 	}
+	traceRes := TraceProtoToResult(protoTraceResp)
 	if len(traceRes.Steps) != 2 {
 		t.Fatalf("expected 2 steps from trace_id search, got %d", len(traceRes.Steps))
 	}
