@@ -41,6 +41,7 @@ const (
 	AgentService_GenerateTurn_FullMethodName             = "/wackypub.agent.v1.AgentService/GenerateTurn"
 	AgentService_AddAndGenerateTurnStream_FullMethodName = "/wackypub.agent.v1.AgentService/AddAndGenerateTurnStream"
 	AgentService_AddAndGenerateTurn_FullMethodName       = "/wackypub.agent.v1.AgentService/AddAndGenerateTurn"
+	AgentService_Trace_FullMethodName                    = "/wackypub.agent.v1.AgentService/Trace"
 )
 
 // AgentServiceClient is the client API for AgentService service.
@@ -60,11 +61,10 @@ const (
 //   - Phase 1: Read-only workspace queries and state inspection (7 methods:
 //     ListAgents, InspectAgent, ReadSession, ReadMemory, RenderSystemPrompt,
 //     InspectSessionContext, InspectAgentLocks).
-//   - Phase 2: Streaming turn generation operations (Phase 2 canary).
-//   - Phase 3 (current): Stateful mutations (AddUserTurn, AddMedia, CancelTurn, StripSignatures,
+//   - Phase 3: Stateful mutations (AddUserTurn, AddMedia, CancelTurn, StripSignatures,
 //     CompactSession) and scratchpad CRUD (CreateScratchpad, GetScratchpad, ListScratchpads,
 //     SearchScratchpad, DiffScratchpadEntries, DeleteScratchpad).
-//   - Phase 4: Side-effectful / background operations (e.g. git commit hooks, compaction runner path).
+//   - Phase 4 (current): Side-effectful / background operations (Trace).
 //   - Phase 5: Complete cutover and deprecation/removal of legacy SDK entry points.
 //
 // Design Decisions:
@@ -181,6 +181,11 @@ type AgentServiceClient interface {
 	// the user message, runs the full generation, and returns the complete assistant text
 	// plus any hook warnings on the response.
 	AddAndGenerateTurn(ctx context.Context, in *AddAndGenerateTurnRequest, opts ...grpc.CallOption) (*AddAndGenerateTurnResponse, error)
+	// Trace performs backward causal graph traversal starting from an agent's git commit or a global
+	// correlation trace identifier (D36). Callers invoke this method to audit cross-agent workflows,
+	// inspect multi-hop turn histories, and reconstruct causal chains. The request uses a oneof to enforce
+	// that callers specify either an agent commit specifier or a trace ID.
+	Trace(ctx context.Context, in *TraceRequest, opts ...grpc.CallOption) (*TraceResponse, error)
 }
 
 type agentServiceClient struct {
@@ -429,6 +434,16 @@ func (c *agentServiceClient) AddAndGenerateTurn(ctx context.Context, in *AddAndG
 	return out, nil
 }
 
+func (c *agentServiceClient) Trace(ctx context.Context, in *TraceRequest, opts ...grpc.CallOption) (*TraceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TraceResponse)
+	err := c.cc.Invoke(ctx, AgentService_Trace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentServiceServer is the server API for AgentService service.
 // All implementations should embed UnimplementedAgentServiceServer
 // for forward compatibility.
@@ -446,11 +461,10 @@ func (c *agentServiceClient) AddAndGenerateTurn(ctx context.Context, in *AddAndG
 //   - Phase 1: Read-only workspace queries and state inspection (7 methods:
 //     ListAgents, InspectAgent, ReadSession, ReadMemory, RenderSystemPrompt,
 //     InspectSessionContext, InspectAgentLocks).
-//   - Phase 2: Streaming turn generation operations (Phase 2 canary).
-//   - Phase 3 (current): Stateful mutations (AddUserTurn, AddMedia, CancelTurn, StripSignatures,
+//   - Phase 3: Stateful mutations (AddUserTurn, AddMedia, CancelTurn, StripSignatures,
 //     CompactSession) and scratchpad CRUD (CreateScratchpad, GetScratchpad, ListScratchpads,
 //     SearchScratchpad, DiffScratchpadEntries, DeleteScratchpad).
-//   - Phase 4: Side-effectful / background operations (e.g. git commit hooks, compaction runner path).
+//   - Phase 4 (current): Side-effectful / background operations (Trace).
 //   - Phase 5: Complete cutover and deprecation/removal of legacy SDK entry points.
 //
 // Design Decisions:
@@ -567,6 +581,11 @@ type AgentServiceServer interface {
 	// the user message, runs the full generation, and returns the complete assistant text
 	// plus any hook warnings on the response.
 	AddAndGenerateTurn(context.Context, *AddAndGenerateTurnRequest) (*AddAndGenerateTurnResponse, error)
+	// Trace performs backward causal graph traversal starting from an agent's git commit or a global
+	// correlation trace identifier (D36). Callers invoke this method to audit cross-agent workflows,
+	// inspect multi-hop turn histories, and reconstruct causal chains. The request uses a oneof to enforce
+	// that callers specify either an agent commit specifier or a trace ID.
+	Trace(context.Context, *TraceRequest) (*TraceResponse, error)
 }
 
 // UnimplementedAgentServiceServer should be embedded to have
@@ -641,6 +660,9 @@ func (UnimplementedAgentServiceServer) AddAndGenerateTurnStream(*AddAndGenerateT
 }
 func (UnimplementedAgentServiceServer) AddAndGenerateTurn(context.Context, *AddAndGenerateTurnRequest) (*AddAndGenerateTurnResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddAndGenerateTurn not implemented")
+}
+func (UnimplementedAgentServiceServer) Trace(context.Context, *TraceRequest) (*TraceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Trace not implemented")
 }
 func (UnimplementedAgentServiceServer) testEmbeddedByValue() {}
 
@@ -1044,6 +1066,24 @@ func _AgentService_AddAndGenerateTurn_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_Trace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TraceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).Trace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_Trace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).Trace(ctx, req.(*TraceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentService_ServiceDesc is the grpc.ServiceDesc for AgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1130,6 +1170,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AddAndGenerateTurn",
 			Handler:    _AgentService_AddAndGenerateTurn_Handler,
+		},
+		{
+			MethodName: "Trace",
+			Handler:    _AgentService_Trace_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
