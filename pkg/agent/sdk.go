@@ -688,46 +688,6 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, req *agentv1.AddAndGe
 	}, nil
 }
 
-// GetAgent implements the behavior defined in proto/wackypub/v1/agent.proto.
-func (s *AgentSDK) GetAgent(ctx context.Context, req *agentv1.GetAgentRequest) (*agentv1.GetAgentResponse, error) {
-	if req == nil {
-		return nil, fmt.Errorf("request cannot be nil")
-	}
-	agentID := req.GetAgentId()
-	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
-	}
-
-	a2aMeta, err := ValidateAgentTarget(agentID)
-	if err != nil {
-		return nil, err
-	}
-
-	wsDir := s.WorkspaceDir
-	if req.GetWorkspaceDir() != "" {
-		wsDir = req.GetWorkspaceDir()
-	}
-
-	fa, err := LoadFolderAgentWithA2A(wsDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
-	if err != nil {
-		return nil, err
-	}
-
-	resp := &agentv1.GetAgentResponse{
-		AgentId:                 fa.AgentID,
-		AgentDir:                fa.AgentDir,
-		SystemPrompt:            fa.SystemPrompt,
-		MemoryPrompt:            fa.MemoryPrompt,
-		MaxToolTurns:            int32(fa.MaxToolTurns),
-		CommandTimeoutSeconds:   int32(fa.CommandTimeoutSeconds),
-		DisableAutoContinuation: fa.DisableAutoContinuation,
-	}
-	if fa.RuntimeConfig != nil {
-		resp.Model = fa.RuntimeConfig.Model
-	}
-	return resp, nil
-}
-
 // getAgentLegacy loads and returns the FolderAgent object for low-level ADK runner interactions
 // using the legacy positional signature.
 //

@@ -3367,171 +3367,6 @@ func (x *AddAndGenerateTurnResponse) GetWarnings() []string {
 	return nil
 }
 
-// GetAgentRequest specifies parameters for loading agent configuration and metadata.
-type GetAgentRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// agent_id identifies the agent directory to load. Required.
-	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	// workspace_dir is the filesystem path to the workspace root containing the agent.
-	// When empty, the SDK's configured default workspace directory is used.
-	WorkspaceDir  string `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *GetAgentRequest) Reset() {
-	*x = GetAgentRequest{}
-	mi := &file_agent_proto_msgTypes[50]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GetAgentRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetAgentRequest) ProtoMessage() {}
-
-func (x *GetAgentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[50]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetAgentRequest.ProtoReflect.Descriptor instead.
-func (*GetAgentRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{50}
-}
-
-func (x *GetAgentRequest) GetAgentId() string {
-	if x != nil {
-		return x.AgentId
-	}
-	return ""
-}
-
-func (x *GetAgentRequest) GetWorkspaceDir() string {
-	if x != nil {
-		return x.WorkspaceDir
-	}
-	return ""
-}
-
-// GetAgentResponse returns the structured metadata and runtime configuration of a loaded agent.
-type GetAgentResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// agent_id identifies the loaded agent.
-	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	// agent_dir is the absolute filesystem directory of the agent.
-	AgentDir string `protobuf:"bytes,2,opt,name=agent_dir,json=agentDir,proto3" json:"agent_dir,omitempty"`
-	// system_prompt is the raw system prompt content loaded from AGENTS.md.
-	SystemPrompt string `protobuf:"bytes,3,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`
-	// memory_prompt is the persistent memory notes loaded from MEMORY.md if present.
-	MemoryPrompt string `protobuf:"bytes,4,opt,name=memory_prompt,json=memoryPrompt,proto3" json:"memory_prompt,omitempty"`
-	// model identifies the configured LLM model name from runtime.json.
-	Model string `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
-	// max_tool_turns is the configured limit on tool executions per generation turn.
-	MaxToolTurns int32 `protobuf:"varint,6,opt,name=max_tool_turns,json=maxToolTurns,proto3" json:"max_tool_turns,omitempty"`
-	// command_timeout_seconds is the configured command execution timeout in seconds.
-	CommandTimeoutSeconds int32 `protobuf:"varint,7,opt,name=command_timeout_seconds,json=commandTimeoutSeconds,proto3" json:"command_timeout_seconds,omitempty"`
-	// disable_auto_continuation indicates whether automatic turn continuation is disabled.
-	DisableAutoContinuation bool `protobuf:"varint,8,opt,name=disable_auto_continuation,json=disableAutoContinuation,proto3" json:"disable_auto_continuation,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
-}
-
-func (x *GetAgentResponse) Reset() {
-	*x = GetAgentResponse{}
-	mi := &file_agent_proto_msgTypes[51]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GetAgentResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetAgentResponse) ProtoMessage() {}
-
-func (x *GetAgentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[51]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetAgentResponse.ProtoReflect.Descriptor instead.
-func (*GetAgentResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{51}
-}
-
-func (x *GetAgentResponse) GetAgentId() string {
-	if x != nil {
-		return x.AgentId
-	}
-	return ""
-}
-
-func (x *GetAgentResponse) GetAgentDir() string {
-	if x != nil {
-		return x.AgentDir
-	}
-	return ""
-}
-
-func (x *GetAgentResponse) GetSystemPrompt() string {
-	if x != nil {
-		return x.SystemPrompt
-	}
-	return ""
-}
-
-func (x *GetAgentResponse) GetMemoryPrompt() string {
-	if x != nil {
-		return x.MemoryPrompt
-	}
-	return ""
-}
-
-func (x *GetAgentResponse) GetModel() string {
-	if x != nil {
-		return x.Model
-	}
-	return ""
-}
-
-func (x *GetAgentResponse) GetMaxToolTurns() int32 {
-	if x != nil {
-		return x.MaxToolTurns
-	}
-	return 0
-}
-
-func (x *GetAgentResponse) GetCommandTimeoutSeconds() int32 {
-	if x != nil {
-		return x.CommandTimeoutSeconds
-	}
-	return 0
-}
-
-func (x *GetAgentResponse) GetDisableAutoContinuation() bool {
-	if x != nil {
-		return x.DisableAutoContinuation
-	}
-	return false
-}
-
 // A2AMetadata represents minified Agent2Agent context propagated across agent calls (D33).
 type A2AMetadata struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -3549,7 +3384,7 @@ type A2AMetadata struct {
 
 func (x *A2AMetadata) Reset() {
 	*x = A2AMetadata{}
-	mi := &file_agent_proto_msgTypes[52]
+	mi := &file_agent_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3561,7 +3396,7 @@ func (x *A2AMetadata) String() string {
 func (*A2AMetadata) ProtoMessage() {}
 
 func (x *A2AMetadata) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[52]
+	mi := &file_agent_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3574,7 +3409,7 @@ func (x *A2AMetadata) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use A2AMetadata.ProtoReflect.Descriptor instead.
 func (*A2AMetadata) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{52}
+	return file_agent_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *A2AMetadata) GetCallerId() string {
@@ -3630,7 +3465,7 @@ type TraceStep struct {
 
 func (x *TraceStep) Reset() {
 	*x = TraceStep{}
-	mi := &file_agent_proto_msgTypes[53]
+	mi := &file_agent_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3642,7 +3477,7 @@ func (x *TraceStep) String() string {
 func (*TraceStep) ProtoMessage() {}
 
 func (x *TraceStep) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[53]
+	mi := &file_agent_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3655,7 +3490,7 @@ func (x *TraceStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TraceStep.ProtoReflect.Descriptor instead.
 func (*TraceStep) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{53}
+	return file_agent_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *TraceStep) GetStepIndex() int32 {
@@ -3741,7 +3576,7 @@ type TraceRequest struct {
 
 func (x *TraceRequest) Reset() {
 	*x = TraceRequest{}
-	mi := &file_agent_proto_msgTypes[54]
+	mi := &file_agent_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3753,7 +3588,7 @@ func (x *TraceRequest) String() string {
 func (*TraceRequest) ProtoMessage() {}
 
 func (x *TraceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[54]
+	mi := &file_agent_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3766,7 +3601,7 @@ func (x *TraceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TraceRequest.ProtoReflect.Descriptor instead.
 func (*TraceRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{54}
+	return file_agent_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *TraceRequest) GetAgentId() string {
@@ -3857,7 +3692,7 @@ type TraceResponse struct {
 
 func (x *TraceResponse) Reset() {
 	*x = TraceResponse{}
-	mi := &file_agent_proto_msgTypes[55]
+	mi := &file_agent_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3869,7 +3704,7 @@ func (x *TraceResponse) String() string {
 func (*TraceResponse) ProtoMessage() {}
 
 func (x *TraceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[55]
+	mi := &file_agent_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3882,7 +3717,7 @@ func (x *TraceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TraceResponse.ProtoReflect.Descriptor instead.
 func (*TraceResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{55}
+	return file_agent_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *TraceResponse) GetTargetAgentId() string {
@@ -4150,19 +3985,7 @@ const file_agent_proto_rawDesc = "" +
 	"\rworkspace_dir\x18\x03 \x01(\tR\fworkspaceDir\"L\n" +
 	"\x1aAddAndGenerateTurnResponse\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x1a\n" +
-	"\bwarnings\x18\x02 \x03(\tR\bwarnings\"Q\n" +
-	"\x0fGetAgentRequest\x12\x19\n" +
-	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
-	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\"\xc4\x02\n" +
-	"\x10GetAgentResponse\x12\x19\n" +
-	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x1b\n" +
-	"\tagent_dir\x18\x02 \x01(\tR\bagentDir\x12#\n" +
-	"\rsystem_prompt\x18\x03 \x01(\tR\fsystemPrompt\x12#\n" +
-	"\rmemory_prompt\x18\x04 \x01(\tR\fmemoryPrompt\x12\x14\n" +
-	"\x05model\x18\x05 \x01(\tR\x05model\x12$\n" +
-	"\x0emax_tool_turns\x18\x06 \x01(\x05R\fmaxToolTurns\x126\n" +
-	"\x17command_timeout_seconds\x18\a \x01(\x05R\x15commandTimeoutSeconds\x12:\n" +
-	"\x19disable_auto_continuation\x18\b \x01(\bR\x17disableAutoContinuation\"\xeb\x01\n" +
+	"\bwarnings\x18\x02 \x03(\tR\bwarnings\"\xeb\x01\n" +
 	"\vA2AMetadata\x12\x1b\n" +
 	"\tcaller_id\x18\x01 \x01(\tR\bcallerId\x12\x1d\n" +
 	"\n" +
@@ -4197,7 +4020,7 @@ const file_agent_proto_rawDesc = "" +
 	"\x0ftarget_agent_id\x18\x01 \x01(\tR\rtargetAgentId\x12#\n" +
 	"\rtarget_commit\x18\x02 \x01(\tR\ftargetCommit\x12\x19\n" +
 	"\btrace_id\x18\x03 \x01(\tR\atraceId\x122\n" +
-	"\x05steps\x18\x04 \x03(\v2\x1c.wackypub.agent.v1.TraceStepR\x05steps2\xc4\x13\n" +
+	"\x05steps\x18\x04 \x03(\v2\x1c.wackypub.agent.v1.TraceStepR\x05steps2\xef\x12\n" +
 	"\fAgentService\x12Y\n" +
 	"\n" +
 	"ListAgents\x12$.wackypub.agent.v1.ListAgentsRequest\x1a%.wackypub.agent.v1.ListAgentsResponse\x12_\n" +
@@ -4223,8 +4046,7 @@ const file_agent_proto_rawDesc = "" +
 	"\x12GenerateTurnStream\x12,.wackypub.agent.v1.GenerateTurnStreamRequest\x1a-.wackypub.agent.v1.GenerateTurnStreamResponse0\x01\x12_\n" +
 	"\fGenerateTurn\x12&.wackypub.agent.v1.GenerateTurnRequest\x1a'.wackypub.agent.v1.GenerateTurnResponse\x12\x85\x01\n" +
 	"\x18AddAndGenerateTurnStream\x122.wackypub.agent.v1.AddAndGenerateTurnStreamRequest\x1a3.wackypub.agent.v1.AddAndGenerateTurnStreamResponse0\x01\x12q\n" +
-	"\x12AddAndGenerateTurn\x12,.wackypub.agent.v1.AddAndGenerateTurnRequest\x1a-.wackypub.agent.v1.AddAndGenerateTurnResponse\x12S\n" +
-	"\bGetAgent\x12\".wackypub.agent.v1.GetAgentRequest\x1a#.wackypub.agent.v1.GetAgentResponse\x12J\n" +
+	"\x12AddAndGenerateTurn\x12,.wackypub.agent.v1.AddAndGenerateTurnRequest\x1a-.wackypub.agent.v1.AddAndGenerateTurnResponse\x12J\n" +
 	"\x05Trace\x12\x1f.wackypub.agent.v1.TraceRequest\x1a .wackypub.agent.v1.TraceResponseB7Z5github.com/colinrgodsey/wackypub/pkg/agent/v1;agentv1b\x06proto3"
 
 var (
@@ -4239,7 +4061,7 @@ func file_agent_proto_rawDescGZIP() []byte {
 	return file_agent_proto_rawDescData
 }
 
-var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 57)
+var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
 var file_agent_proto_goTypes = []any{
 	(*ListAgentsRequest)(nil),                // 0: wackypub.agent.v1.ListAgentsRequest
 	(*ListAgentsResponse)(nil),               // 1: wackypub.agent.v1.ListAgentsResponse
@@ -4291,31 +4113,29 @@ var file_agent_proto_goTypes = []any{
 	(*AddAndGenerateTurnStreamResponse)(nil), // 47: wackypub.agent.v1.AddAndGenerateTurnStreamResponse
 	(*AddAndGenerateTurnRequest)(nil),        // 48: wackypub.agent.v1.AddAndGenerateTurnRequest
 	(*AddAndGenerateTurnResponse)(nil),       // 49: wackypub.agent.v1.AddAndGenerateTurnResponse
-	(*GetAgentRequest)(nil),                  // 50: wackypub.agent.v1.GetAgentRequest
-	(*GetAgentResponse)(nil),                 // 51: wackypub.agent.v1.GetAgentResponse
-	(*A2AMetadata)(nil),                      // 52: wackypub.agent.v1.A2AMetadata
-	(*TraceStep)(nil),                        // 53: wackypub.agent.v1.TraceStep
-	(*TraceRequest)(nil),                     // 54: wackypub.agent.v1.TraceRequest
-	(*TraceResponse)(nil),                    // 55: wackypub.agent.v1.TraceResponse
-	nil,                                      // 56: wackypub.agent.v1.A2AMetadata.MetadataEntry
-	(*timestamppb.Timestamp)(nil),            // 57: google.protobuf.Timestamp
+	(*A2AMetadata)(nil),                      // 50: wackypub.agent.v1.A2AMetadata
+	(*TraceStep)(nil),                        // 51: wackypub.agent.v1.TraceStep
+	(*TraceRequest)(nil),                     // 52: wackypub.agent.v1.TraceRequest
+	(*TraceResponse)(nil),                    // 53: wackypub.agent.v1.TraceResponse
+	nil,                                      // 54: wackypub.agent.v1.A2AMetadata.MetadataEntry
+	(*timestamppb.Timestamp)(nil),            // 55: google.protobuf.Timestamp
 }
 var file_agent_proto_depIdxs = []int32{
 	6,  // 0: wackypub.agent.v1.ReadSessionResponse.turns:type_name -> wackypub.agent.v1.SessionTurn
 	7,  // 1: wackypub.agent.v1.SessionTurn.parts:type_name -> wackypub.agent.v1.SessionPart
 	16, // 2: wackypub.agent.v1.InspectAgentLocksResponse.observations:type_name -> wackypub.agent.v1.AgentLockObservation
-	57, // 3: wackypub.agent.v1.AgentLockObservation.lock_held_since:type_name -> google.protobuf.Timestamp
-	57, // 4: wackypub.agent.v1.AgentLockObservation.last_write:type_name -> google.protobuf.Timestamp
+	55, // 3: wackypub.agent.v1.AgentLockObservation.lock_held_since:type_name -> google.protobuf.Timestamp
+	55, // 4: wackypub.agent.v1.AgentLockObservation.last_write:type_name -> google.protobuf.Timestamp
 	6,  // 5: wackypub.agent.v1.AddUserTurnResponse.turn:type_name -> wackypub.agent.v1.SessionTurn
 	6,  // 6: wackypub.agent.v1.AddMediaResponse.turn:type_name -> wackypub.agent.v1.SessionTurn
 	26, // 7: wackypub.agent.v1.CompactSessionRequest.config_override:type_name -> wackypub.agent.v1.CompactConfigOverride
 	30, // 8: wackypub.agent.v1.CreateScratchpadResponse.entry:type_name -> wackypub.agent.v1.ScratchpadEntry
 	30, // 9: wackypub.agent.v1.ListScratchpadsResponse.entries:type_name -> wackypub.agent.v1.ScratchpadEntry
 	37, // 10: wackypub.agent.v1.SearchScratchpadResponse.matches:type_name -> wackypub.agent.v1.ScratchpadMatch
-	56, // 11: wackypub.agent.v1.A2AMetadata.metadata:type_name -> wackypub.agent.v1.A2AMetadata.MetadataEntry
-	52, // 12: wackypub.agent.v1.TraceStep.a2a_metadata:type_name -> wackypub.agent.v1.A2AMetadata
+	54, // 11: wackypub.agent.v1.A2AMetadata.metadata:type_name -> wackypub.agent.v1.A2AMetadata.MetadataEntry
+	50, // 12: wackypub.agent.v1.TraceStep.a2a_metadata:type_name -> wackypub.agent.v1.A2AMetadata
 	6,  // 13: wackypub.agent.v1.TraceStep.turn_contents:type_name -> wackypub.agent.v1.SessionTurn
-	53, // 14: wackypub.agent.v1.TraceResponse.steps:type_name -> wackypub.agent.v1.TraceStep
+	51, // 14: wackypub.agent.v1.TraceResponse.steps:type_name -> wackypub.agent.v1.TraceStep
 	0,  // 15: wackypub.agent.v1.AgentService.ListAgents:input_type -> wackypub.agent.v1.ListAgentsRequest
 	2,  // 16: wackypub.agent.v1.AgentService.InspectAgent:input_type -> wackypub.agent.v1.InspectAgentRequest
 	4,  // 17: wackypub.agent.v1.AgentService.ReadSession:input_type -> wackypub.agent.v1.ReadSessionRequest
@@ -4338,34 +4158,32 @@ var file_agent_proto_depIdxs = []int32{
 	44, // 34: wackypub.agent.v1.AgentService.GenerateTurn:input_type -> wackypub.agent.v1.GenerateTurnRequest
 	46, // 35: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:input_type -> wackypub.agent.v1.AddAndGenerateTurnStreamRequest
 	48, // 36: wackypub.agent.v1.AgentService.AddAndGenerateTurn:input_type -> wackypub.agent.v1.AddAndGenerateTurnRequest
-	50, // 37: wackypub.agent.v1.AgentService.GetAgent:input_type -> wackypub.agent.v1.GetAgentRequest
-	54, // 38: wackypub.agent.v1.AgentService.Trace:input_type -> wackypub.agent.v1.TraceRequest
-	1,  // 39: wackypub.agent.v1.AgentService.ListAgents:output_type -> wackypub.agent.v1.ListAgentsResponse
-	3,  // 40: wackypub.agent.v1.AgentService.InspectAgent:output_type -> wackypub.agent.v1.InspectAgentResponse
-	5,  // 41: wackypub.agent.v1.AgentService.ReadSession:output_type -> wackypub.agent.v1.ReadSessionResponse
-	9,  // 42: wackypub.agent.v1.AgentService.ReadMemory:output_type -> wackypub.agent.v1.ReadMemoryResponse
-	11, // 43: wackypub.agent.v1.AgentService.RenderSystemPrompt:output_type -> wackypub.agent.v1.RenderSystemPromptResponse
-	13, // 44: wackypub.agent.v1.AgentService.InspectSessionContext:output_type -> wackypub.agent.v1.InspectSessionContextResponse
-	15, // 45: wackypub.agent.v1.AgentService.InspectAgentLocks:output_type -> wackypub.agent.v1.InspectAgentLocksResponse
-	18, // 46: wackypub.agent.v1.AgentService.AddUserTurn:output_type -> wackypub.agent.v1.AddUserTurnResponse
-	20, // 47: wackypub.agent.v1.AgentService.AddMedia:output_type -> wackypub.agent.v1.AddMediaResponse
-	22, // 48: wackypub.agent.v1.AgentService.CancelTurn:output_type -> wackypub.agent.v1.CancelTurnResponse
-	24, // 49: wackypub.agent.v1.AgentService.StripSignatures:output_type -> wackypub.agent.v1.StripSignaturesResponse
-	27, // 50: wackypub.agent.v1.AgentService.CompactSession:output_type -> wackypub.agent.v1.CompactSessionResponse
-	29, // 51: wackypub.agent.v1.AgentService.CreateScratchpad:output_type -> wackypub.agent.v1.CreateScratchpadResponse
-	32, // 52: wackypub.agent.v1.AgentService.GetScratchpad:output_type -> wackypub.agent.v1.GetScratchpadResponse
-	34, // 53: wackypub.agent.v1.AgentService.ListScratchpads:output_type -> wackypub.agent.v1.ListScratchpadsResponse
-	36, // 54: wackypub.agent.v1.AgentService.SearchScratchpad:output_type -> wackypub.agent.v1.SearchScratchpadResponse
-	39, // 55: wackypub.agent.v1.AgentService.DiffScratchpadEntries:output_type -> wackypub.agent.v1.DiffScratchpadEntriesResponse
-	41, // 56: wackypub.agent.v1.AgentService.DeleteScratchpad:output_type -> wackypub.agent.v1.DeleteScratchpadResponse
-	43, // 57: wackypub.agent.v1.AgentService.GenerateTurnStream:output_type -> wackypub.agent.v1.GenerateTurnStreamResponse
-	45, // 58: wackypub.agent.v1.AgentService.GenerateTurn:output_type -> wackypub.agent.v1.GenerateTurnResponse
-	47, // 59: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:output_type -> wackypub.agent.v1.AddAndGenerateTurnStreamResponse
-	49, // 60: wackypub.agent.v1.AgentService.AddAndGenerateTurn:output_type -> wackypub.agent.v1.AddAndGenerateTurnResponse
-	51, // 61: wackypub.agent.v1.AgentService.GetAgent:output_type -> wackypub.agent.v1.GetAgentResponse
-	55, // 62: wackypub.agent.v1.AgentService.Trace:output_type -> wackypub.agent.v1.TraceResponse
-	39, // [39:63] is the sub-list for method output_type
-	15, // [15:39] is the sub-list for method input_type
+	52, // 37: wackypub.agent.v1.AgentService.Trace:input_type -> wackypub.agent.v1.TraceRequest
+	1,  // 38: wackypub.agent.v1.AgentService.ListAgents:output_type -> wackypub.agent.v1.ListAgentsResponse
+	3,  // 39: wackypub.agent.v1.AgentService.InspectAgent:output_type -> wackypub.agent.v1.InspectAgentResponse
+	5,  // 40: wackypub.agent.v1.AgentService.ReadSession:output_type -> wackypub.agent.v1.ReadSessionResponse
+	9,  // 41: wackypub.agent.v1.AgentService.ReadMemory:output_type -> wackypub.agent.v1.ReadMemoryResponse
+	11, // 42: wackypub.agent.v1.AgentService.RenderSystemPrompt:output_type -> wackypub.agent.v1.RenderSystemPromptResponse
+	13, // 43: wackypub.agent.v1.AgentService.InspectSessionContext:output_type -> wackypub.agent.v1.InspectSessionContextResponse
+	15, // 44: wackypub.agent.v1.AgentService.InspectAgentLocks:output_type -> wackypub.agent.v1.InspectAgentLocksResponse
+	18, // 45: wackypub.agent.v1.AgentService.AddUserTurn:output_type -> wackypub.agent.v1.AddUserTurnResponse
+	20, // 46: wackypub.agent.v1.AgentService.AddMedia:output_type -> wackypub.agent.v1.AddMediaResponse
+	22, // 47: wackypub.agent.v1.AgentService.CancelTurn:output_type -> wackypub.agent.v1.CancelTurnResponse
+	24, // 48: wackypub.agent.v1.AgentService.StripSignatures:output_type -> wackypub.agent.v1.StripSignaturesResponse
+	27, // 49: wackypub.agent.v1.AgentService.CompactSession:output_type -> wackypub.agent.v1.CompactSessionResponse
+	29, // 50: wackypub.agent.v1.AgentService.CreateScratchpad:output_type -> wackypub.agent.v1.CreateScratchpadResponse
+	32, // 51: wackypub.agent.v1.AgentService.GetScratchpad:output_type -> wackypub.agent.v1.GetScratchpadResponse
+	34, // 52: wackypub.agent.v1.AgentService.ListScratchpads:output_type -> wackypub.agent.v1.ListScratchpadsResponse
+	36, // 53: wackypub.agent.v1.AgentService.SearchScratchpad:output_type -> wackypub.agent.v1.SearchScratchpadResponse
+	39, // 54: wackypub.agent.v1.AgentService.DiffScratchpadEntries:output_type -> wackypub.agent.v1.DiffScratchpadEntriesResponse
+	41, // 55: wackypub.agent.v1.AgentService.DeleteScratchpad:output_type -> wackypub.agent.v1.DeleteScratchpadResponse
+	43, // 56: wackypub.agent.v1.AgentService.GenerateTurnStream:output_type -> wackypub.agent.v1.GenerateTurnStreamResponse
+	45, // 57: wackypub.agent.v1.AgentService.GenerateTurn:output_type -> wackypub.agent.v1.GenerateTurnResponse
+	47, // 58: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:output_type -> wackypub.agent.v1.AddAndGenerateTurnStreamResponse
+	49, // 59: wackypub.agent.v1.AgentService.AddAndGenerateTurn:output_type -> wackypub.agent.v1.AddAndGenerateTurnResponse
+	53, // 60: wackypub.agent.v1.AgentService.Trace:output_type -> wackypub.agent.v1.TraceResponse
+	38, // [38:61] is the sub-list for method output_type
+	15, // [15:38] is the sub-list for method input_type
 	15, // [15:15] is the sub-list for extension type_name
 	15, // [15:15] is the sub-list for extension extendee
 	0,  // [0:15] is the sub-list for field type_name
@@ -4378,7 +4196,7 @@ func file_agent_proto_init() {
 	}
 	file_agent_proto_msgTypes[31].OneofWrappers = []any{}
 	file_agent_proto_msgTypes[35].OneofWrappers = []any{}
-	file_agent_proto_msgTypes[54].OneofWrappers = []any{
+	file_agent_proto_msgTypes[52].OneofWrappers = []any{
 		(*TraceRequest_CommitSpec)(nil),
 		(*TraceRequest_TraceId)(nil),
 	}
@@ -4388,7 +4206,7 @@ func file_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   57,
+			NumMessages:   55,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

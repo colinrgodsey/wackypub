@@ -22,7 +22,7 @@ option go_package = "github.com/colinrgodsey/wackypub/pkg/agent/v1;agentv1";
 //   - Phase 3: Stateful mutations (AddUserTurn, AddMedia, CancelTurn, StripSignatures,
 //     CompactSession) and scratchpad CRUD (CreateScratchpad, GetScratchpad, ListScratchpads,
 //     SearchScratchpad, DiffScratchpadEntries, DeleteScratchpad).
-//   - Phase 4 (current): Side-effectful / background operations (GetAgent, Trace).
+//   - Phase 4 (current): Side-effectful / background operations (Trace).
 //   - Phase 5: Complete cutover and deprecation/removal of legacy SDK entry points.
 //
 // Design Decisions:
@@ -161,12 +161,6 @@ service AgentService {
   // the user message, runs the full generation, and returns the complete assistant text
   // plus any hook warnings on the response.
   rpc AddAndGenerateTurn(AddAndGenerateTurnRequest) returns (AddAndGenerateTurnResponse);
-
-  // GetAgent loads and returns the structured configuration, filesystem locations, and prompt
-  // metadata for an agent directory. Callers invoke this method to inspect agent execution parameters,
-  // initialize runner contexts, or access agent settings without executing model generations.
-  // Performs workspace target allowlist authorization.
-  rpc GetAgent(GetAgentRequest) returns (GetAgentResponse);
 
   // Trace performs backward causal graph traversal starting from an agent's git commit or a global
   // correlation trace identifier (D36). Callers invoke this method to audit cross-agent workflows,
@@ -851,43 +845,6 @@ message AddAndGenerateTurnResponse {
 
   // warnings are hook execution warnings collected during the turn.
   repeated string warnings = 2;
-}
-
-// GetAgentRequest specifies parameters for loading agent configuration and metadata.
-message GetAgentRequest {
-  // agent_id identifies the agent directory to load. Required.
-  string agent_id = 1;
-
-  // workspace_dir is the filesystem path to the workspace root containing the agent.
-  // When empty, the SDK's configured default workspace directory is used.
-  string workspace_dir = 2;
-}
-
-// GetAgentResponse returns the structured metadata and runtime configuration of a loaded agent.
-message GetAgentResponse {
-  // agent_id identifies the loaded agent.
-  string agent_id = 1;
-
-  // agent_dir is the absolute filesystem directory of the agent.
-  string agent_dir = 2;
-
-  // system_prompt is the raw system prompt content loaded from AGENTS.md.
-  string system_prompt = 3;
-
-  // memory_prompt is the persistent memory notes loaded from MEMORY.md if present.
-  string memory_prompt = 4;
-
-  // model identifies the configured LLM model name from runtime.json.
-  string model = 5;
-
-  // max_tool_turns is the configured limit on tool executions per generation turn.
-  int32 max_tool_turns = 6;
-
-  // command_timeout_seconds is the configured command execution timeout in seconds.
-  int32 command_timeout_seconds = 7;
-
-  // disable_auto_continuation indicates whether automatic turn continuation is disabled.
-  bool disable_auto_continuation = 8;
 }
 
 // A2AMetadata represents minified Agent2Agent context propagated across agent calls (D33).

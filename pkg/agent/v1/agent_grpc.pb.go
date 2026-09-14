@@ -41,7 +41,6 @@ const (
 	AgentService_GenerateTurn_FullMethodName             = "/wackypub.agent.v1.AgentService/GenerateTurn"
 	AgentService_AddAndGenerateTurnStream_FullMethodName = "/wackypub.agent.v1.AgentService/AddAndGenerateTurnStream"
 	AgentService_AddAndGenerateTurn_FullMethodName       = "/wackypub.agent.v1.AgentService/AddAndGenerateTurn"
-	AgentService_GetAgent_FullMethodName                 = "/wackypub.agent.v1.AgentService/GetAgent"
 	AgentService_Trace_FullMethodName                    = "/wackypub.agent.v1.AgentService/Trace"
 )
 
@@ -65,7 +64,7 @@ const (
 //   - Phase 3: Stateful mutations (AddUserTurn, AddMedia, CancelTurn, StripSignatures,
 //     CompactSession) and scratchpad CRUD (CreateScratchpad, GetScratchpad, ListScratchpads,
 //     SearchScratchpad, DiffScratchpadEntries, DeleteScratchpad).
-//   - Phase 4 (current): Side-effectful / background operations (GetAgent, Trace).
+//   - Phase 4 (current): Side-effectful / background operations (Trace).
 //   - Phase 5: Complete cutover and deprecation/removal of legacy SDK entry points.
 //
 // Design Decisions:
@@ -182,11 +181,6 @@ type AgentServiceClient interface {
 	// the user message, runs the full generation, and returns the complete assistant text
 	// plus any hook warnings on the response.
 	AddAndGenerateTurn(ctx context.Context, in *AddAndGenerateTurnRequest, opts ...grpc.CallOption) (*AddAndGenerateTurnResponse, error)
-	// GetAgent loads and returns the structured configuration, filesystem locations, and prompt
-	// metadata for an agent directory. Callers invoke this method to inspect agent execution parameters,
-	// initialize runner contexts, or access agent settings without executing model generations.
-	// Performs workspace target allowlist authorization.
-	GetAgent(ctx context.Context, in *GetAgentRequest, opts ...grpc.CallOption) (*GetAgentResponse, error)
 	// Trace performs backward causal graph traversal starting from an agent's git commit or a global
 	// correlation trace identifier (D36). Callers invoke this method to audit cross-agent workflows,
 	// inspect multi-hop turn histories, and reconstruct causal chains. The request uses a oneof to enforce
@@ -440,16 +434,6 @@ func (c *agentServiceClient) AddAndGenerateTurn(ctx context.Context, in *AddAndG
 	return out, nil
 }
 
-func (c *agentServiceClient) GetAgent(ctx context.Context, in *GetAgentRequest, opts ...grpc.CallOption) (*GetAgentResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetAgentResponse)
-	err := c.cc.Invoke(ctx, AgentService_GetAgent_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *agentServiceClient) Trace(ctx context.Context, in *TraceRequest, opts ...grpc.CallOption) (*TraceResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TraceResponse)
@@ -480,7 +464,7 @@ func (c *agentServiceClient) Trace(ctx context.Context, in *TraceRequest, opts .
 //   - Phase 3: Stateful mutations (AddUserTurn, AddMedia, CancelTurn, StripSignatures,
 //     CompactSession) and scratchpad CRUD (CreateScratchpad, GetScratchpad, ListScratchpads,
 //     SearchScratchpad, DiffScratchpadEntries, DeleteScratchpad).
-//   - Phase 4 (current): Side-effectful / background operations (GetAgent, Trace).
+//   - Phase 4 (current): Side-effectful / background operations (Trace).
 //   - Phase 5: Complete cutover and deprecation/removal of legacy SDK entry points.
 //
 // Design Decisions:
@@ -597,11 +581,6 @@ type AgentServiceServer interface {
 	// the user message, runs the full generation, and returns the complete assistant text
 	// plus any hook warnings on the response.
 	AddAndGenerateTurn(context.Context, *AddAndGenerateTurnRequest) (*AddAndGenerateTurnResponse, error)
-	// GetAgent loads and returns the structured configuration, filesystem locations, and prompt
-	// metadata for an agent directory. Callers invoke this method to inspect agent execution parameters,
-	// initialize runner contexts, or access agent settings without executing model generations.
-	// Performs workspace target allowlist authorization.
-	GetAgent(context.Context, *GetAgentRequest) (*GetAgentResponse, error)
 	// Trace performs backward causal graph traversal starting from an agent's git commit or a global
 	// correlation trace identifier (D36). Callers invoke this method to audit cross-agent workflows,
 	// inspect multi-hop turn histories, and reconstruct causal chains. The request uses a oneof to enforce
@@ -681,9 +660,6 @@ func (UnimplementedAgentServiceServer) AddAndGenerateTurnStream(*AddAndGenerateT
 }
 func (UnimplementedAgentServiceServer) AddAndGenerateTurn(context.Context, *AddAndGenerateTurnRequest) (*AddAndGenerateTurnResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddAndGenerateTurn not implemented")
-}
-func (UnimplementedAgentServiceServer) GetAgent(context.Context, *GetAgentRequest) (*GetAgentResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetAgent not implemented")
 }
 func (UnimplementedAgentServiceServer) Trace(context.Context, *TraceRequest) (*TraceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Trace not implemented")
@@ -1090,24 +1066,6 @@ func _AgentService_AddAndGenerateTurn_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AgentService_GetAgent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetAgentRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AgentServiceServer).GetAgent(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AgentService_GetAgent_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AgentServiceServer).GetAgent(ctx, req.(*GetAgentRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _AgentService_Trace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TraceRequest)
 	if err := dec(in); err != nil {
@@ -1212,10 +1170,6 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AddAndGenerateTurn",
 			Handler:    _AgentService_AddAndGenerateTurn_Handler,
-		},
-		{
-			MethodName: "GetAgent",
-			Handler:    _AgentService_GetAgent_Handler,
 		},
 		{
 			MethodName: "Trace",

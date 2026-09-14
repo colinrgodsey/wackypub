@@ -1227,9 +1227,9 @@ func TestProtoContract_CompactSession_CrossAgentAuthorization(t *testing.T) {
 	}
 }
 
-// TestPhase4MethodParity verifies field-by-field parity between proto methods and legacy methods
+// TestTraceMethodParity verifies field-by-field parity between proto methods and legacy methods
 // for the 2 Phase 4 operations: GetAgent and Trace.
-func TestPhase4MethodParity(t *testing.T) {
+func TestTraceMethodParity(t *testing.T) {
 	wsDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), []byte(""), 0644); err != nil {
 		t.Fatalf("failed writing root marker: %v", err)
@@ -1327,41 +1327,6 @@ func TestPhase4MethodParity(t *testing.T) {
 	ctx := context.Background()
 
 	// ==========================================
-	// Parity 1: GetAgent vs getAgentLegacy
-	// ==========================================
-	legBob, err := sdk.getAgentLegacy("bob")
-	if err != nil {
-		t.Fatalf("getAgentLegacy failed: %v", err)
-	}
-	protoBob, err := sdk.GetAgent(ctx, &agentv1.GetAgentRequest{AgentId: "bob"})
-	if err != nil {
-		t.Fatalf("GetAgent proto failed: %v", err)
-	}
-
-	if protoBob.GetAgentId() != legBob.AgentID {
-		t.Errorf("GetAgent AgentId mismatch: %q vs %q", protoBob.GetAgentId(), legBob.AgentID)
-	}
-	if protoBob.GetAgentDir() != legBob.AgentDir {
-		t.Errorf("GetAgent AgentDir mismatch: %q vs %q", protoBob.GetAgentDir(), legBob.AgentDir)
-	}
-	if protoBob.GetSystemPrompt() != legBob.SystemPrompt {
-		t.Errorf("GetAgent SystemPrompt mismatch: %q vs %q", protoBob.GetSystemPrompt(), legBob.SystemPrompt)
-	}
-	if protoBob.GetMemoryPrompt() != legBob.MemoryPrompt {
-		t.Errorf("GetAgent MemoryPrompt mismatch: %q vs %q", protoBob.GetMemoryPrompt(), legBob.MemoryPrompt)
-	}
-	if protoBob.GetMaxToolTurns() != int32(legBob.MaxToolTurns) {
-		t.Errorf("GetAgent MaxToolTurns mismatch: %d vs %d", protoBob.GetMaxToolTurns(), legBob.MaxToolTurns)
-	}
-	if protoBob.GetCommandTimeoutSeconds() != int32(legBob.CommandTimeoutSeconds) {
-		t.Errorf("GetAgent CommandTimeoutSeconds mismatch: %d vs %d", protoBob.GetCommandTimeoutSeconds(), legBob.CommandTimeoutSeconds)
-	}
-	if protoBob.GetDisableAutoContinuation() != legBob.DisableAutoContinuation {
-		t.Errorf("GetAgent DisableAutoContinuation mismatch: %v vs %v", protoBob.GetDisableAutoContinuation(), legBob.DisableAutoContinuation)
-	}
-	if legBob.RuntimeConfig != nil && protoBob.GetModel() != legBob.RuntimeConfig.Model {
-		t.Errorf("GetAgent Model mismatch: %q vs %q", protoBob.GetModel(), legBob.RuntimeConfig.Model)
-	}
 
 	// ==========================================
 	// Parity 2: Trace vs traceLegacy (by commit)
