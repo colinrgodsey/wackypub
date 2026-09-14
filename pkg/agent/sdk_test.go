@@ -142,7 +142,7 @@ func TestStreamingAndMultiPartTextPreservation(t *testing.T) {
 
 	// 1. Test AddAndGenerateTurnStream yields both chunks in real time
 	var chunks []string
-	for chunk, err := range sdk.AddAndGenerateTurnStream(ctx, agentID, "What is the answer?") {
+	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(ctx, agentID, "What is the answer?") {
 		if err != nil {
 			t.Fatalf("AddAndGenerateTurnStream failed: %v", err)
 		}
@@ -163,7 +163,7 @@ func TestStreamingAndMultiPartTextPreservation(t *testing.T) {
 
 	// 2. Test AddAndGenerateTurn collects and joins both chunks with \n\n without dropping narration (D69 fix)
 	callCount = 0 // Reset server calls for next turn
-	fullResp, err := sdk.AddAndGenerateTurn(ctx, agentID, "Ask again")
+	fullResp, err := sdk.addAndGenerateTurnLegacy(ctx, agentID, "Ask again")
 	if err != nil {
 		t.Fatalf("AddAndGenerateTurn failed: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestStreamingEarlyBreakReleasesLock(t *testing.T) {
 	ctx := context.Background()
 
 	// Break early after first chunk
-	for chunk, err := range sdk.AddAndGenerateTurnStream(ctx, agentID, "Hello") {
+	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(ctx, agentID, "Hello") {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -228,7 +228,7 @@ func TestStreamingEarlyBreakReleasesLock(t *testing.T) {
 
 	// Verify session lock was released cleanly: a subsequent call must acquire lock without blocking/failing
 	callCount = 1 // Next call returns Chunk 2
-	resp, err := sdk.AddAndGenerateTurn(ctx, agentID, "Follow up")
+	resp, err := sdk.addAndGenerateTurnLegacy(ctx, agentID, "Follow up")
 	if err != nil {
 		t.Fatalf("subsequent call failed (lock held?): %v", err)
 	}
@@ -283,7 +283,7 @@ func TestSDK_CancelTurn(t *testing.T) {
 	streamDone := make(chan error, 1)
 	go func() {
 		var streamErr error
-		for _, err := range sdk.AddAndGenerateTurnStream(context.Background(), agentID, "Hello") {
+		for _, err := range sdk.addAndGenerateTurnStreamLegacy(context.Background(), agentID, "Hello") {
 			if err != nil {
 				streamErr = err
 				break

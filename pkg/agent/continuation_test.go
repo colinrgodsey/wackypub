@@ -785,7 +785,7 @@ func TestD88_ContextCancellationStopsContinuation(t *testing.T) {
 	streamDone := make(chan error, 1)
 	go func() {
 		var streamErr error
-		for _, err := range sdk.GenerateTurnStream(context.Background(), agentID) {
+		for _, err := range sdk.generateTurnStreamLegacy(context.Background(), agentID) {
 			if err != nil {
 				streamErr = err
 				break

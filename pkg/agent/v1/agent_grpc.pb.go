@@ -19,24 +19,28 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AgentService_ListAgents_FullMethodName            = "/wackypub.agent.v1.AgentService/ListAgents"
-	AgentService_InspectAgent_FullMethodName          = "/wackypub.agent.v1.AgentService/InspectAgent"
-	AgentService_ReadSession_FullMethodName           = "/wackypub.agent.v1.AgentService/ReadSession"
-	AgentService_ReadMemory_FullMethodName            = "/wackypub.agent.v1.AgentService/ReadMemory"
-	AgentService_RenderSystemPrompt_FullMethodName    = "/wackypub.agent.v1.AgentService/RenderSystemPrompt"
-	AgentService_InspectSessionContext_FullMethodName = "/wackypub.agent.v1.AgentService/InspectSessionContext"
-	AgentService_InspectAgentLocks_FullMethodName     = "/wackypub.agent.v1.AgentService/InspectAgentLocks"
-	AgentService_AddUserTurn_FullMethodName           = "/wackypub.agent.v1.AgentService/AddUserTurn"
-	AgentService_AddMedia_FullMethodName              = "/wackypub.agent.v1.AgentService/AddMedia"
-	AgentService_CancelTurn_FullMethodName            = "/wackypub.agent.v1.AgentService/CancelTurn"
-	AgentService_StripSignatures_FullMethodName       = "/wackypub.agent.v1.AgentService/StripSignatures"
-	AgentService_CompactSession_FullMethodName        = "/wackypub.agent.v1.AgentService/CompactSession"
-	AgentService_CreateScratchpad_FullMethodName      = "/wackypub.agent.v1.AgentService/CreateScratchpad"
-	AgentService_GetScratchpad_FullMethodName         = "/wackypub.agent.v1.AgentService/GetScratchpad"
-	AgentService_ListScratchpads_FullMethodName       = "/wackypub.agent.v1.AgentService/ListScratchpads"
-	AgentService_SearchScratchpad_FullMethodName      = "/wackypub.agent.v1.AgentService/SearchScratchpad"
-	AgentService_DiffScratchpadEntries_FullMethodName = "/wackypub.agent.v1.AgentService/DiffScratchpadEntries"
-	AgentService_DeleteScratchpad_FullMethodName      = "/wackypub.agent.v1.AgentService/DeleteScratchpad"
+	AgentService_ListAgents_FullMethodName               = "/wackypub.agent.v1.AgentService/ListAgents"
+	AgentService_InspectAgent_FullMethodName             = "/wackypub.agent.v1.AgentService/InspectAgent"
+	AgentService_ReadSession_FullMethodName              = "/wackypub.agent.v1.AgentService/ReadSession"
+	AgentService_ReadMemory_FullMethodName               = "/wackypub.agent.v1.AgentService/ReadMemory"
+	AgentService_RenderSystemPrompt_FullMethodName       = "/wackypub.agent.v1.AgentService/RenderSystemPrompt"
+	AgentService_InspectSessionContext_FullMethodName    = "/wackypub.agent.v1.AgentService/InspectSessionContext"
+	AgentService_InspectAgentLocks_FullMethodName        = "/wackypub.agent.v1.AgentService/InspectAgentLocks"
+	AgentService_AddUserTurn_FullMethodName              = "/wackypub.agent.v1.AgentService/AddUserTurn"
+	AgentService_AddMedia_FullMethodName                 = "/wackypub.agent.v1.AgentService/AddMedia"
+	AgentService_CancelTurn_FullMethodName               = "/wackypub.agent.v1.AgentService/CancelTurn"
+	AgentService_StripSignatures_FullMethodName          = "/wackypub.agent.v1.AgentService/StripSignatures"
+	AgentService_CompactSession_FullMethodName           = "/wackypub.agent.v1.AgentService/CompactSession"
+	AgentService_CreateScratchpad_FullMethodName         = "/wackypub.agent.v1.AgentService/CreateScratchpad"
+	AgentService_GetScratchpad_FullMethodName            = "/wackypub.agent.v1.AgentService/GetScratchpad"
+	AgentService_ListScratchpads_FullMethodName          = "/wackypub.agent.v1.AgentService/ListScratchpads"
+	AgentService_SearchScratchpad_FullMethodName         = "/wackypub.agent.v1.AgentService/SearchScratchpad"
+	AgentService_DiffScratchpadEntries_FullMethodName    = "/wackypub.agent.v1.AgentService/DiffScratchpadEntries"
+	AgentService_DeleteScratchpad_FullMethodName         = "/wackypub.agent.v1.AgentService/DeleteScratchpad"
+	AgentService_GenerateTurnStream_FullMethodName       = "/wackypub.agent.v1.AgentService/GenerateTurnStream"
+	AgentService_GenerateTurn_FullMethodName             = "/wackypub.agent.v1.AgentService/GenerateTurn"
+	AgentService_AddAndGenerateTurnStream_FullMethodName = "/wackypub.agent.v1.AgentService/AddAndGenerateTurnStream"
+	AgentService_AddAndGenerateTurn_FullMethodName       = "/wackypub.agent.v1.AgentService/AddAndGenerateTurn"
 )
 
 // AgentServiceClient is the client API for AgentService service.
@@ -158,6 +162,25 @@ type AgentServiceClient interface {
 	// DeleteScratchpad removes a scratchpad entry from the agent's scratchpad store by its identifier.
 	// Enforces workspace allowlist authorization.
 	DeleteScratchpad(ctx context.Context, in *DeleteScratchpadRequest, opts ...grpc.CallOption) (*DeleteScratchpadResponse, error)
+	// GenerateTurnStream generates the next assistant turn for an agent whose session
+	// already contains pending history, streaming text chunks to the caller as the model
+	// produces them. The request carries no user message - the turn continues from whatever
+	// is already in session.jsonl (e.g. a turn queued by AddUserTurn). It holds the session
+	// lock for the entire stream, and the stream is cancelled when the caller stops iterating
+	// or the context expires.
+	GenerateTurnStream(ctx context.Context, in *GenerateTurnStreamRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GenerateTurnStreamResponse], error)
+	// GenerateTurn is the non-streaming twin of GenerateTurnStream: it runs the same
+	// generation path and returns the complete assistant text joined across chunks.
+	GenerateTurn(ctx context.Context, in *GenerateTurnRequest, opts ...grpc.CallOption) (*GenerateTurnResponse, error)
+	// AddAndGenerateTurnStream atomically appends a user message to the agent session and
+	// streams the assistant response chunks as they are generated, under a single session
+	// lock. Hook execution warnings are carried on the chunk stream itself (a chunk with
+	// warning set and empty text) so in-process consumers do not need a Go-only callback.
+	AddAndGenerateTurnStream(ctx context.Context, in *AddAndGenerateTurnStreamRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AddAndGenerateTurnStreamResponse], error)
+	// AddAndGenerateTurn is the non-streaming twin of AddAndGenerateTurnStream: it appends
+	// the user message, runs the full generation, and returns the complete assistant text
+	// plus any hook warnings on the response.
+	AddAndGenerateTurn(ctx context.Context, in *AddAndGenerateTurnRequest, opts ...grpc.CallOption) (*AddAndGenerateTurnResponse, error)
 }
 
 type agentServiceClient struct {
@@ -348,6 +371,64 @@ func (c *agentServiceClient) DeleteScratchpad(ctx context.Context, in *DeleteScr
 	return out, nil
 }
 
+func (c *agentServiceClient) GenerateTurnStream(ctx context.Context, in *GenerateTurnStreamRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GenerateTurnStreamResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &AgentService_ServiceDesc.Streams[0], AgentService_GenerateTurnStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[GenerateTurnStreamRequest, GenerateTurnStreamResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type AgentService_GenerateTurnStreamClient = grpc.ServerStreamingClient[GenerateTurnStreamResponse]
+
+func (c *agentServiceClient) GenerateTurn(ctx context.Context, in *GenerateTurnRequest, opts ...grpc.CallOption) (*GenerateTurnResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GenerateTurnResponse)
+	err := c.cc.Invoke(ctx, AgentService_GenerateTurn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) AddAndGenerateTurnStream(ctx context.Context, in *AddAndGenerateTurnStreamRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AddAndGenerateTurnStreamResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &AgentService_ServiceDesc.Streams[1], AgentService_AddAndGenerateTurnStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[AddAndGenerateTurnStreamRequest, AddAndGenerateTurnStreamResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type AgentService_AddAndGenerateTurnStreamClient = grpc.ServerStreamingClient[AddAndGenerateTurnStreamResponse]
+
+func (c *agentServiceClient) AddAndGenerateTurn(ctx context.Context, in *AddAndGenerateTurnRequest, opts ...grpc.CallOption) (*AddAndGenerateTurnResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddAndGenerateTurnResponse)
+	err := c.cc.Invoke(ctx, AgentService_AddAndGenerateTurn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentServiceServer is the server API for AgentService service.
 // All implementations should embed UnimplementedAgentServiceServer
 // for forward compatibility.
@@ -467,6 +548,25 @@ type AgentServiceServer interface {
 	// DeleteScratchpad removes a scratchpad entry from the agent's scratchpad store by its identifier.
 	// Enforces workspace allowlist authorization.
 	DeleteScratchpad(context.Context, *DeleteScratchpadRequest) (*DeleteScratchpadResponse, error)
+	// GenerateTurnStream generates the next assistant turn for an agent whose session
+	// already contains pending history, streaming text chunks to the caller as the model
+	// produces them. The request carries no user message - the turn continues from whatever
+	// is already in session.jsonl (e.g. a turn queued by AddUserTurn). It holds the session
+	// lock for the entire stream, and the stream is cancelled when the caller stops iterating
+	// or the context expires.
+	GenerateTurnStream(*GenerateTurnStreamRequest, grpc.ServerStreamingServer[GenerateTurnStreamResponse]) error
+	// GenerateTurn is the non-streaming twin of GenerateTurnStream: it runs the same
+	// generation path and returns the complete assistant text joined across chunks.
+	GenerateTurn(context.Context, *GenerateTurnRequest) (*GenerateTurnResponse, error)
+	// AddAndGenerateTurnStream atomically appends a user message to the agent session and
+	// streams the assistant response chunks as they are generated, under a single session
+	// lock. Hook execution warnings are carried on the chunk stream itself (a chunk with
+	// warning set and empty text) so in-process consumers do not need a Go-only callback.
+	AddAndGenerateTurnStream(*AddAndGenerateTurnStreamRequest, grpc.ServerStreamingServer[AddAndGenerateTurnStreamResponse]) error
+	// AddAndGenerateTurn is the non-streaming twin of AddAndGenerateTurnStream: it appends
+	// the user message, runs the full generation, and returns the complete assistant text
+	// plus any hook warnings on the response.
+	AddAndGenerateTurn(context.Context, *AddAndGenerateTurnRequest) (*AddAndGenerateTurnResponse, error)
 }
 
 // UnimplementedAgentServiceServer should be embedded to have
@@ -529,6 +629,18 @@ func (UnimplementedAgentServiceServer) DiffScratchpadEntries(context.Context, *D
 }
 func (UnimplementedAgentServiceServer) DeleteScratchpad(context.Context, *DeleteScratchpadRequest) (*DeleteScratchpadResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteScratchpad not implemented")
+}
+func (UnimplementedAgentServiceServer) GenerateTurnStream(*GenerateTurnStreamRequest, grpc.ServerStreamingServer[GenerateTurnStreamResponse]) error {
+	return status.Error(codes.Unimplemented, "method GenerateTurnStream not implemented")
+}
+func (UnimplementedAgentServiceServer) GenerateTurn(context.Context, *GenerateTurnRequest) (*GenerateTurnResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GenerateTurn not implemented")
+}
+func (UnimplementedAgentServiceServer) AddAndGenerateTurnStream(*AddAndGenerateTurnStreamRequest, grpc.ServerStreamingServer[AddAndGenerateTurnStreamResponse]) error {
+	return status.Error(codes.Unimplemented, "method AddAndGenerateTurnStream not implemented")
+}
+func (UnimplementedAgentServiceServer) AddAndGenerateTurn(context.Context, *AddAndGenerateTurnRequest) (*AddAndGenerateTurnResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddAndGenerateTurn not implemented")
 }
 func (UnimplementedAgentServiceServer) testEmbeddedByValue() {}
 
@@ -874,6 +986,64 @@ func _AgentService_DeleteScratchpad_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_GenerateTurnStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(GenerateTurnStreamRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(AgentServiceServer).GenerateTurnStream(m, &grpc.GenericServerStream[GenerateTurnStreamRequest, GenerateTurnStreamResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type AgentService_GenerateTurnStreamServer = grpc.ServerStreamingServer[GenerateTurnStreamResponse]
+
+func _AgentService_GenerateTurn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerateTurnRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).GenerateTurn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_GenerateTurn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).GenerateTurn(ctx, req.(*GenerateTurnRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_AddAndGenerateTurnStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(AddAndGenerateTurnStreamRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(AgentServiceServer).AddAndGenerateTurnStream(m, &grpc.GenericServerStream[AddAndGenerateTurnStreamRequest, AddAndGenerateTurnStreamResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type AgentService_AddAndGenerateTurnStreamServer = grpc.ServerStreamingServer[AddAndGenerateTurnStreamResponse]
+
+func _AgentService_AddAndGenerateTurn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddAndGenerateTurnRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).AddAndGenerateTurn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_AddAndGenerateTurn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).AddAndGenerateTurn(ctx, req.(*AddAndGenerateTurnRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentService_ServiceDesc is the grpc.ServiceDesc for AgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -953,7 +1123,26 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "DeleteScratchpad",
 			Handler:    _AgentService_DeleteScratchpad_Handler,
 		},
+		{
+			MethodName: "GenerateTurn",
+			Handler:    _AgentService_GenerateTurn_Handler,
+		},
+		{
+			MethodName: "AddAndGenerateTurn",
+			Handler:    _AgentService_AddAndGenerateTurn_Handler,
+		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "GenerateTurnStream",
+			Handler:       _AgentService_GenerateTurnStream_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "AddAndGenerateTurnStream",
+			Handler:       _AgentService_AddAndGenerateTurnStream_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "agent.proto",
 }

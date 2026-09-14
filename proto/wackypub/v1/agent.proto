@@ -138,6 +138,30 @@ service AgentService {
   // DeleteScratchpad removes a scratchpad entry from the agent's scratchpad store by its identifier.
   // Enforces workspace allowlist authorization.
   rpc DeleteScratchpad(DeleteScratchpadRequest) returns (DeleteScratchpadResponse);
+
+
+  // GenerateTurnStream generates the next assistant turn for an agent whose session
+  // already contains pending history, streaming text chunks to the caller as the model
+  // produces them. The request carries no user message - the turn continues from whatever
+  // is already in session.jsonl (e.g. a turn queued by AddUserTurn). It holds the session
+  // lock for the entire stream, and the stream is cancelled when the caller stops iterating
+  // or the context expires.
+  rpc GenerateTurnStream(GenerateTurnStreamRequest) returns (stream GenerateTurnStreamResponse);
+
+  // GenerateTurn is the non-streaming twin of GenerateTurnStream: it runs the same
+  // generation path and returns the complete assistant text joined across chunks.
+  rpc GenerateTurn(GenerateTurnRequest) returns (GenerateTurnResponse);
+
+  // AddAndGenerateTurnStream atomically appends a user message to the agent session and
+  // streams the assistant response chunks as they are generated, under a single session
+  // lock. Hook execution warnings are carried on the chunk stream itself (a chunk with
+  // warning set and empty text) so in-process consumers do not need a Go-only callback.
+  rpc AddAndGenerateTurnStream(AddAndGenerateTurnStreamRequest) returns (stream AddAndGenerateTurnStreamResponse);
+
+  // AddAndGenerateTurn is the non-streaming twin of AddAndGenerateTurnStream: it appends
+  // the user message, runs the full generation, and returns the complete assistant text
+  // plus any hook warnings on the response.
+  rpc AddAndGenerateTurn(AddAndGenerateTurnRequest) returns (AddAndGenerateTurnResponse);
 }
 
 // ListAgentsRequest specifies parameters for listing agent directories in a workspace.
@@ -739,3 +763,81 @@ message DeleteScratchpadRequest {
 
 // DeleteScratchpadResponse acknowledges successful deletion of the scratchpad entry.
 message DeleteScratchpadResponse {}
+
+message GenerateTurnStreamRequest {
+  // agent_id identifies the agent whose session should be generated. Required.
+  string agent_id = 1;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 2;
+}
+
+// GenerateTurnStreamResponse is a single streamed slice of the assistant response text
+// for GenerateTurnStream.
+message GenerateTurnStreamResponse {
+  // text is the next chunk of generated assistant content.
+  string text = 1;
+}
+
+// GenerateTurnRequest specifies parameters for the non-streaming generate twin.
+message GenerateTurnRequest {
+  // agent_id identifies the agent whose session should be generated. Required.
+  string agent_id = 1;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 2;
+}
+
+// GenerateTurnResponse returns the complete assistant text for a generate call.
+message GenerateTurnResponse {
+  // text is the full assistant response joined across streamed chunks.
+  string text = 1;
+}
+
+// AddAndGenerateTurnStreamRequest specifies parameters for appending a user message and
+// streaming the assistant response.
+message AddAndGenerateTurnStreamRequest {
+  // agent_id identifies the agent to drive. Required.
+  string agent_id = 1;
+
+  // user_message is the user turn text to append before generation starts. Required.
+  string user_message = 2;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 3;
+}
+
+// AddAndGenerateTurnStreamResponse is one streamed unit of an add-and-generate turn: either
+// a text chunk of the assistant response, or a hook warning surfaced out-of-band.
+message AddAndGenerateTurnStreamResponse {
+  // text is the next chunk of generated assistant content (empty when warning is set).
+  string text = 1;
+
+  // warning carries a hook execution warning for this turn (empty when text is set).
+  string warning = 2;
+}
+
+// AddAndGenerateTurnRequest specifies parameters for the non-streaming add-and-generate twin.
+message AddAndGenerateTurnRequest {
+  // agent_id identifies the agent to drive. Required.
+  string agent_id = 1;
+
+  // user_message is the user turn text to append before generation starts. Required.
+  string user_message = 2;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 3;
+}
+
+// AddAndGenerateTurnResponse returns the complete assistant text and any hook warnings.
+message AddAndGenerateTurnResponse {
+  // text is the full assistant response joined across streamed chunks.
+  string text = 1;
+
+  // warnings are hook execution warnings collected during the turn.
+  repeated string warnings = 2;
+}

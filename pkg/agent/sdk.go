@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"google.golang.org/genai"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
@@ -403,9 +404,11 @@ func (s *AgentSDK) cancelTurnLegacy(agentID string) error {
 	return nil
 }
 
-// GenerateTurnStream loads the folder agent and generates the assistant turn yielding text chunks as they arrive.
+// generateTurnStreamLegacy loads the folder agent and generates the assistant turn yielding text chunks as they arrive.
 // Holds the session lock for the entire duration of the stream.
-func (s *AgentSDK) GenerateTurnStream(ctx context.Context, agentID string) iter.Seq2[string, error] {
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) generateTurnStreamLegacy(ctx context.Context, agentID string) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		if agentID == "" {
 			yield("", fmt.Errorf("agentID cannot be empty"))
@@ -455,11 +458,50 @@ func (s *AgentSDK) GenerateTurnStream(ctx context.Context, agentID string) iter.
 	}
 }
 
-// GenerateTurn loads the folder agent, checks for compaction, generates the next assistant turn,
+// GenerateTurnStream satisfies agentv1.AgentServiceServer (D112 Phase 2 canary). It runs
+// the continue-only generation path and pushes each text chunk onto the in-process server
+// stream. Warnings do not apply here (no user-message hooks run for a continue-only turn),
+// so every chunk carries text. Cancellation flows through stream.Context().
+func (s *AgentSDK) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, stream grpc.ServerStreamingServer[agentv1.GenerateTurnStreamResponse]) error {
+	agentID := ""
+	if req != nil {
+		agentID = req.GetAgentId()
+	}
+	for chunk, err := range s.generateTurnStreamLegacy(stream.Context(), agentID) {
+		if err != nil {
+			return err
+		}
+		if chunk == "" {
+			continue
+		}
+		if err := stream.Send(&agentv1.GenerateTurnStreamResponse{Text: chunk}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// GenerateTurn satisfies agentv1.AgentServiceServer (D112 Phase 2). It is the non-streaming
+// proto twin of GenerateTurnStream: same generation path, complete assistant text returned.
+func (s *AgentSDK) GenerateTurn(ctx context.Context, req *agentv1.GenerateTurnRequest) (*agentv1.GenerateTurnResponse, error) {
+	agentID := ""
+	if req != nil {
+		agentID = req.GetAgentId()
+	}
+	text, err := s.generateTurnLegacy(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	return &agentv1.GenerateTurnResponse{Text: text}, nil
+}
+
+// generateTurnLegacy loads the folder agent, checks for compaction, generates the next assistant turn,
 // and returns the full assistant text joined across chunks with \n\n.
-func (s *AgentSDK) GenerateTurn(ctx context.Context, agentID string) (string, error) {
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) generateTurnLegacy(ctx context.Context, agentID string) (string, error) {
 	var chunks []string
-	for chunk, err := range s.GenerateTurnStream(ctx, agentID) {
+	for chunk, err := range s.generateTurnStreamLegacy(ctx, agentID) {
 		if err != nil {
 			return "", err
 		}
@@ -473,9 +515,12 @@ func (s *AgentSDK) GenerateTurn(ctx context.Context, agentID string) (string, er
 	return strings.Join(chunks, "\n\n"), nil
 }
 
-// AddAndGenerateTurnStream atomically appends a user message and yields assistant response chunks as they arrive under a single lock.
-// Any hook execution warnings are surfaced out-of-band via optional onWarning callback(s) rather than emitted into the text stream.
-func (s *AgentSDK) AddAndGenerateTurnStream(ctx context.Context, agentID string, userMessage string, onWarning ...func(string)) iter.Seq2[string, error] {
+// addAndGenerateTurnStreamLegacy atomically appends a user message and yields assistant
+// response chunks as they arrive under a single lock. Hook warnings are surfaced via the
+// optional onWarning callback(s) rather than emitted into the text stream.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) addAndGenerateTurnStreamLegacy(ctx context.Context, agentID string, userMessage string, onWarning ...func(string)) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		if agentID == "" {
 			yield("", fmt.Errorf("agentID cannot be empty"))
@@ -562,12 +607,14 @@ type GenerateTurnResult struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
-// AddAndGenerateTurn atomically appends a user message and generates the assistant response under a single lock.
-// Any hook execution warnings are collected out-of-band and returned on GenerateTurnResult.
-func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, agentID string, userMessage string) (*GenerateTurnResult, error) {
+// addAndGenerateTurnLegacy atomically appends a user message and generates the assistant
+// response under a single lock. Hook warnings are collected and returned on GenerateTurnResult.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) addAndGenerateTurnLegacy(ctx context.Context, agentID string, userMessage string) (*GenerateTurnResult, error) {
 	var warnings []string
 	var chunks []string
-	for chunk, err := range s.AddAndGenerateTurnStream(ctx, agentID, userMessage, func(w string) {
+	for chunk, err := range s.addAndGenerateTurnStreamLegacy(ctx, agentID, userMessage, func(w string) {
 		warnings = append(warnings, w)
 	}) {
 		if err != nil {
@@ -583,6 +630,61 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, agentID string, userM
 	return &GenerateTurnResult{
 		Text:     strings.Join(chunks, "\n\n"),
 		Warnings: warnings,
+	}, nil
+}
+
+// AddAndGenerateTurnStream satisfies agentv1.AgentServiceServer (D112 Phase 2 canary). It
+// atomically appends the user message, runs generation, and pushes streamed units - a text
+// chunk or a hook warning carried on a response with warning set - onto the in-process
+// server stream. The variadic Go-only onWarning callback is transcribed onto the stream as
+// warning-bearing responses so consumers without callbacks can still see hook warnings.
+func (s *AgentSDK) AddAndGenerateTurnStream(req *agentv1.AddAndGenerateTurnStreamRequest, stream grpc.ServerStreamingServer[agentv1.AddAndGenerateTurnStreamResponse]) error {
+	agentID := ""
+	if req != nil {
+		agentID = req.GetAgentId()
+	}
+	userMsg := ""
+	if req != nil {
+		userMsg = req.GetUserMessage()
+	}
+	for chunk, err := range s.addAndGenerateTurnStreamLegacy(stream.Context(), agentID, userMsg, func(w string) {
+		if w == "" {
+			return
+		}
+		_ = stream.Send(&agentv1.AddAndGenerateTurnStreamResponse{Warning: w})
+	}) {
+		if err != nil {
+			return err
+		}
+		if chunk == "" {
+			continue
+		}
+		if err := stream.Send(&agentv1.AddAndGenerateTurnStreamResponse{Text: chunk}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// AddAndGenerateTurn satisfies agentv1.AgentServiceServer (D112 Phase 2). It is the
+// non-streaming proto twin of AddAndGenerateTurnStream: appends the user message, runs the
+// full generation, and returns the complete text plus collected hook warnings.
+func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, req *agentv1.AddAndGenerateTurnRequest) (*agentv1.AddAndGenerateTurnResponse, error) {
+	agentID := ""
+	if req != nil {
+		agentID = req.GetAgentId()
+	}
+	userMsg := ""
+	if req != nil {
+		userMsg = req.GetUserMessage()
+	}
+	result, err := s.addAndGenerateTurnLegacy(ctx, agentID, userMsg)
+	if err != nil {
+		return nil, err
+	}
+	return &agentv1.AddAndGenerateTurnResponse{
+		Text:     result.Text,
+		Warnings: result.Warnings,
 	}, nil
 }
 
