@@ -95,11 +95,15 @@ does not already exist.`,
 			return fmt.Errorf("user message is required. Provide via argument, --message flag, or stdin pipe")
 		}
 
-		turnRes, err := sdk.AddUserTurn(agentID, userMsg)
+		turnRes, err := sdk.AddUserTurn(cmd.Context(), &agentv1.AddUserTurnRequest{
+			AgentId:      agentID,
+			Message:      userMsg,
+			WorkspaceDir: wsDir,
+		})
 		if err != nil {
 			return err
 		}
-		for _, w := range turnRes.Warnings {
+		for _, w := range turnRes.GetWarnings() {
 			cmd.PrintErrln(w)
 		}
 
@@ -145,15 +149,27 @@ Transparencies in PNG/GIF inputs are flattened onto a white background before JP
 			return fmt.Errorf("no image data provided on stdin. Pipe an image file, e.g.: wackypub agent %s add-media < image.jpg", agentID)
 		}
 
-		content, err := sdk.AddMedia(agentID, os.Stdin)
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, adkAgent.MaxMediaPayloadBytes+1))
+		if err != nil {
+			return fmt.Errorf("failed to read media from stdin: %w", err)
+		}
+		if len(data) == 0 {
+			return fmt.Errorf("no image data provided on stdin. Pipe an image file, e.g.: wackypub agent %s add-media < image.jpg", agentID)
+		}
+		if len(data) > adkAgent.MaxMediaPayloadBytes {
+			return fmt.Errorf("media payload exceeds 10MB limit (%d bytes > %d bytes)", len(data), adkAgent.MaxMediaPayloadBytes)
+		}
+
+		resp, err := sdk.AddMedia(cmd.Context(), &agentv1.AddMediaRequest{
+			AgentId:      agentID,
+			MediaData:    data,
+			WorkspaceDir: wsDir,
+		})
 		if err != nil {
 			return err
 		}
 
-		var rawSize int
-		if len(content.Parts) > 0 && content.Parts[0].InlineData != nil {
-			rawSize = len(content.Parts[0].InlineData.Data)
-		}
+		rawSize := resp.GetRawSize()
 
 		fmt.Printf("Added image attachment (%d bytes JPEG) to agent %q session (%s/session.jsonl).\n", rawSize, agentID, sdk.AgentDir(agentID))
 		return nil
@@ -258,12 +274,15 @@ the rewrite.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> strip-signatures")
 		}
 
-		modified, err := sdk.StripSignatures(agentID)
+		resp, err := sdk.StripSignatures(cmd.Context(), &agentv1.StripSignaturesRequest{
+			AgentId:      agentID,
+			WorkspaceDir: wsDir,
+		})
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("Stripped provider signatures from %d turn(s) in agent %q session (%s/session.jsonl).\n", modified, agentID, sdk.AgentDir(agentID))
+		fmt.Printf("Stripped provider signatures from %d turn(s) in agent %q session (%s/session.jsonl).\n", resp.GetModifiedTurns(), agentID, sdk.AgentDir(agentID))
 		return nil
 	},
 }
@@ -507,16 +526,30 @@ operation.`,
 
 		ctx, stop := signalCtx()
 		defer stop()
-		opts := adkAgent.CompactSessionOptions{
-			ConfigOverride: compactCfg,
-			RuntimePath:    compactRuntimeFile,
+
+		var cfgOverride *agentv1.CompactConfigOverride
+		if compactCfg != nil {
+			cfgOverride = &agentv1.CompactConfigOverride{
+				AppendOnly:         compactCfg.AppendOnly,
+				CompactPct:         compactCfg.CompactPct,
+				CompactOverheadPct: compactCfg.CompactOverheadPct,
+				CompactionNotice:   compactCfg.CompactionNotice,
+				Prompt:             compactCfg.Prompt,
+			}
 		}
-		compacted, err := sdk.CompactSessionWithOptions(ctx, agentID, true, opts)
+
+		resp, err := sdk.CompactSession(ctx, &agentv1.CompactSessionRequest{
+			AgentId:        agentID,
+			Force:          true,
+			ConfigOverride: cfgOverride,
+			RuntimePath:    compactRuntimeFile,
+			WorkspaceDir:   wsDir,
+		})
 		if err != nil {
 			return err
 		}
 
-		if compacted {
+		if resp.GetCompacted() {
 			fmt.Printf("Compacted agent %q session (%s/session.jsonl); MEMORY.md updated.\n", agentID, sdk.AgentDir(agentID))
 		} else {
 			fmt.Printf("No compaction performed for agent %q (session is empty).\n", agentID)
@@ -732,18 +765,24 @@ Atomic and collision-safe across processes. Automatically evicts the entry with 
 			return fmt.Errorf("scratchpad content is required. Provide via argument, --message flag, or stdin pipe")
 		}
 
-		entry, err := sdk.CreateScratchpad(agentID, content, "cli")
+		resp, err := sdk.CreateScratchpad(cmd.Context(), &agentv1.CreateScratchpadRequest{
+			AgentId:      agentID,
+			Text:         content,
+			CreatedBy:    "cli",
+			WorkspaceDir: wsDir,
+		})
 		if err != nil {
 			return err
 		}
 
-		if len(entry.Warnings) > 0 {
-			for _, w := range entry.Warnings {
+		entry := resp.GetEntry()
+		if len(entry.GetWarnings()) > 0 {
+			for _, w := range entry.GetWarnings() {
 				cmd.PrintErrln(w)
 			}
 		}
 
-		fmt.Printf("Created scratchpad entry %q (%d bytes) for agent %q.\n", entry.ID, entry.Size, agentID)
+		fmt.Printf("Created scratchpad entry %q (%d bytes) for agent %q.\n", entry.GetEntryId(), entry.GetSize(), agentID)
 		return nil
 	},
 }
@@ -776,20 +815,26 @@ Pass --skip-lines N and/or --num-lines M for line-based pagination. Rejects bina
 		agentID := args[0]
 		entryID := args[1]
 
-		var skipPtr *int
-		if cmd.Flags().Changed("skip-lines") {
-			skipPtr = &scratchpadSkipLines
+		req := &agentv1.GetScratchpadRequest{
+			AgentId:      agentID,
+			EntryId:      entryID,
+			WorkspaceDir: wsDir,
 		}
-		var numPtr *int
+		if cmd.Flags().Changed("skip-lines") {
+			s := int32(scratchpadSkipLines)
+			req.SkipLines = &s
+		}
 		if cmd.Flags().Changed("num-lines") {
-			numPtr = &scratchpadNumLines
+			n := int32(scratchpadNumLines)
+			req.NumLines = &n
 		}
 
-		out, err := sdk.GetScratchpad(agentID, entryID, skipPtr, numPtr)
+		resp, err := sdk.GetScratchpad(cmd.Context(), req)
 		if err != nil {
 			return err
 		}
 
+		out := resp.GetText()
 		fmt.Print(out)
 		if !strings.HasSuffix(out, "\n") && out != "" {
 			fmt.Println()
@@ -828,11 +873,16 @@ diff the pairs, then search the resulting patch for a symbol that should be gone
 			return fmt.Errorf("agent_id, before_id and after_id are required. Usage: wackypub agent <agent_id> scratchpad diff <before_id> <after_id>")
 		}
 
-		diff, err := sdk.DiffScratchpadEntries(args[0], args[1], args[2])
+		resp, err := sdk.DiffScratchpadEntries(cmd.Context(), &agentv1.DiffScratchpadEntriesRequest{
+			AgentId:       args[0],
+			BeforeEntryId: args[1],
+			AfterEntryId:  args[2],
+			WorkspaceDir:  wsDir,
+		})
 		if err != nil {
 			return err
 		}
-		fmt.Print(diff)
+		fmt.Print(resp.GetDiff())
 		return nil
 	},
 }
@@ -858,9 +908,24 @@ Outputs JSON metadata. Does not acquire the session lock.`,
 		}
 		agentID := args[0]
 
-		items, count, capVal, err := sdk.ListScratchpads(agentID)
+		resp, err := sdk.ListScratchpads(cmd.Context(), &agentv1.ListScratchpadsRequest{
+			AgentId:      agentID,
+			WorkspaceDir: wsDir,
+		})
 		if err != nil {
 			return err
+		}
+
+		items := make([]adkAgent.ScratchpadItem, len(resp.GetEntries()))
+		for i, e := range resp.GetEntries() {
+			items[i] = adkAgent.ScratchpadItem{
+				ID:        e.GetEntryId(),
+				Size:      int(e.GetSize()),
+				Lines:     int(e.GetLines()),
+				CreatedBy: e.GetCreatedBy(),
+				IsBinary:  e.GetIsBinary(),
+				MIMEType:  e.GetMimeType(),
+			}
 		}
 
 		result := struct {
@@ -869,8 +934,8 @@ Outputs JSON metadata. Does not acquire the session lock.`,
 			Cap     int                       `json:"cap"`
 		}{
 			Entries: items,
-			Count:   count,
-			Cap:     capVal,
+			Count:   int(resp.GetTotalEntries()),
+			Cap:     int(resp.GetMaxCapacity()),
 		}
 
 		enc := json.NewEncoder(os.Stdout)
@@ -911,15 +976,39 @@ Rejects binary (.dat) entries outright per D48.`,
 		entryID := args[1]
 		query := args[2]
 
-		var caseSensPtr *bool
+		req := &agentv1.SearchScratchpadRequest{
+			AgentId:      agentID,
+			EntryId:      entryID,
+			Query:        query,
+			UseRegex:     scratchpadRegex,
+			MaxResults:   int32(scratchpadMaxResults),
+			WorkspaceDir: wsDir,
+		}
 		if scratchpadCaseInsensitive {
 			val := false
-			caseSensPtr = &val
+			req.CaseSensitive = &val
 		}
 
-		res, err := sdk.SearchScratchpad(agentID, entryID, query, caseSensPtr, scratchpadRegex, scratchpadMaxResults)
+		resp, err := sdk.SearchScratchpad(cmd.Context(), req)
 		if err != nil {
 			return err
+		}
+
+		matches := make([]adkAgent.ScratchpadMatch, len(resp.GetMatches()))
+		for i, m := range resp.GetMatches() {
+			matches[i] = adkAgent.ScratchpadMatch{
+				Line:      int(m.GetLine()),
+				SkipLines: int(m.GetSkipLines()),
+				Text:      m.GetText(),
+			}
+		}
+
+		res := &adkAgent.SearchScratchpadResult{
+			ID:           resp.GetEntryId(),
+			Query:        resp.GetQuery(),
+			TotalMatches: int(resp.GetTotalMatches()),
+			MaxResults:   int(resp.GetMaxResults()),
+			Matches:      matches,
 		}
 
 		enc := json.NewEncoder(os.Stdout)
@@ -949,7 +1038,12 @@ Arguments:
 		agentID := args[0]
 		entryID := args[1]
 
-		if err := sdk.DeleteScratchpad(agentID, entryID); err != nil {
+		_, err = sdk.DeleteScratchpad(cmd.Context(), &agentv1.DeleteScratchpadRequest{
+			AgentId:      agentID,
+			EntryId:      entryID,
+			WorkspaceDir: wsDir,
+		})
+		if err != nil {
 			return err
 		}
 

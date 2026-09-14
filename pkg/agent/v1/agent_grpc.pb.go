@@ -26,6 +26,17 @@ const (
 	AgentService_RenderSystemPrompt_FullMethodName    = "/wackypub.agent.v1.AgentService/RenderSystemPrompt"
 	AgentService_InspectSessionContext_FullMethodName = "/wackypub.agent.v1.AgentService/InspectSessionContext"
 	AgentService_InspectAgentLocks_FullMethodName     = "/wackypub.agent.v1.AgentService/InspectAgentLocks"
+	AgentService_AddUserTurn_FullMethodName           = "/wackypub.agent.v1.AgentService/AddUserTurn"
+	AgentService_AddMedia_FullMethodName              = "/wackypub.agent.v1.AgentService/AddMedia"
+	AgentService_CancelTurn_FullMethodName            = "/wackypub.agent.v1.AgentService/CancelTurn"
+	AgentService_StripSignatures_FullMethodName       = "/wackypub.agent.v1.AgentService/StripSignatures"
+	AgentService_CompactSession_FullMethodName        = "/wackypub.agent.v1.AgentService/CompactSession"
+	AgentService_CreateScratchpad_FullMethodName      = "/wackypub.agent.v1.AgentService/CreateScratchpad"
+	AgentService_GetScratchpad_FullMethodName         = "/wackypub.agent.v1.AgentService/GetScratchpad"
+	AgentService_ListScratchpads_FullMethodName       = "/wackypub.agent.v1.AgentService/ListScratchpads"
+	AgentService_SearchScratchpad_FullMethodName      = "/wackypub.agent.v1.AgentService/SearchScratchpad"
+	AgentService_DiffScratchpadEntries_FullMethodName = "/wackypub.agent.v1.AgentService/DiffScratchpadEntries"
+	AgentService_DeleteScratchpad_FullMethodName      = "/wackypub.agent.v1.AgentService/DeleteScratchpad"
 )
 
 // AgentServiceClient is the client API for AgentService service.
@@ -42,12 +53,13 @@ const (
 //
 // D112 establishes a unified 26-method service interface replacing the legacy monolithic
 // AgentSDK methods across five staged rollout phases:
-//   - Phase 1 (current): Read-only workspace queries and state inspection (7 methods:
+//   - Phase 1: Read-only workspace queries and state inspection (7 methods:
 //     ListAgents, InspectAgent, ReadSession, ReadMemory, RenderSystemPrompt,
 //     InspectSessionContext, InspectAgentLocks).
-//   - Phase 2: Mutation and session operations (e.g., prompt, generate, compact), including
-//     streaming methods (Phase 2 canary).
-//   - Phase 3: Scratchpad, attachments, and tool discovery operations.
+//   - Phase 2: Streaming turn generation operations (Phase 2 canary).
+//   - Phase 3 (current): Stateful mutations (AddUserTurn, AddMedia, CancelTurn, StripSignatures,
+//     CompactSession) and scratchpad CRUD (CreateScratchpad, GetScratchpad, ListScratchpads,
+//     SearchScratchpad, DiffScratchpadEntries, DeleteScratchpad).
 //   - Phase 4: Side-effectful / background operations (e.g. git commit hooks, compaction runner path).
 //   - Phase 5: Complete cutover and deprecation/removal of legacy SDK entry points.
 //
@@ -101,6 +113,51 @@ type AgentServiceClient interface {
 	// release, so lock presence alone does not imply held; callers must check holder_pid_valid, holder_alive,
 	// and last_write.
 	InspectAgentLocks(ctx context.Context, in *InspectAgentLocksRequest, opts ...grpc.CallOption) (*InspectAgentLocksResponse, error)
+	// AddUserTurn appends a new user message turn to the agent's conversational session history (session.jsonl).
+	// Automatically creates the agent directory if it does not yet exist. Executes configured user message
+	// lifecycle hooks before committing the turn, returning any non-fatal hook warnings alongside the committed turn.
+	// Acquires the agent's exclusive session lock for the duration of the append.
+	AddUserTurn(ctx context.Context, in *AddUserTurnRequest, opts ...grpc.CallOption) (*AddUserTurnResponse, error)
+	// AddMedia attaches a binary image payload to the agent's conversational session history (session.jsonl).
+	// The image bytes are validated, normalized, and resized to JPEG format according to maxImageDimension
+	// in runtime.json per D47. Payloads exceeding the 10MB ceiling (MaxMediaPayloadBytes) are rejected outright.
+	// Acquires the agent's exclusive session lock for the duration of the operation.
+	AddMedia(ctx context.Context, in *AddMediaRequest, opts ...grpc.CallOption) (*AddMediaResponse, error)
+	// CancelTurn cancels an active in-flight turn for the specified agent (D85).
+	// Safe to invoke concurrently from any goroutine. Returns an error if no turn is currently
+	// active for the specified agent.
+	CancelTurn(ctx context.Context, in *CancelTurnRequest, opts ...grpc.CallOption) (*CancelTurnResponse, error)
+	// StripSignatures strips provider-specific opaque reasoning/thought signatures (such as Gemini's
+	// ThoughtSignature or OpenRouter reasoning_details) from all turns in session.jsonl, rewriting the file
+	// in place. Readable plain-text reasoning is preserved. Useful when switching an agent between LLM
+	// providers where replaying previous provider signatures causes rejection. Acquires the session lock.
+	StripSignatures(ctx context.Context, in *StripSignaturesRequest, opts ...grpc.CallOption) (*StripSignaturesResponse, error)
+	// CompactSession evaluates and triggers session compaction on an agent's history (D44, D83, D84).
+	// Summarizes the oldest turns (default 50%, or compact_pct in COMPACT.md) into MEMORY.md and removes
+	// them from session.jsonl. Callers can force compaction (bypassing token headroom thresholds), provide
+	// an in-memory CompactConfig override, or specify an alternative runtime configuration path.
+	// Acquires the exclusive session lock for the duration of compaction.
+	CompactSession(ctx context.Context, in *CompactSessionRequest, opts ...grpc.CallOption) (*CompactSessionResponse, error)
+	// CreateScratchpad writes a new entry to the agent's scratchpad store (<workspace_dir>/<agent_id>/scratchpad/).
+	// Performs atomic creation and enforces store capacity limits (MaxScratchpadEntries). Does not require the
+	// session lock.
+	CreateScratchpad(ctx context.Context, in *CreateScratchpadRequest, opts ...grpc.CallOption) (*CreateScratchpadResponse, error)
+	// GetScratchpad retrieves the text content of a specific scratchpad entry from the agent's scratchpad store.
+	// Supports optional pagination via skip_lines and num_lines. Does not require the session lock.
+	GetScratchpad(ctx context.Context, in *GetScratchpadRequest, opts ...grpc.CallOption) (*GetScratchpadResponse, error)
+	// ListScratchpads lists metadata for all scratchpad entries present in the agent's scratchpad store.
+	// Returns entries ordered chronologically along with current capacity metrics. Does not require the session lock.
+	ListScratchpads(ctx context.Context, in *ListScratchpadsRequest, opts ...grpc.CallOption) (*ListScratchpadsResponse, error)
+	// SearchScratchpad searches the text of a specific scratchpad entry for matching lines.
+	// Supports case-sensitivity toggles, regular expressions, and result limits. Rejects binary entries.
+	// Does not require the session lock.
+	SearchScratchpad(ctx context.Context, in *SearchScratchpadRequest, opts ...grpc.CallOption) (*SearchScratchpadResponse, error)
+	// DiffScratchpadEntries computes and returns a unified diff between two scratchpad entries for an agent.
+	// Returns an empty diff string if both entries are byte-identical. Does not require the session lock.
+	DiffScratchpadEntries(ctx context.Context, in *DiffScratchpadEntriesRequest, opts ...grpc.CallOption) (*DiffScratchpadEntriesResponse, error)
+	// DeleteScratchpad removes a scratchpad entry from the agent's scratchpad store by its identifier.
+	// Enforces workspace allowlist authorization.
+	DeleteScratchpad(ctx context.Context, in *DeleteScratchpadRequest, opts ...grpc.CallOption) (*DeleteScratchpadResponse, error)
 }
 
 type agentServiceClient struct {
@@ -181,6 +238,116 @@ func (c *agentServiceClient) InspectAgentLocks(ctx context.Context, in *InspectA
 	return out, nil
 }
 
+func (c *agentServiceClient) AddUserTurn(ctx context.Context, in *AddUserTurnRequest, opts ...grpc.CallOption) (*AddUserTurnResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddUserTurnResponse)
+	err := c.cc.Invoke(ctx, AgentService_AddUserTurn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) AddMedia(ctx context.Context, in *AddMediaRequest, opts ...grpc.CallOption) (*AddMediaResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddMediaResponse)
+	err := c.cc.Invoke(ctx, AgentService_AddMedia_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) CancelTurn(ctx context.Context, in *CancelTurnRequest, opts ...grpc.CallOption) (*CancelTurnResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelTurnResponse)
+	err := c.cc.Invoke(ctx, AgentService_CancelTurn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) StripSignatures(ctx context.Context, in *StripSignaturesRequest, opts ...grpc.CallOption) (*StripSignaturesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StripSignaturesResponse)
+	err := c.cc.Invoke(ctx, AgentService_StripSignatures_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) CompactSession(ctx context.Context, in *CompactSessionRequest, opts ...grpc.CallOption) (*CompactSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompactSessionResponse)
+	err := c.cc.Invoke(ctx, AgentService_CompactSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) CreateScratchpad(ctx context.Context, in *CreateScratchpadRequest, opts ...grpc.CallOption) (*CreateScratchpadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateScratchpadResponse)
+	err := c.cc.Invoke(ctx, AgentService_CreateScratchpad_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) GetScratchpad(ctx context.Context, in *GetScratchpadRequest, opts ...grpc.CallOption) (*GetScratchpadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetScratchpadResponse)
+	err := c.cc.Invoke(ctx, AgentService_GetScratchpad_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) ListScratchpads(ctx context.Context, in *ListScratchpadsRequest, opts ...grpc.CallOption) (*ListScratchpadsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListScratchpadsResponse)
+	err := c.cc.Invoke(ctx, AgentService_ListScratchpads_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) SearchScratchpad(ctx context.Context, in *SearchScratchpadRequest, opts ...grpc.CallOption) (*SearchScratchpadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SearchScratchpadResponse)
+	err := c.cc.Invoke(ctx, AgentService_SearchScratchpad_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) DiffScratchpadEntries(ctx context.Context, in *DiffScratchpadEntriesRequest, opts ...grpc.CallOption) (*DiffScratchpadEntriesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DiffScratchpadEntriesResponse)
+	err := c.cc.Invoke(ctx, AgentService_DiffScratchpadEntries_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) DeleteScratchpad(ctx context.Context, in *DeleteScratchpadRequest, opts ...grpc.CallOption) (*DeleteScratchpadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteScratchpadResponse)
+	err := c.cc.Invoke(ctx, AgentService_DeleteScratchpad_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentServiceServer is the server API for AgentService service.
 // All implementations should embed UnimplementedAgentServiceServer
 // for forward compatibility.
@@ -195,12 +362,13 @@ func (c *agentServiceClient) InspectAgentLocks(ctx context.Context, in *InspectA
 //
 // D112 establishes a unified 26-method service interface replacing the legacy monolithic
 // AgentSDK methods across five staged rollout phases:
-//   - Phase 1 (current): Read-only workspace queries and state inspection (7 methods:
+//   - Phase 1: Read-only workspace queries and state inspection (7 methods:
 //     ListAgents, InspectAgent, ReadSession, ReadMemory, RenderSystemPrompt,
 //     InspectSessionContext, InspectAgentLocks).
-//   - Phase 2: Mutation and session operations (e.g., prompt, generate, compact), including
-//     streaming methods (Phase 2 canary).
-//   - Phase 3: Scratchpad, attachments, and tool discovery operations.
+//   - Phase 2: Streaming turn generation operations (Phase 2 canary).
+//   - Phase 3 (current): Stateful mutations (AddUserTurn, AddMedia, CancelTurn, StripSignatures,
+//     CompactSession) and scratchpad CRUD (CreateScratchpad, GetScratchpad, ListScratchpads,
+//     SearchScratchpad, DiffScratchpadEntries, DeleteScratchpad).
 //   - Phase 4: Side-effectful / background operations (e.g. git commit hooks, compaction runner path).
 //   - Phase 5: Complete cutover and deprecation/removal of legacy SDK entry points.
 //
@@ -254,6 +422,51 @@ type AgentServiceServer interface {
 	// release, so lock presence alone does not imply held; callers must check holder_pid_valid, holder_alive,
 	// and last_write.
 	InspectAgentLocks(context.Context, *InspectAgentLocksRequest) (*InspectAgentLocksResponse, error)
+	// AddUserTurn appends a new user message turn to the agent's conversational session history (session.jsonl).
+	// Automatically creates the agent directory if it does not yet exist. Executes configured user message
+	// lifecycle hooks before committing the turn, returning any non-fatal hook warnings alongside the committed turn.
+	// Acquires the agent's exclusive session lock for the duration of the append.
+	AddUserTurn(context.Context, *AddUserTurnRequest) (*AddUserTurnResponse, error)
+	// AddMedia attaches a binary image payload to the agent's conversational session history (session.jsonl).
+	// The image bytes are validated, normalized, and resized to JPEG format according to maxImageDimension
+	// in runtime.json per D47. Payloads exceeding the 10MB ceiling (MaxMediaPayloadBytes) are rejected outright.
+	// Acquires the agent's exclusive session lock for the duration of the operation.
+	AddMedia(context.Context, *AddMediaRequest) (*AddMediaResponse, error)
+	// CancelTurn cancels an active in-flight turn for the specified agent (D85).
+	// Safe to invoke concurrently from any goroutine. Returns an error if no turn is currently
+	// active for the specified agent.
+	CancelTurn(context.Context, *CancelTurnRequest) (*CancelTurnResponse, error)
+	// StripSignatures strips provider-specific opaque reasoning/thought signatures (such as Gemini's
+	// ThoughtSignature or OpenRouter reasoning_details) from all turns in session.jsonl, rewriting the file
+	// in place. Readable plain-text reasoning is preserved. Useful when switching an agent between LLM
+	// providers where replaying previous provider signatures causes rejection. Acquires the session lock.
+	StripSignatures(context.Context, *StripSignaturesRequest) (*StripSignaturesResponse, error)
+	// CompactSession evaluates and triggers session compaction on an agent's history (D44, D83, D84).
+	// Summarizes the oldest turns (default 50%, or compact_pct in COMPACT.md) into MEMORY.md and removes
+	// them from session.jsonl. Callers can force compaction (bypassing token headroom thresholds), provide
+	// an in-memory CompactConfig override, or specify an alternative runtime configuration path.
+	// Acquires the exclusive session lock for the duration of compaction.
+	CompactSession(context.Context, *CompactSessionRequest) (*CompactSessionResponse, error)
+	// CreateScratchpad writes a new entry to the agent's scratchpad store (<workspace_dir>/<agent_id>/scratchpad/).
+	// Performs atomic creation and enforces store capacity limits (MaxScratchpadEntries). Does not require the
+	// session lock.
+	CreateScratchpad(context.Context, *CreateScratchpadRequest) (*CreateScratchpadResponse, error)
+	// GetScratchpad retrieves the text content of a specific scratchpad entry from the agent's scratchpad store.
+	// Supports optional pagination via skip_lines and num_lines. Does not require the session lock.
+	GetScratchpad(context.Context, *GetScratchpadRequest) (*GetScratchpadResponse, error)
+	// ListScratchpads lists metadata for all scratchpad entries present in the agent's scratchpad store.
+	// Returns entries ordered chronologically along with current capacity metrics. Does not require the session lock.
+	ListScratchpads(context.Context, *ListScratchpadsRequest) (*ListScratchpadsResponse, error)
+	// SearchScratchpad searches the text of a specific scratchpad entry for matching lines.
+	// Supports case-sensitivity toggles, regular expressions, and result limits. Rejects binary entries.
+	// Does not require the session lock.
+	SearchScratchpad(context.Context, *SearchScratchpadRequest) (*SearchScratchpadResponse, error)
+	// DiffScratchpadEntries computes and returns a unified diff between two scratchpad entries for an agent.
+	// Returns an empty diff string if both entries are byte-identical. Does not require the session lock.
+	DiffScratchpadEntries(context.Context, *DiffScratchpadEntriesRequest) (*DiffScratchpadEntriesResponse, error)
+	// DeleteScratchpad removes a scratchpad entry from the agent's scratchpad store by its identifier.
+	// Enforces workspace allowlist authorization.
+	DeleteScratchpad(context.Context, *DeleteScratchpadRequest) (*DeleteScratchpadResponse, error)
 }
 
 // UnimplementedAgentServiceServer should be embedded to have
@@ -283,6 +496,39 @@ func (UnimplementedAgentServiceServer) InspectSessionContext(context.Context, *I
 }
 func (UnimplementedAgentServiceServer) InspectAgentLocks(context.Context, *InspectAgentLocksRequest) (*InspectAgentLocksResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method InspectAgentLocks not implemented")
+}
+func (UnimplementedAgentServiceServer) AddUserTurn(context.Context, *AddUserTurnRequest) (*AddUserTurnResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddUserTurn not implemented")
+}
+func (UnimplementedAgentServiceServer) AddMedia(context.Context, *AddMediaRequest) (*AddMediaResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddMedia not implemented")
+}
+func (UnimplementedAgentServiceServer) CancelTurn(context.Context, *CancelTurnRequest) (*CancelTurnResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelTurn not implemented")
+}
+func (UnimplementedAgentServiceServer) StripSignatures(context.Context, *StripSignaturesRequest) (*StripSignaturesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StripSignatures not implemented")
+}
+func (UnimplementedAgentServiceServer) CompactSession(context.Context, *CompactSessionRequest) (*CompactSessionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CompactSession not implemented")
+}
+func (UnimplementedAgentServiceServer) CreateScratchpad(context.Context, *CreateScratchpadRequest) (*CreateScratchpadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateScratchpad not implemented")
+}
+func (UnimplementedAgentServiceServer) GetScratchpad(context.Context, *GetScratchpadRequest) (*GetScratchpadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetScratchpad not implemented")
+}
+func (UnimplementedAgentServiceServer) ListScratchpads(context.Context, *ListScratchpadsRequest) (*ListScratchpadsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListScratchpads not implemented")
+}
+func (UnimplementedAgentServiceServer) SearchScratchpad(context.Context, *SearchScratchpadRequest) (*SearchScratchpadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SearchScratchpad not implemented")
+}
+func (UnimplementedAgentServiceServer) DiffScratchpadEntries(context.Context, *DiffScratchpadEntriesRequest) (*DiffScratchpadEntriesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DiffScratchpadEntries not implemented")
+}
+func (UnimplementedAgentServiceServer) DeleteScratchpad(context.Context, *DeleteScratchpadRequest) (*DeleteScratchpadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteScratchpad not implemented")
 }
 func (UnimplementedAgentServiceServer) testEmbeddedByValue() {}
 
@@ -430,6 +676,204 @@ func _AgentService_InspectAgentLocks_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_AddUserTurn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddUserTurnRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).AddUserTurn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_AddUserTurn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).AddUserTurn(ctx, req.(*AddUserTurnRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_AddMedia_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddMediaRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).AddMedia(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_AddMedia_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).AddMedia(ctx, req.(*AddMediaRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_CancelTurn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelTurnRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).CancelTurn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_CancelTurn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).CancelTurn(ctx, req.(*CancelTurnRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_StripSignatures_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StripSignaturesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).StripSignatures(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_StripSignatures_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).StripSignatures(ctx, req.(*StripSignaturesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_CompactSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompactSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).CompactSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_CompactSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).CompactSession(ctx, req.(*CompactSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_CreateScratchpad_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateScratchpadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).CreateScratchpad(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_CreateScratchpad_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).CreateScratchpad(ctx, req.(*CreateScratchpadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_GetScratchpad_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetScratchpadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).GetScratchpad(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_GetScratchpad_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).GetScratchpad(ctx, req.(*GetScratchpadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_ListScratchpads_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListScratchpadsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).ListScratchpads(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_ListScratchpads_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).ListScratchpads(ctx, req.(*ListScratchpadsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_SearchScratchpad_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SearchScratchpadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).SearchScratchpad(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_SearchScratchpad_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).SearchScratchpad(ctx, req.(*SearchScratchpadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_DiffScratchpadEntries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DiffScratchpadEntriesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).DiffScratchpadEntries(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_DiffScratchpadEntries_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).DiffScratchpadEntries(ctx, req.(*DiffScratchpadEntriesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_DeleteScratchpad_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteScratchpadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).DeleteScratchpad(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_DeleteScratchpad_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).DeleteScratchpad(ctx, req.(*DeleteScratchpadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentService_ServiceDesc is the grpc.ServiceDesc for AgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -464,6 +908,50 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "InspectAgentLocks",
 			Handler:    _AgentService_InspectAgentLocks_Handler,
+		},
+		{
+			MethodName: "AddUserTurn",
+			Handler:    _AgentService_AddUserTurn_Handler,
+		},
+		{
+			MethodName: "AddMedia",
+			Handler:    _AgentService_AddMedia_Handler,
+		},
+		{
+			MethodName: "CancelTurn",
+			Handler:    _AgentService_CancelTurn_Handler,
+		},
+		{
+			MethodName: "StripSignatures",
+			Handler:    _AgentService_StripSignatures_Handler,
+		},
+		{
+			MethodName: "CompactSession",
+			Handler:    _AgentService_CompactSession_Handler,
+		},
+		{
+			MethodName: "CreateScratchpad",
+			Handler:    _AgentService_CreateScratchpad_Handler,
+		},
+		{
+			MethodName: "GetScratchpad",
+			Handler:    _AgentService_GetScratchpad_Handler,
+		},
+		{
+			MethodName: "ListScratchpads",
+			Handler:    _AgentService_ListScratchpads_Handler,
+		},
+		{
+			MethodName: "SearchScratchpad",
+			Handler:    _AgentService_SearchScratchpad_Handler,
+		},
+		{
+			MethodName: "DiffScratchpadEntries",
+			Handler:    _AgentService_DiffScratchpadEntries_Handler,
+		},
+		{
+			MethodName: "DeleteScratchpad",
+			Handler:    _AgentService_DeleteScratchpad_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

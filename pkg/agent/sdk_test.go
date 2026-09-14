@@ -35,7 +35,7 @@ func TestSDKAddUserTurnAndReadSession(t *testing.T) {
 	}
 	defer os.Chdir(origCwd)
 
-	if _, err := sdk.AddUserTurn(agentID, "What is your quest?"); err != nil {
+	if _, err := sdk.addUserTurnLegacy(agentID, "What is your quest?"); err != nil {
 		t.Fatalf("failed to add user turn via SDK: %v", err)
 	}
 
@@ -242,7 +242,7 @@ func TestSDK_CancelTurn(t *testing.T) {
 	sdk := NewSDK(tempDir)
 
 	// 1. CancelTurn with nothing in flight returns an error naming the agent
-	if err := sdk.CancelTurn("nonexistent"); err == nil || !strings.Contains(err.Error(), "no in-flight turn for agent \"nonexistent\"") {
+	if err := sdk.cancelTurnLegacy("nonexistent"); err == nil || !strings.Contains(err.Error(), "no in-flight turn for agent \"nonexistent\"") {
 		t.Fatalf("expected no in-flight turn error, got: %v", err)
 	}
 
@@ -300,7 +300,7 @@ func TestSDK_CancelTurn(t *testing.T) {
 	}
 
 	// Cancel the in-flight turn
-	if err := sdk.CancelTurn(agentID); err != nil {
+	if err := sdk.cancelTurnLegacy(agentID); err != nil {
 		t.Fatalf("CancelTurn failed: %v", err)
 	}
 
@@ -315,7 +315,7 @@ func TestSDK_CancelTurn(t *testing.T) {
 	}
 
 	// After stream completion, CancelTurn must again report no in-flight turn
-	if err := sdk.CancelTurn(agentID); err == nil || !strings.Contains(err.Error(), "no in-flight turn") {
+	if err := sdk.cancelTurnLegacy(agentID); err == nil || !strings.Contains(err.Error(), "no in-flight turn") {
 		t.Fatalf("expected no in-flight turn after completion, got: %v", err)
 	}
 }
@@ -330,7 +330,7 @@ func TestSDK_CancelTurn_ConcurrentSafety(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			agent := fmt.Sprintf("agent_%d", id%5)
-			_ = sdk.CancelTurn(agent)
+			_ = sdk.cancelTurnLegacy(agent)
 		}(i)
 	}
 	wg.Wait()

@@ -1383,7 +1383,7 @@ func TestCompactSessionWithConfig_Passthrough(t *testing.T) {
 		Prompt:     "SDK override prompt",
 	}
 
-	compacted, err := sdk.CompactSessionWithConfig(context.Background(), agentID, true, override)
+	compacted, err := sdk.compactSessionWithConfigLegacy(context.Background(), agentID, true, override)
 	if err != nil {
 		t.Fatalf("CompactSessionWithConfig failed: %v", err)
 	}
@@ -1505,7 +1505,7 @@ func TestCompactSessionWithOptions_RuntimeOverride(t *testing.T) {
 	opts := CompactSessionOptions{
 		RuntimePath: overrideRtFile,
 	}
-	compacted, err := sdk.CompactSessionWithOptions(context.Background(), agentID, true, opts)
+	compacted, err := sdk.compactSessionWithOptionsLegacy(context.Background(), agentID, true, opts)
 	if err != nil {
 		t.Fatalf("CompactSessionWithOptions failed: %v", err)
 	}

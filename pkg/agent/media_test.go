@@ -48,7 +48,7 @@ func TestAddMedia_GatingAndExecution(t *testing.T) {
 	}
 
 	testImgData := createTestImage(800, 600, false)
-	_, err = sdk.AddMedia(agentID, bytes.NewReader(testImgData))
+	_, err = sdk.addMediaLegacy(agentID, bytes.NewReader(testImgData))
 	if err == nil {
 		t.Fatal("expected error when maxImageDimension is absent/disabled, got nil")
 	}
@@ -60,7 +60,7 @@ func TestAddMedia_GatingAndExecution(t *testing.T) {
 	}
 
 	var content *genai.Content
-	content, err = sdk.AddMedia(agentID, bytes.NewReader(testImgData))
+	content, err = sdk.addMediaLegacy(agentID, bytes.NewReader(testImgData))
 	if err != nil {
 		t.Fatalf("AddMedia failed: %v", err)
 	}

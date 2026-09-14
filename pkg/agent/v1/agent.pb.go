@@ -1300,6 +1300,1627 @@ func (x *AgentLockObservation) GetLastWrite() *timestamppb.Timestamp {
 	return nil
 }
 
+// AddUserTurnRequest specifies parameters for appending a user message turn.
+type AddUserTurnRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose session history will receive the user turn. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// message contains the user's text message to append to the session. Required.
+	Message string `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,3,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddUserTurnRequest) Reset() {
+	*x = AddUserTurnRequest{}
+	mi := &file_agent_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddUserTurnRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddUserTurnRequest) ProtoMessage() {}
+
+func (x *AddUserTurnRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddUserTurnRequest.ProtoReflect.Descriptor instead.
+func (*AddUserTurnRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *AddUserTurnRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *AddUserTurnRequest) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *AddUserTurnRequest) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
+}
+
+// AddUserTurnResponse returns the appended session turn and processing details.
+type AddUserTurnResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// turn contains the session turn appended to session.jsonl.
+	Turn *SessionTurn `protobuf:"bytes,1,opt,name=turn,proto3" json:"turn,omitempty"`
+	// text contains the final processed message text after hook execution and macro expansion.
+	Text string `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
+	// warnings contains non-fatal diagnostic or hook execution warnings generated during the operation.
+	Warnings      []string `protobuf:"bytes,3,rep,name=warnings,proto3" json:"warnings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddUserTurnResponse) Reset() {
+	*x = AddUserTurnResponse{}
+	mi := &file_agent_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddUserTurnResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddUserTurnResponse) ProtoMessage() {}
+
+func (x *AddUserTurnResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddUserTurnResponse.ProtoReflect.Descriptor instead.
+func (*AddUserTurnResponse) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *AddUserTurnResponse) GetTurn() *SessionTurn {
+	if x != nil {
+		return x.Turn
+	}
+	return nil
+}
+
+func (x *AddUserTurnResponse) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *AddUserTurnResponse) GetWarnings() []string {
+	if x != nil {
+		return x.Warnings
+	}
+	return nil
+}
+
+// AddMediaRequest specifies parameters for attaching a binary media payload to an agent session.
+type AddMediaRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose session history will receive the media attachment. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// media_data contains the raw binary bytes of the image file to attach (max 10MB). Required.
+	MediaData []byte `protobuf:"bytes,2,opt,name=media_data,json=mediaData,proto3" json:"media_data,omitempty"`
+	// mime_type optionally specifies the MIME media type of media_data (e.g. "image/png").
+	// If empty, MIME type is detected from the media payload header.
+	MimeType string `protobuf:"bytes,3,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,4,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddMediaRequest) Reset() {
+	*x = AddMediaRequest{}
+	mi := &file_agent_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddMediaRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddMediaRequest) ProtoMessage() {}
+
+func (x *AddMediaRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddMediaRequest.ProtoReflect.Descriptor instead.
+func (*AddMediaRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *AddMediaRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *AddMediaRequest) GetMediaData() []byte {
+	if x != nil {
+		return x.MediaData
+	}
+	return nil
+}
+
+func (x *AddMediaRequest) GetMimeType() string {
+	if x != nil {
+		return x.MimeType
+	}
+	return ""
+}
+
+func (x *AddMediaRequest) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
+}
+
+// AddMediaResponse returns details of the attached media turn.
+type AddMediaResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// turn contains the user-role session turn appended to session.jsonl with the inline media attachment.
+	Turn *SessionTurn `protobuf:"bytes,1,opt,name=turn,proto3" json:"turn,omitempty"`
+	// mime_type is the normalized MIME type of the stored attachment (e.g. "image/jpeg").
+	MimeType string `protobuf:"bytes,2,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
+	// raw_size is the byte count of the processed and stored media payload.
+	RawSize       int64 `protobuf:"varint,3,opt,name=raw_size,json=rawSize,proto3" json:"raw_size,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddMediaResponse) Reset() {
+	*x = AddMediaResponse{}
+	mi := &file_agent_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddMediaResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddMediaResponse) ProtoMessage() {}
+
+func (x *AddMediaResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddMediaResponse.ProtoReflect.Descriptor instead.
+func (*AddMediaResponse) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *AddMediaResponse) GetTurn() *SessionTurn {
+	if x != nil {
+		return x.Turn
+	}
+	return nil
+}
+
+func (x *AddMediaResponse) GetMimeType() string {
+	if x != nil {
+		return x.MimeType
+	}
+	return ""
+}
+
+func (x *AddMediaResponse) GetRawSize() int64 {
+	if x != nil {
+		return x.RawSize
+	}
+	return 0
+}
+
+// CancelTurnRequest specifies the target agent whose active turn should be cancelled.
+type CancelTurnRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose in-flight turn should be cancelled. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelTurnRequest) Reset() {
+	*x = CancelTurnRequest{}
+	mi := &file_agent_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelTurnRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelTurnRequest) ProtoMessage() {}
+
+func (x *CancelTurnRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelTurnRequest.ProtoReflect.Descriptor instead.
+func (*CancelTurnRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *CancelTurnRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *CancelTurnRequest) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
+}
+
+// CancelTurnResponse acknowledges successful cancellation of the active turn.
+type CancelTurnResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelTurnResponse) Reset() {
+	*x = CancelTurnResponse{}
+	mi := &file_agent_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelTurnResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelTurnResponse) ProtoMessage() {}
+
+func (x *CancelTurnResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelTurnResponse.ProtoReflect.Descriptor instead.
+func (*CancelTurnResponse) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{22}
+}
+
+// StripSignaturesRequest specifies the target agent whose session signatures should be stripped.
+type StripSignaturesRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose session signatures should be stripped. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StripSignaturesRequest) Reset() {
+	*x = StripSignaturesRequest{}
+	mi := &file_agent_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StripSignaturesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StripSignaturesRequest) ProtoMessage() {}
+
+func (x *StripSignaturesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StripSignaturesRequest.ProtoReflect.Descriptor instead.
+func (*StripSignaturesRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *StripSignaturesRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *StripSignaturesRequest) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
+}
+
+// StripSignaturesResponse reports the number of turns modified during signature stripping.
+type StripSignaturesResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// modified_turns is the count of conversation turns that were modified and rewritten.
+	ModifiedTurns int32 `protobuf:"varint,1,opt,name=modified_turns,json=modifiedTurns,proto3" json:"modified_turns,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StripSignaturesResponse) Reset() {
+	*x = StripSignaturesResponse{}
+	mi := &file_agent_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StripSignaturesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StripSignaturesResponse) ProtoMessage() {}
+
+func (x *StripSignaturesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StripSignaturesResponse.ProtoReflect.Descriptor instead.
+func (*StripSignaturesResponse) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *StripSignaturesResponse) GetModifiedTurns() int32 {
+	if x != nil {
+		return x.ModifiedTurns
+	}
+	return 0
+}
+
+// CompactSessionRequest specifies parameters for triggering session compaction.
+type CompactSessionRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose session should be compacted. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// force bypasses token threshold checks and forces compaction even if context limits have not been reached.
+	Force bool `protobuf:"varint,2,opt,name=force,proto3" json:"force,omitempty"`
+	// config_override optionally overrides the agent's COMPACT.md configuration without modifying on-disk files.
+	ConfigOverride *CompactConfigOverride `protobuf:"bytes,3,opt,name=config_override,json=configOverride,proto3" json:"config_override,omitempty"`
+	// runtime_path optionally specifies an alternative runtime.json path to use for compaction execution (D84).
+	RuntimePath string `protobuf:"bytes,4,opt,name=runtime_path,json=runtimePath,proto3" json:"runtime_path,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,5,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CompactSessionRequest) Reset() {
+	*x = CompactSessionRequest{}
+	mi := &file_agent_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompactSessionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompactSessionRequest) ProtoMessage() {}
+
+func (x *CompactSessionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompactSessionRequest.ProtoReflect.Descriptor instead.
+func (*CompactSessionRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *CompactSessionRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *CompactSessionRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
+}
+
+func (x *CompactSessionRequest) GetConfigOverride() *CompactConfigOverride {
+	if x != nil {
+		return x.ConfigOverride
+	}
+	return nil
+}
+
+func (x *CompactSessionRequest) GetRuntimePath() string {
+	if x != nil {
+		return x.RuntimePath
+	}
+	return ""
+}
+
+func (x *CompactSessionRequest) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
+}
+
+// CompactConfigOverride specifies in-memory parameter overrides for session compaction (D83).
+type CompactConfigOverride struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// append_only specifies whether persistent memory updates should be append-only.
+	AppendOnly bool `protobuf:"varint,1,opt,name=append_only,json=appendOnly,proto3" json:"append_only,omitempty"`
+	// compact_pct is the fraction of turns to compact (0.0 to 1.0, e.g. 0.5 for 50%).
+	CompactPct float64 `protobuf:"fixed64,2,opt,name=compact_pct,json=compactPct,proto3" json:"compact_pct,omitempty"`
+	// compact_overhead_pct is the safety buffer percentage before the context limit.
+	CompactOverheadPct float64 `protobuf:"fixed64,3,opt,name=compact_overhead_pct,json=compactOverheadPct,proto3" json:"compact_overhead_pct,omitempty"`
+	// compaction_notice is the text notice injected into the session after compaction.
+	CompactionNotice string `protobuf:"bytes,4,opt,name=compaction_notice,json=compactionNotice,proto3" json:"compaction_notice,omitempty"`
+	// prompt is an optional custom compaction prompt override.
+	Prompt        string `protobuf:"bytes,5,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CompactConfigOverride) Reset() {
+	*x = CompactConfigOverride{}
+	mi := &file_agent_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompactConfigOverride) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompactConfigOverride) ProtoMessage() {}
+
+func (x *CompactConfigOverride) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompactConfigOverride.ProtoReflect.Descriptor instead.
+func (*CompactConfigOverride) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *CompactConfigOverride) GetAppendOnly() bool {
+	if x != nil {
+		return x.AppendOnly
+	}
+	return false
+}
+
+func (x *CompactConfigOverride) GetCompactPct() float64 {
+	if x != nil {
+		return x.CompactPct
+	}
+	return 0
+}
+
+func (x *CompactConfigOverride) GetCompactOverheadPct() float64 {
+	if x != nil {
+		return x.CompactOverheadPct
+	}
+	return 0
+}
+
+func (x *CompactConfigOverride) GetCompactionNotice() string {
+	if x != nil {
+		return x.CompactionNotice
+	}
+	return ""
+}
+
+func (x *CompactConfigOverride) GetPrompt() string {
+	if x != nil {
+		return x.Prompt
+	}
+	return ""
+}
+
+// CompactSessionResponse reports whether session compaction occurred.
+type CompactSessionResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// compacted indicates whether session compaction actually executed (false if session was empty or skipped).
+	Compacted     bool `protobuf:"varint,1,opt,name=compacted,proto3" json:"compacted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CompactSessionResponse) Reset() {
+	*x = CompactSessionResponse{}
+	mi := &file_agent_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompactSessionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompactSessionResponse) ProtoMessage() {}
+
+func (x *CompactSessionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompactSessionResponse.ProtoReflect.Descriptor instead.
+func (*CompactSessionResponse) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *CompactSessionResponse) GetCompacted() bool {
+	if x != nil {
+		return x.Compacted
+	}
+	return false
+}
+
+// CreateScratchpadRequest specifies parameters for creating a new scratchpad entry.
+type CreateScratchpadRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose scratchpad store will receive the entry. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// text contains the content to store in the scratchpad entry. Required.
+	Text string `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
+	// created_by identifies the author or tool that created the entry (e.g. "cli"). Defaults to "cli".
+	CreatedBy string `protobuf:"bytes,3,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,4,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateScratchpadRequest) Reset() {
+	*x = CreateScratchpadRequest{}
+	mi := &file_agent_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateScratchpadRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateScratchpadRequest) ProtoMessage() {}
+
+func (x *CreateScratchpadRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateScratchpadRequest.ProtoReflect.Descriptor instead.
+func (*CreateScratchpadRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *CreateScratchpadRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *CreateScratchpadRequest) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *CreateScratchpadRequest) GetCreatedBy() string {
+	if x != nil {
+		return x.CreatedBy
+	}
+	return ""
+}
+
+func (x *CreateScratchpadRequest) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
+}
+
+// CreateScratchpadResponse returns metadata for the newly created scratchpad entry.
+type CreateScratchpadResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// entry contains metadata describing the newly created scratchpad entry.
+	Entry         *ScratchpadEntry `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateScratchpadResponse) Reset() {
+	*x = CreateScratchpadResponse{}
+	mi := &file_agent_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateScratchpadResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateScratchpadResponse) ProtoMessage() {}
+
+func (x *CreateScratchpadResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateScratchpadResponse.ProtoReflect.Descriptor instead.
+func (*CreateScratchpadResponse) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *CreateScratchpadResponse) GetEntry() *ScratchpadEntry {
+	if x != nil {
+		return x.Entry
+	}
+	return nil
+}
+
+// ScratchpadEntry represents a stored scratchpad record in <workspace_dir>/<agent_id>/scratchpad/.
+type ScratchpadEntry struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// entry_id is the unique 4-character alphanumeric identifier of the scratchpad entry.
+	EntryId string `protobuf:"bytes,1,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
+	// size is the content size in bytes.
+	Size int64 `protobuf:"varint,2,opt,name=size,proto3" json:"size,omitempty"`
+	// lines is the line count of the text content.
+	Lines int32 `protobuf:"varint,3,opt,name=lines,proto3" json:"lines,omitempty"`
+	// created_by identifies the author or tool that created the entry.
+	CreatedBy string `protobuf:"bytes,4,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"`
+	// text contains the stored entry text, if populated.
+	Text string `protobuf:"bytes,5,opt,name=text,proto3" json:"text,omitempty"`
+	// is_binary indicates whether the entry contains binary data.
+	IsBinary bool `protobuf:"varint,6,opt,name=is_binary,json=isBinary,proto3" json:"is_binary,omitempty"`
+	// mime_type is the detected MIME type of the entry.
+	MimeType string `protobuf:"bytes,7,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
+	// warnings contains any non-fatal warnings generated during entry creation or retrieval.
+	Warnings      []string `protobuf:"bytes,8,rep,name=warnings,proto3" json:"warnings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScratchpadEntry) Reset() {
+	*x = ScratchpadEntry{}
+	mi := &file_agent_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScratchpadEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScratchpadEntry) ProtoMessage() {}
+
+func (x *ScratchpadEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScratchpadEntry.ProtoReflect.Descriptor instead.
+func (*ScratchpadEntry) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *ScratchpadEntry) GetEntryId() string {
+	if x != nil {
+		return x.EntryId
+	}
+	return ""
+}
+
+func (x *ScratchpadEntry) GetSize() int64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+func (x *ScratchpadEntry) GetLines() int32 {
+	if x != nil {
+		return x.Lines
+	}
+	return 0
+}
+
+func (x *ScratchpadEntry) GetCreatedBy() string {
+	if x != nil {
+		return x.CreatedBy
+	}
+	return ""
+}
+
+func (x *ScratchpadEntry) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *ScratchpadEntry) GetIsBinary() bool {
+	if x != nil {
+		return x.IsBinary
+	}
+	return false
+}
+
+func (x *ScratchpadEntry) GetMimeType() string {
+	if x != nil {
+		return x.MimeType
+	}
+	return ""
+}
+
+func (x *ScratchpadEntry) GetWarnings() []string {
+	if x != nil {
+		return x.Warnings
+	}
+	return nil
+}
+
+// GetScratchpadRequest specifies parameters for retrieving a scratchpad entry's text content.
+type GetScratchpadRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent owning the scratchpad entry. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// entry_id is the 4-character identifier of the scratchpad entry to read. Required.
+	EntryId string `protobuf:"bytes,2,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
+	// skip_lines specifies the number of leading lines to skip (0-indexed). Optional.
+	SkipLines *int32 `protobuf:"varint,3,opt,name=skip_lines,json=skipLines,proto3,oneof" json:"skip_lines,omitempty"`
+	// num_lines specifies the maximum number of lines to return. Optional.
+	NumLines *int32 `protobuf:"varint,4,opt,name=num_lines,json=numLines,proto3,oneof" json:"num_lines,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,5,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetScratchpadRequest) Reset() {
+	*x = GetScratchpadRequest{}
+	mi := &file_agent_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetScratchpadRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetScratchpadRequest) ProtoMessage() {}
+
+func (x *GetScratchpadRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetScratchpadRequest.ProtoReflect.Descriptor instead.
+func (*GetScratchpadRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *GetScratchpadRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *GetScratchpadRequest) GetEntryId() string {
+	if x != nil {
+		return x.EntryId
+	}
+	return ""
+}
+
+func (x *GetScratchpadRequest) GetSkipLines() int32 {
+	if x != nil && x.SkipLines != nil {
+		return *x.SkipLines
+	}
+	return 0
+}
+
+func (x *GetScratchpadRequest) GetNumLines() int32 {
+	if x != nil && x.NumLines != nil {
+		return *x.NumLines
+	}
+	return 0
+}
+
+func (x *GetScratchpadRequest) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
+}
+
+// GetScratchpadResponse returns the retrieved scratchpad content.
+type GetScratchpadResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// text contains the retrieved scratchpad content (or requested line range).
+	Text          string `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetScratchpadResponse) Reset() {
+	*x = GetScratchpadResponse{}
+	mi := &file_agent_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetScratchpadResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetScratchpadResponse) ProtoMessage() {}
+
+func (x *GetScratchpadResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetScratchpadResponse.ProtoReflect.Descriptor instead.
+func (*GetScratchpadResponse) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *GetScratchpadResponse) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+// ListScratchpadsRequest specifies parameters for listing scratchpad entries.
+type ListScratchpadsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose scratchpad store to inspect. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListScratchpadsRequest) Reset() {
+	*x = ListScratchpadsRequest{}
+	mi := &file_agent_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListScratchpadsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListScratchpadsRequest) ProtoMessage() {}
+
+func (x *ListScratchpadsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListScratchpadsRequest.ProtoReflect.Descriptor instead.
+func (*ListScratchpadsRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *ListScratchpadsRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *ListScratchpadsRequest) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
+}
+
+// ListScratchpadsResponse returns all active scratchpad entries and store capacity metrics.
+type ListScratchpadsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// entries contains metadata for each scratchpad entry found in the store.
+	Entries []*ScratchpadEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	// total_entries is the count of active entries currently in the store.
+	TotalEntries int32 `protobuf:"varint,2,opt,name=total_entries,json=totalEntries,proto3" json:"total_entries,omitempty"`
+	// max_capacity is the maximum entry limit before eviction occurs (MaxScratchpadEntries).
+	MaxCapacity   int32 `protobuf:"varint,3,opt,name=max_capacity,json=maxCapacity,proto3" json:"max_capacity,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListScratchpadsResponse) Reset() {
+	*x = ListScratchpadsResponse{}
+	mi := &file_agent_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListScratchpadsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListScratchpadsResponse) ProtoMessage() {}
+
+func (x *ListScratchpadsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListScratchpadsResponse.ProtoReflect.Descriptor instead.
+func (*ListScratchpadsResponse) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *ListScratchpadsResponse) GetEntries() []*ScratchpadEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *ListScratchpadsResponse) GetTotalEntries() int32 {
+	if x != nil {
+		return x.TotalEntries
+	}
+	return 0
+}
+
+func (x *ListScratchpadsResponse) GetMaxCapacity() int32 {
+	if x != nil {
+		return x.MaxCapacity
+	}
+	return 0
+}
+
+// SearchScratchpadRequest specifies parameters for searching within a scratchpad entry.
+type SearchScratchpadRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent owning the scratchpad entry. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// entry_id is the 4-character identifier of the scratchpad entry to search. Required.
+	EntryId string `protobuf:"bytes,2,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
+	// query is the text string or regex pattern to search for. Required.
+	Query string `protobuf:"bytes,3,opt,name=query,proto3" json:"query,omitempty"`
+	// case_sensitive specifies whether matching is case-sensitive (defaults to true if unset).
+	CaseSensitive *bool `protobuf:"varint,4,opt,name=case_sensitive,json=caseSensitive,proto3,oneof" json:"case_sensitive,omitempty"`
+	// use_regex specifies whether query should be evaluated as a regular expression.
+	UseRegex bool `protobuf:"varint,5,opt,name=use_regex,json=useRegex,proto3" json:"use_regex,omitempty"`
+	// max_results limits the number of matches returned (default 50 if <= 0).
+	MaxResults int32 `protobuf:"varint,6,opt,name=max_results,json=maxResults,proto3" json:"max_results,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,7,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SearchScratchpadRequest) Reset() {
+	*x = SearchScratchpadRequest{}
+	mi := &file_agent_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SearchScratchpadRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SearchScratchpadRequest) ProtoMessage() {}
+
+func (x *SearchScratchpadRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SearchScratchpadRequest.ProtoReflect.Descriptor instead.
+func (*SearchScratchpadRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *SearchScratchpadRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *SearchScratchpadRequest) GetEntryId() string {
+	if x != nil {
+		return x.EntryId
+	}
+	return ""
+}
+
+func (x *SearchScratchpadRequest) GetQuery() string {
+	if x != nil {
+		return x.Query
+	}
+	return ""
+}
+
+func (x *SearchScratchpadRequest) GetCaseSensitive() bool {
+	if x != nil && x.CaseSensitive != nil {
+		return *x.CaseSensitive
+	}
+	return false
+}
+
+func (x *SearchScratchpadRequest) GetUseRegex() bool {
+	if x != nil {
+		return x.UseRegex
+	}
+	return false
+}
+
+func (x *SearchScratchpadRequest) GetMaxResults() int32 {
+	if x != nil {
+		return x.MaxResults
+	}
+	return 0
+}
+
+func (x *SearchScratchpadRequest) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
+}
+
+// SearchScratchpadResponse returns line match results within the searched scratchpad entry.
+type SearchScratchpadResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// entry_id is the identifier of the searched scratchpad entry.
+	EntryId string `protobuf:"bytes,1,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
+	// query is the query that was searched.
+	Query string `protobuf:"bytes,2,opt,name=query,proto3" json:"query,omitempty"`
+	// total_matches is the total number of matching lines found.
+	TotalMatches int32 `protobuf:"varint,3,opt,name=total_matches,json=totalMatches,proto3" json:"total_matches,omitempty"`
+	// max_results is the effective maximum results limit applied.
+	MaxResults int32 `protobuf:"varint,4,opt,name=max_results,json=maxResults,proto3" json:"max_results,omitempty"`
+	// matches contains the individual line match results.
+	Matches       []*ScratchpadMatch `protobuf:"bytes,5,rep,name=matches,proto3" json:"matches,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SearchScratchpadResponse) Reset() {
+	*x = SearchScratchpadResponse{}
+	mi := &file_agent_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SearchScratchpadResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SearchScratchpadResponse) ProtoMessage() {}
+
+func (x *SearchScratchpadResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SearchScratchpadResponse.ProtoReflect.Descriptor instead.
+func (*SearchScratchpadResponse) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *SearchScratchpadResponse) GetEntryId() string {
+	if x != nil {
+		return x.EntryId
+	}
+	return ""
+}
+
+func (x *SearchScratchpadResponse) GetQuery() string {
+	if x != nil {
+		return x.Query
+	}
+	return ""
+}
+
+func (x *SearchScratchpadResponse) GetTotalMatches() int32 {
+	if x != nil {
+		return x.TotalMatches
+	}
+	return 0
+}
+
+func (x *SearchScratchpadResponse) GetMaxResults() int32 {
+	if x != nil {
+		return x.MaxResults
+	}
+	return 0
+}
+
+func (x *SearchScratchpadResponse) GetMatches() []*ScratchpadMatch {
+	if x != nil {
+		return x.Matches
+	}
+	return nil
+}
+
+// ScratchpadMatch captures a single matching line in a scratchpad search.
+type ScratchpadMatch struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// line is the 1-based line number in the scratchpad entry.
+	Line int32 `protobuf:"varint,1,opt,name=line,proto3" json:"line,omitempty"`
+	// skip_lines is the 0-based offset for retrieving this match via GetScratchpad.
+	SkipLines int32 `protobuf:"varint,2,opt,name=skip_lines,json=skipLines,proto3" json:"skip_lines,omitempty"`
+	// text is the matching line content.
+	Text          string `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScratchpadMatch) Reset() {
+	*x = ScratchpadMatch{}
+	mi := &file_agent_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScratchpadMatch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScratchpadMatch) ProtoMessage() {}
+
+func (x *ScratchpadMatch) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScratchpadMatch.ProtoReflect.Descriptor instead.
+func (*ScratchpadMatch) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *ScratchpadMatch) GetLine() int32 {
+	if x != nil {
+		return x.Line
+	}
+	return 0
+}
+
+func (x *ScratchpadMatch) GetSkipLines() int32 {
+	if x != nil {
+		return x.SkipLines
+	}
+	return 0
+}
+
+func (x *ScratchpadMatch) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+// DiffScratchpadEntriesRequest specifies parameters for computing a diff between two scratchpad entries.
+type DiffScratchpadEntriesRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent owning both scratchpad entries. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// before_entry_id is the identifier of the base/original scratchpad entry. Required.
+	BeforeEntryId string `protobuf:"bytes,2,opt,name=before_entry_id,json=beforeEntryId,proto3" json:"before_entry_id,omitempty"`
+	// after_entry_id is the identifier of the target/modified scratchpad entry. Required.
+	AfterEntryId string `protobuf:"bytes,3,opt,name=after_entry_id,json=afterEntryId,proto3" json:"after_entry_id,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,4,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiffScratchpadEntriesRequest) Reset() {
+	*x = DiffScratchpadEntriesRequest{}
+	mi := &file_agent_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiffScratchpadEntriesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiffScratchpadEntriesRequest) ProtoMessage() {}
+
+func (x *DiffScratchpadEntriesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiffScratchpadEntriesRequest.ProtoReflect.Descriptor instead.
+func (*DiffScratchpadEntriesRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *DiffScratchpadEntriesRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *DiffScratchpadEntriesRequest) GetBeforeEntryId() string {
+	if x != nil {
+		return x.BeforeEntryId
+	}
+	return ""
+}
+
+func (x *DiffScratchpadEntriesRequest) GetAfterEntryId() string {
+	if x != nil {
+		return x.AfterEntryId
+	}
+	return ""
+}
+
+func (x *DiffScratchpadEntriesRequest) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
+}
+
+// DiffScratchpadEntriesResponse returns the unified diff between two scratchpad entries.
+type DiffScratchpadEntriesResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// diff contains the unified diff output comparing the two entries, or empty if identical.
+	Diff          string `protobuf:"bytes,1,opt,name=diff,proto3" json:"diff,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiffScratchpadEntriesResponse) Reset() {
+	*x = DiffScratchpadEntriesResponse{}
+	mi := &file_agent_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiffScratchpadEntriesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiffScratchpadEntriesResponse) ProtoMessage() {}
+
+func (x *DiffScratchpadEntriesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiffScratchpadEntriesResponse.ProtoReflect.Descriptor instead.
+func (*DiffScratchpadEntriesResponse) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *DiffScratchpadEntriesResponse) GetDiff() string {
+	if x != nil {
+		return x.Diff
+	}
+	return ""
+}
+
+// DeleteScratchpadRequest specifies parameters for deleting a scratchpad entry.
+type DeleteScratchpadRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose scratchpad entry will be deleted. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// entry_id is the 4-character identifier of the scratchpad entry to delete. Required.
+	EntryId string `protobuf:"bytes,2,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,3,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteScratchpadRequest) Reset() {
+	*x = DeleteScratchpadRequest{}
+	mi := &file_agent_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteScratchpadRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteScratchpadRequest) ProtoMessage() {}
+
+func (x *DeleteScratchpadRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteScratchpadRequest.ProtoReflect.Descriptor instead.
+func (*DeleteScratchpadRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *DeleteScratchpadRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *DeleteScratchpadRequest) GetEntryId() string {
+	if x != nil {
+		return x.EntryId
+	}
+	return ""
+}
+
+func (x *DeleteScratchpadRequest) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
+}
+
+// DeleteScratchpadResponse acknowledges successful deletion of the scratchpad entry.
+type DeleteScratchpadResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteScratchpadResponse) Reset() {
+	*x = DeleteScratchpadResponse{}
+	mi := &file_agent_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteScratchpadResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteScratchpadResponse) ProtoMessage() {}
+
+func (x *DeleteScratchpadResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteScratchpadResponse.ProtoReflect.Descriptor instead.
+func (*DeleteScratchpadResponse) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{41}
+}
+
 var File_agent_proto protoreflect.FileDescriptor
 
 const file_agent_proto_rawDesc = "" +
@@ -1399,7 +3020,121 @@ const file_agent_proto_rawDesc = "" +
 	"\x0esession_exists\x18\t \x01(\bR\rsessionExists\x129\n" +
 	"\n" +
 	"last_write\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\tlastWrite2\xe2\x05\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\tlastWrite\"n\n" +
+	"\x12AddUserTurnRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12#\n" +
+	"\rworkspace_dir\x18\x03 \x01(\tR\fworkspaceDir\"y\n" +
+	"\x13AddUserTurnResponse\x122\n" +
+	"\x04turn\x18\x01 \x01(\v2\x1e.wackypub.agent.v1.SessionTurnR\x04turn\x12\x12\n" +
+	"\x04text\x18\x02 \x01(\tR\x04text\x12\x1a\n" +
+	"\bwarnings\x18\x03 \x03(\tR\bwarnings\"\x8d\x01\n" +
+	"\x0fAddMediaRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x1d\n" +
+	"\n" +
+	"media_data\x18\x02 \x01(\fR\tmediaData\x12\x1b\n" +
+	"\tmime_type\x18\x03 \x01(\tR\bmimeType\x12#\n" +
+	"\rworkspace_dir\x18\x04 \x01(\tR\fworkspaceDir\"~\n" +
+	"\x10AddMediaResponse\x122\n" +
+	"\x04turn\x18\x01 \x01(\v2\x1e.wackypub.agent.v1.SessionTurnR\x04turn\x12\x1b\n" +
+	"\tmime_type\x18\x02 \x01(\tR\bmimeType\x12\x19\n" +
+	"\braw_size\x18\x03 \x01(\x03R\arawSize\"S\n" +
+	"\x11CancelTurnRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
+	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\"\x14\n" +
+	"\x12CancelTurnResponse\"X\n" +
+	"\x16StripSignaturesRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
+	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\"@\n" +
+	"\x17StripSignaturesResponse\x12%\n" +
+	"\x0emodified_turns\x18\x01 \x01(\x05R\rmodifiedTurns\"\xe3\x01\n" +
+	"\x15CompactSessionRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x14\n" +
+	"\x05force\x18\x02 \x01(\bR\x05force\x12Q\n" +
+	"\x0fconfig_override\x18\x03 \x01(\v2(.wackypub.agent.v1.CompactConfigOverrideR\x0econfigOverride\x12!\n" +
+	"\fruntime_path\x18\x04 \x01(\tR\vruntimePath\x12#\n" +
+	"\rworkspace_dir\x18\x05 \x01(\tR\fworkspaceDir\"\xd0\x01\n" +
+	"\x15CompactConfigOverride\x12\x1f\n" +
+	"\vappend_only\x18\x01 \x01(\bR\n" +
+	"appendOnly\x12\x1f\n" +
+	"\vcompact_pct\x18\x02 \x01(\x01R\n" +
+	"compactPct\x120\n" +
+	"\x14compact_overhead_pct\x18\x03 \x01(\x01R\x12compactOverheadPct\x12+\n" +
+	"\x11compaction_notice\x18\x04 \x01(\tR\x10compactionNotice\x12\x16\n" +
+	"\x06prompt\x18\x05 \x01(\tR\x06prompt\"6\n" +
+	"\x16CompactSessionResponse\x12\x1c\n" +
+	"\tcompacted\x18\x01 \x01(\bR\tcompacted\"\x8c\x01\n" +
+	"\x17CreateScratchpadRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x12\n" +
+	"\x04text\x18\x02 \x01(\tR\x04text\x12\x1d\n" +
+	"\n" +
+	"created_by\x18\x03 \x01(\tR\tcreatedBy\x12#\n" +
+	"\rworkspace_dir\x18\x04 \x01(\tR\fworkspaceDir\"T\n" +
+	"\x18CreateScratchpadResponse\x128\n" +
+	"\x05entry\x18\x01 \x01(\v2\".wackypub.agent.v1.ScratchpadEntryR\x05entry\"\xdf\x01\n" +
+	"\x0fScratchpadEntry\x12\x19\n" +
+	"\bentry_id\x18\x01 \x01(\tR\aentryId\x12\x12\n" +
+	"\x04size\x18\x02 \x01(\x03R\x04size\x12\x14\n" +
+	"\x05lines\x18\x03 \x01(\x05R\x05lines\x12\x1d\n" +
+	"\n" +
+	"created_by\x18\x04 \x01(\tR\tcreatedBy\x12\x12\n" +
+	"\x04text\x18\x05 \x01(\tR\x04text\x12\x1b\n" +
+	"\tis_binary\x18\x06 \x01(\bR\bisBinary\x12\x1b\n" +
+	"\tmime_type\x18\a \x01(\tR\bmimeType\x12\x1a\n" +
+	"\bwarnings\x18\b \x03(\tR\bwarnings\"\xd4\x01\n" +
+	"\x14GetScratchpadRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x19\n" +
+	"\bentry_id\x18\x02 \x01(\tR\aentryId\x12\"\n" +
+	"\n" +
+	"skip_lines\x18\x03 \x01(\x05H\x00R\tskipLines\x88\x01\x01\x12 \n" +
+	"\tnum_lines\x18\x04 \x01(\x05H\x01R\bnumLines\x88\x01\x01\x12#\n" +
+	"\rworkspace_dir\x18\x05 \x01(\tR\fworkspaceDirB\r\n" +
+	"\v_skip_linesB\f\n" +
+	"\n" +
+	"_num_lines\"+\n" +
+	"\x15GetScratchpadResponse\x12\x12\n" +
+	"\x04text\x18\x01 \x01(\tR\x04text\"X\n" +
+	"\x16ListScratchpadsRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
+	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\"\x9f\x01\n" +
+	"\x17ListScratchpadsResponse\x12<\n" +
+	"\aentries\x18\x01 \x03(\v2\".wackypub.agent.v1.ScratchpadEntryR\aentries\x12#\n" +
+	"\rtotal_entries\x18\x02 \x01(\x05R\ftotalEntries\x12!\n" +
+	"\fmax_capacity\x18\x03 \x01(\x05R\vmaxCapacity\"\x87\x02\n" +
+	"\x17SearchScratchpadRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x19\n" +
+	"\bentry_id\x18\x02 \x01(\tR\aentryId\x12\x14\n" +
+	"\x05query\x18\x03 \x01(\tR\x05query\x12*\n" +
+	"\x0ecase_sensitive\x18\x04 \x01(\bH\x00R\rcaseSensitive\x88\x01\x01\x12\x1b\n" +
+	"\tuse_regex\x18\x05 \x01(\bR\buseRegex\x12\x1f\n" +
+	"\vmax_results\x18\x06 \x01(\x05R\n" +
+	"maxResults\x12#\n" +
+	"\rworkspace_dir\x18\a \x01(\tR\fworkspaceDirB\x11\n" +
+	"\x0f_case_sensitive\"\xcf\x01\n" +
+	"\x18SearchScratchpadResponse\x12\x19\n" +
+	"\bentry_id\x18\x01 \x01(\tR\aentryId\x12\x14\n" +
+	"\x05query\x18\x02 \x01(\tR\x05query\x12#\n" +
+	"\rtotal_matches\x18\x03 \x01(\x05R\ftotalMatches\x12\x1f\n" +
+	"\vmax_results\x18\x04 \x01(\x05R\n" +
+	"maxResults\x12<\n" +
+	"\amatches\x18\x05 \x03(\v2\".wackypub.agent.v1.ScratchpadMatchR\amatches\"X\n" +
+	"\x0fScratchpadMatch\x12\x12\n" +
+	"\x04line\x18\x01 \x01(\x05R\x04line\x12\x1d\n" +
+	"\n" +
+	"skip_lines\x18\x02 \x01(\x05R\tskipLines\x12\x12\n" +
+	"\x04text\x18\x03 \x01(\tR\x04text\"\xac\x01\n" +
+	"\x1cDiffScratchpadEntriesRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12&\n" +
+	"\x0fbefore_entry_id\x18\x02 \x01(\tR\rbeforeEntryId\x12$\n" +
+	"\x0eafter_entry_id\x18\x03 \x01(\tR\fafterEntryId\x12#\n" +
+	"\rworkspace_dir\x18\x04 \x01(\tR\fworkspaceDir\"3\n" +
+	"\x1dDiffScratchpadEntriesResponse\x12\x12\n" +
+	"\x04diff\x18\x01 \x01(\tR\x04diff\"t\n" +
+	"\x17DeleteScratchpadRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x19\n" +
+	"\bentry_id\x18\x02 \x01(\tR\aentryId\x12#\n" +
+	"\rworkspace_dir\x18\x03 \x01(\tR\fworkspaceDir\"\x1a\n" +
+	"\x18DeleteScratchpadResponse2\xd2\x0e\n" +
 	"\fAgentService\x12Y\n" +
 	"\n" +
 	"ListAgents\x12$.wackypub.agent.v1.ListAgentsRequest\x1a%.wackypub.agent.v1.ListAgentsResponse\x12_\n" +
@@ -1409,7 +3144,19 @@ const file_agent_proto_rawDesc = "" +
 	"ReadMemory\x12$.wackypub.agent.v1.ReadMemoryRequest\x1a%.wackypub.agent.v1.ReadMemoryResponse\x12q\n" +
 	"\x12RenderSystemPrompt\x12,.wackypub.agent.v1.RenderSystemPromptRequest\x1a-.wackypub.agent.v1.RenderSystemPromptResponse\x12z\n" +
 	"\x15InspectSessionContext\x12/.wackypub.agent.v1.InspectSessionContextRequest\x1a0.wackypub.agent.v1.InspectSessionContextResponse\x12n\n" +
-	"\x11InspectAgentLocks\x12+.wackypub.agent.v1.InspectAgentLocksRequest\x1a,.wackypub.agent.v1.InspectAgentLocksResponseB7Z5github.com/colinrgodsey/wackypub/pkg/agent/v1;agentv1b\x06proto3"
+	"\x11InspectAgentLocks\x12+.wackypub.agent.v1.InspectAgentLocksRequest\x1a,.wackypub.agent.v1.InspectAgentLocksResponse\x12\\\n" +
+	"\vAddUserTurn\x12%.wackypub.agent.v1.AddUserTurnRequest\x1a&.wackypub.agent.v1.AddUserTurnResponse\x12S\n" +
+	"\bAddMedia\x12\".wackypub.agent.v1.AddMediaRequest\x1a#.wackypub.agent.v1.AddMediaResponse\x12Y\n" +
+	"\n" +
+	"CancelTurn\x12$.wackypub.agent.v1.CancelTurnRequest\x1a%.wackypub.agent.v1.CancelTurnResponse\x12h\n" +
+	"\x0fStripSignatures\x12).wackypub.agent.v1.StripSignaturesRequest\x1a*.wackypub.agent.v1.StripSignaturesResponse\x12e\n" +
+	"\x0eCompactSession\x12(.wackypub.agent.v1.CompactSessionRequest\x1a).wackypub.agent.v1.CompactSessionResponse\x12k\n" +
+	"\x10CreateScratchpad\x12*.wackypub.agent.v1.CreateScratchpadRequest\x1a+.wackypub.agent.v1.CreateScratchpadResponse\x12b\n" +
+	"\rGetScratchpad\x12'.wackypub.agent.v1.GetScratchpadRequest\x1a(.wackypub.agent.v1.GetScratchpadResponse\x12h\n" +
+	"\x0fListScratchpads\x12).wackypub.agent.v1.ListScratchpadsRequest\x1a*.wackypub.agent.v1.ListScratchpadsResponse\x12k\n" +
+	"\x10SearchScratchpad\x12*.wackypub.agent.v1.SearchScratchpadRequest\x1a+.wackypub.agent.v1.SearchScratchpadResponse\x12z\n" +
+	"\x15DiffScratchpadEntries\x12/.wackypub.agent.v1.DiffScratchpadEntriesRequest\x1a0.wackypub.agent.v1.DiffScratchpadEntriesResponse\x12k\n" +
+	"\x10DeleteScratchpad\x12*.wackypub.agent.v1.DeleteScratchpadRequest\x1a+.wackypub.agent.v1.DeleteScratchpadResponseB7Z5github.com/colinrgodsey/wackypub/pkg/agent/v1;agentv1b\x06proto3"
 
 var (
 	file_agent_proto_rawDescOnce sync.Once
@@ -1423,7 +3170,7 @@ func file_agent_proto_rawDescGZIP() []byte {
 	return file_agent_proto_rawDescData
 }
 
-var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_agent_proto_goTypes = []any{
 	(*ListAgentsRequest)(nil),             // 0: wackypub.agent.v1.ListAgentsRequest
 	(*ListAgentsResponse)(nil),            // 1: wackypub.agent.v1.ListAgentsResponse
@@ -1442,33 +3189,86 @@ var file_agent_proto_goTypes = []any{
 	(*InspectAgentLocksRequest)(nil),      // 14: wackypub.agent.v1.InspectAgentLocksRequest
 	(*InspectAgentLocksResponse)(nil),     // 15: wackypub.agent.v1.InspectAgentLocksResponse
 	(*AgentLockObservation)(nil),          // 16: wackypub.agent.v1.AgentLockObservation
-	(*timestamppb.Timestamp)(nil),         // 17: google.protobuf.Timestamp
+	(*AddUserTurnRequest)(nil),            // 17: wackypub.agent.v1.AddUserTurnRequest
+	(*AddUserTurnResponse)(nil),           // 18: wackypub.agent.v1.AddUserTurnResponse
+	(*AddMediaRequest)(nil),               // 19: wackypub.agent.v1.AddMediaRequest
+	(*AddMediaResponse)(nil),              // 20: wackypub.agent.v1.AddMediaResponse
+	(*CancelTurnRequest)(nil),             // 21: wackypub.agent.v1.CancelTurnRequest
+	(*CancelTurnResponse)(nil),            // 22: wackypub.agent.v1.CancelTurnResponse
+	(*StripSignaturesRequest)(nil),        // 23: wackypub.agent.v1.StripSignaturesRequest
+	(*StripSignaturesResponse)(nil),       // 24: wackypub.agent.v1.StripSignaturesResponse
+	(*CompactSessionRequest)(nil),         // 25: wackypub.agent.v1.CompactSessionRequest
+	(*CompactConfigOverride)(nil),         // 26: wackypub.agent.v1.CompactConfigOverride
+	(*CompactSessionResponse)(nil),        // 27: wackypub.agent.v1.CompactSessionResponse
+	(*CreateScratchpadRequest)(nil),       // 28: wackypub.agent.v1.CreateScratchpadRequest
+	(*CreateScratchpadResponse)(nil),      // 29: wackypub.agent.v1.CreateScratchpadResponse
+	(*ScratchpadEntry)(nil),               // 30: wackypub.agent.v1.ScratchpadEntry
+	(*GetScratchpadRequest)(nil),          // 31: wackypub.agent.v1.GetScratchpadRequest
+	(*GetScratchpadResponse)(nil),         // 32: wackypub.agent.v1.GetScratchpadResponse
+	(*ListScratchpadsRequest)(nil),        // 33: wackypub.agent.v1.ListScratchpadsRequest
+	(*ListScratchpadsResponse)(nil),       // 34: wackypub.agent.v1.ListScratchpadsResponse
+	(*SearchScratchpadRequest)(nil),       // 35: wackypub.agent.v1.SearchScratchpadRequest
+	(*SearchScratchpadResponse)(nil),      // 36: wackypub.agent.v1.SearchScratchpadResponse
+	(*ScratchpadMatch)(nil),               // 37: wackypub.agent.v1.ScratchpadMatch
+	(*DiffScratchpadEntriesRequest)(nil),  // 38: wackypub.agent.v1.DiffScratchpadEntriesRequest
+	(*DiffScratchpadEntriesResponse)(nil), // 39: wackypub.agent.v1.DiffScratchpadEntriesResponse
+	(*DeleteScratchpadRequest)(nil),       // 40: wackypub.agent.v1.DeleteScratchpadRequest
+	(*DeleteScratchpadResponse)(nil),      // 41: wackypub.agent.v1.DeleteScratchpadResponse
+	(*timestamppb.Timestamp)(nil),         // 42: google.protobuf.Timestamp
 }
 var file_agent_proto_depIdxs = []int32{
 	6,  // 0: wackypub.agent.v1.ReadSessionResponse.turns:type_name -> wackypub.agent.v1.SessionTurn
 	7,  // 1: wackypub.agent.v1.SessionTurn.parts:type_name -> wackypub.agent.v1.SessionPart
 	16, // 2: wackypub.agent.v1.InspectAgentLocksResponse.observations:type_name -> wackypub.agent.v1.AgentLockObservation
-	17, // 3: wackypub.agent.v1.AgentLockObservation.lock_held_since:type_name -> google.protobuf.Timestamp
-	17, // 4: wackypub.agent.v1.AgentLockObservation.last_write:type_name -> google.protobuf.Timestamp
-	0,  // 5: wackypub.agent.v1.AgentService.ListAgents:input_type -> wackypub.agent.v1.ListAgentsRequest
-	2,  // 6: wackypub.agent.v1.AgentService.InspectAgent:input_type -> wackypub.agent.v1.InspectAgentRequest
-	4,  // 7: wackypub.agent.v1.AgentService.ReadSession:input_type -> wackypub.agent.v1.ReadSessionRequest
-	8,  // 8: wackypub.agent.v1.AgentService.ReadMemory:input_type -> wackypub.agent.v1.ReadMemoryRequest
-	10, // 9: wackypub.agent.v1.AgentService.RenderSystemPrompt:input_type -> wackypub.agent.v1.RenderSystemPromptRequest
-	12, // 10: wackypub.agent.v1.AgentService.InspectSessionContext:input_type -> wackypub.agent.v1.InspectSessionContextRequest
-	14, // 11: wackypub.agent.v1.AgentService.InspectAgentLocks:input_type -> wackypub.agent.v1.InspectAgentLocksRequest
-	1,  // 12: wackypub.agent.v1.AgentService.ListAgents:output_type -> wackypub.agent.v1.ListAgentsResponse
-	3,  // 13: wackypub.agent.v1.AgentService.InspectAgent:output_type -> wackypub.agent.v1.InspectAgentResponse
-	5,  // 14: wackypub.agent.v1.AgentService.ReadSession:output_type -> wackypub.agent.v1.ReadSessionResponse
-	9,  // 15: wackypub.agent.v1.AgentService.ReadMemory:output_type -> wackypub.agent.v1.ReadMemoryResponse
-	11, // 16: wackypub.agent.v1.AgentService.RenderSystemPrompt:output_type -> wackypub.agent.v1.RenderSystemPromptResponse
-	13, // 17: wackypub.agent.v1.AgentService.InspectSessionContext:output_type -> wackypub.agent.v1.InspectSessionContextResponse
-	15, // 18: wackypub.agent.v1.AgentService.InspectAgentLocks:output_type -> wackypub.agent.v1.InspectAgentLocksResponse
-	12, // [12:19] is the sub-list for method output_type
-	5,  // [5:12] is the sub-list for method input_type
-	5,  // [5:5] is the sub-list for extension type_name
-	5,  // [5:5] is the sub-list for extension extendee
-	0,  // [0:5] is the sub-list for field type_name
+	42, // 3: wackypub.agent.v1.AgentLockObservation.lock_held_since:type_name -> google.protobuf.Timestamp
+	42, // 4: wackypub.agent.v1.AgentLockObservation.last_write:type_name -> google.protobuf.Timestamp
+	6,  // 5: wackypub.agent.v1.AddUserTurnResponse.turn:type_name -> wackypub.agent.v1.SessionTurn
+	6,  // 6: wackypub.agent.v1.AddMediaResponse.turn:type_name -> wackypub.agent.v1.SessionTurn
+	26, // 7: wackypub.agent.v1.CompactSessionRequest.config_override:type_name -> wackypub.agent.v1.CompactConfigOverride
+	30, // 8: wackypub.agent.v1.CreateScratchpadResponse.entry:type_name -> wackypub.agent.v1.ScratchpadEntry
+	30, // 9: wackypub.agent.v1.ListScratchpadsResponse.entries:type_name -> wackypub.agent.v1.ScratchpadEntry
+	37, // 10: wackypub.agent.v1.SearchScratchpadResponse.matches:type_name -> wackypub.agent.v1.ScratchpadMatch
+	0,  // 11: wackypub.agent.v1.AgentService.ListAgents:input_type -> wackypub.agent.v1.ListAgentsRequest
+	2,  // 12: wackypub.agent.v1.AgentService.InspectAgent:input_type -> wackypub.agent.v1.InspectAgentRequest
+	4,  // 13: wackypub.agent.v1.AgentService.ReadSession:input_type -> wackypub.agent.v1.ReadSessionRequest
+	8,  // 14: wackypub.agent.v1.AgentService.ReadMemory:input_type -> wackypub.agent.v1.ReadMemoryRequest
+	10, // 15: wackypub.agent.v1.AgentService.RenderSystemPrompt:input_type -> wackypub.agent.v1.RenderSystemPromptRequest
+	12, // 16: wackypub.agent.v1.AgentService.InspectSessionContext:input_type -> wackypub.agent.v1.InspectSessionContextRequest
+	14, // 17: wackypub.agent.v1.AgentService.InspectAgentLocks:input_type -> wackypub.agent.v1.InspectAgentLocksRequest
+	17, // 18: wackypub.agent.v1.AgentService.AddUserTurn:input_type -> wackypub.agent.v1.AddUserTurnRequest
+	19, // 19: wackypub.agent.v1.AgentService.AddMedia:input_type -> wackypub.agent.v1.AddMediaRequest
+	21, // 20: wackypub.agent.v1.AgentService.CancelTurn:input_type -> wackypub.agent.v1.CancelTurnRequest
+	23, // 21: wackypub.agent.v1.AgentService.StripSignatures:input_type -> wackypub.agent.v1.StripSignaturesRequest
+	25, // 22: wackypub.agent.v1.AgentService.CompactSession:input_type -> wackypub.agent.v1.CompactSessionRequest
+	28, // 23: wackypub.agent.v1.AgentService.CreateScratchpad:input_type -> wackypub.agent.v1.CreateScratchpadRequest
+	31, // 24: wackypub.agent.v1.AgentService.GetScratchpad:input_type -> wackypub.agent.v1.GetScratchpadRequest
+	33, // 25: wackypub.agent.v1.AgentService.ListScratchpads:input_type -> wackypub.agent.v1.ListScratchpadsRequest
+	35, // 26: wackypub.agent.v1.AgentService.SearchScratchpad:input_type -> wackypub.agent.v1.SearchScratchpadRequest
+	38, // 27: wackypub.agent.v1.AgentService.DiffScratchpadEntries:input_type -> wackypub.agent.v1.DiffScratchpadEntriesRequest
+	40, // 28: wackypub.agent.v1.AgentService.DeleteScratchpad:input_type -> wackypub.agent.v1.DeleteScratchpadRequest
+	1,  // 29: wackypub.agent.v1.AgentService.ListAgents:output_type -> wackypub.agent.v1.ListAgentsResponse
+	3,  // 30: wackypub.agent.v1.AgentService.InspectAgent:output_type -> wackypub.agent.v1.InspectAgentResponse
+	5,  // 31: wackypub.agent.v1.AgentService.ReadSession:output_type -> wackypub.agent.v1.ReadSessionResponse
+	9,  // 32: wackypub.agent.v1.AgentService.ReadMemory:output_type -> wackypub.agent.v1.ReadMemoryResponse
+	11, // 33: wackypub.agent.v1.AgentService.RenderSystemPrompt:output_type -> wackypub.agent.v1.RenderSystemPromptResponse
+	13, // 34: wackypub.agent.v1.AgentService.InspectSessionContext:output_type -> wackypub.agent.v1.InspectSessionContextResponse
+	15, // 35: wackypub.agent.v1.AgentService.InspectAgentLocks:output_type -> wackypub.agent.v1.InspectAgentLocksResponse
+	18, // 36: wackypub.agent.v1.AgentService.AddUserTurn:output_type -> wackypub.agent.v1.AddUserTurnResponse
+	20, // 37: wackypub.agent.v1.AgentService.AddMedia:output_type -> wackypub.agent.v1.AddMediaResponse
+	22, // 38: wackypub.agent.v1.AgentService.CancelTurn:output_type -> wackypub.agent.v1.CancelTurnResponse
+	24, // 39: wackypub.agent.v1.AgentService.StripSignatures:output_type -> wackypub.agent.v1.StripSignaturesResponse
+	27, // 40: wackypub.agent.v1.AgentService.CompactSession:output_type -> wackypub.agent.v1.CompactSessionResponse
+	29, // 41: wackypub.agent.v1.AgentService.CreateScratchpad:output_type -> wackypub.agent.v1.CreateScratchpadResponse
+	32, // 42: wackypub.agent.v1.AgentService.GetScratchpad:output_type -> wackypub.agent.v1.GetScratchpadResponse
+	34, // 43: wackypub.agent.v1.AgentService.ListScratchpads:output_type -> wackypub.agent.v1.ListScratchpadsResponse
+	36, // 44: wackypub.agent.v1.AgentService.SearchScratchpad:output_type -> wackypub.agent.v1.SearchScratchpadResponse
+	39, // 45: wackypub.agent.v1.AgentService.DiffScratchpadEntries:output_type -> wackypub.agent.v1.DiffScratchpadEntriesResponse
+	41, // 46: wackypub.agent.v1.AgentService.DeleteScratchpad:output_type -> wackypub.agent.v1.DeleteScratchpadResponse
+	29, // [29:47] is the sub-list for method output_type
+	11, // [11:29] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_agent_proto_init() }
@@ -1476,13 +3276,15 @@ func file_agent_proto_init() {
 	if File_agent_proto != nil {
 		return
 	}
+	file_agent_proto_msgTypes[31].OneofWrappers = []any{}
+	file_agent_proto_msgTypes[35].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   17,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

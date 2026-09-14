@@ -4,10 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"google.golang.org/genai"
@@ -694,5 +699,530 @@ func TestProtoContract_InspectAgentResponse_NoSensitiveRuntimeConfig(t *testing.
 	}
 	if desc.Fields().ByNumber(12) != nil {
 		t.Fatal("field number 12 must remain reserved and unassigned in InspectAgentResponse")
+	}
+}
+
+// TestPhase3MethodParity acts as an automated parity test harness (D112)
+// asserting field-by-field parity between the protobuf service interface and
+// the unexported legacy methods for ALL 11 Phase 3 operations.
+func TestPhase3MethodParity(t *testing.T) {
+	wsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), []byte(""), 0644); err != nil {
+		t.Fatalf("write root marker: %v", err)
+	}
+
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(wsDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origCwd)
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"* summary"},"finish_reason":"stop"}]}`)
+	}))
+	defer mockServer.Close()
+
+	initAgent := func(id string) string {
+		dir := filepath.Join(wsDir, id)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", id, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("Parity prompt for "+id), 0644); err != nil {
+			t.Fatalf("write AGENTS.md: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte("Parity memory for "+id), 0644); err != nil {
+			t.Fatalf("write MEMORY.md: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, AllowedAgentsFile), []byte(id+"\n"), 0644); err != nil {
+			t.Fatalf("write allowed_agents: %v", err)
+		}
+		rtJSON := fmt.Sprintf(`{"model":"test-model","endpoint":%q,"contextWindow":128000,"maxImageDimension":400}`, mockServer.URL)
+		if err := os.WriteFile(filepath.Join(dir, "runtime.json"), []byte(rtJSON), 0644); err != nil {
+			t.Fatalf("write runtime.json: %v", err)
+		}
+		return dir
+	}
+
+	sdk := NewSDK(wsDir)
+	ctx := context.Background()
+
+	// ==========================================
+	// Parity 1: AddUserTurn vs addUserTurnLegacy
+	// ==========================================
+	initAgent("agent-turn-leg")
+	initAgent("agent-turn-proto")
+	turnLeg, err := sdk.addUserTurnLegacy("agent-turn-leg", "Parity turn message")
+	if err != nil {
+		t.Fatalf("addUserTurnLegacy failed: %v", err)
+	}
+	turnProto, err := sdk.AddUserTurn(ctx, &agentv1.AddUserTurnRequest{
+		AgentId: "agent-turn-proto",
+		Message: "Parity turn message",
+	})
+	if err != nil {
+		t.Fatalf("AddUserTurn proto failed: %v", err)
+	}
+	if turnProto.GetText() != turnLeg.Text {
+		t.Errorf("AddUserTurn Text mismatch: %q vs %q", turnProto.GetText(), turnLeg.Text)
+	}
+	if !slices.Equal(turnProto.GetWarnings(), turnLeg.Warnings) {
+		t.Errorf("AddUserTurn Warnings mismatch: %v vs %v", turnProto.GetWarnings(), turnLeg.Warnings)
+	}
+	if turnProto.GetTurn().GetRole() != turnLeg.Content.Role {
+		t.Errorf("AddUserTurn Role mismatch: %q vs %q", turnProto.GetTurn().GetRole(), turnLeg.Content.Role)
+	}
+	if len(turnProto.GetTurn().GetParts()) != len(turnLeg.Content.Parts) {
+		t.Fatalf("AddUserTurn Parts count mismatch: %d vs %d", len(turnProto.GetTurn().GetParts()), len(turnLeg.Content.Parts))
+	}
+	if turnProto.GetTurn().GetParts()[0].GetText() != turnLeg.Content.Parts[0].Text {
+		t.Errorf("AddUserTurn part text mismatch: %q vs %q", turnProto.GetTurn().GetParts()[0].GetText(), turnLeg.Content.Parts[0].Text)
+	}
+
+	// ==========================================
+	// Parity 2: AddMedia vs addMediaLegacy
+	// ==========================================
+	initAgent("agent-media-leg")
+	initAgent("agent-media-proto")
+	testImg := createTestImage(100, 100, false)
+	mediaLeg, err := sdk.addMediaLegacy("agent-media-leg", bytes.NewReader(testImg))
+	if err != nil {
+		t.Fatalf("addMediaLegacy failed: %v", err)
+	}
+	mediaProto, err := sdk.AddMedia(ctx, &agentv1.AddMediaRequest{
+		AgentId:   "agent-media-proto",
+		MediaData: testImg,
+	})
+	if err != nil {
+		t.Fatalf("AddMedia proto failed: %v", err)
+	}
+	if mediaProto.GetMimeType() != mediaLeg.Parts[0].InlineData.MIMEType {
+		t.Errorf("AddMedia MIMEType mismatch: %q vs %q", mediaProto.GetMimeType(), mediaLeg.Parts[0].InlineData.MIMEType)
+	}
+	if mediaProto.GetRawSize() != int64(len(mediaLeg.Parts[0].InlineData.Data)) {
+		t.Errorf("AddMedia RawSize mismatch: %d vs %d", mediaProto.GetRawSize(), len(mediaLeg.Parts[0].InlineData.Data))
+	}
+	if mediaProto.GetTurn().GetRole() != mediaLeg.Role {
+		t.Errorf("AddMedia Role mismatch: %q vs %q", mediaProto.GetTurn().GetRole(), mediaLeg.Role)
+	}
+	if !bytes.Equal(mediaProto.GetTurn().GetParts()[0].GetInlineData(), mediaLeg.Parts[0].InlineData.Data) {
+		t.Error("AddMedia InlineData payload mismatch")
+	}
+
+	// ==========================================
+	// Parity 3: CancelTurn vs cancelTurnLegacy
+	// ==========================================
+	errLeg := sdk.cancelTurnLegacy("idle-agent")
+	_, errProto := sdk.CancelTurn(ctx, &agentv1.CancelTurnRequest{AgentId: "idle-agent"})
+	if errLeg == nil || errProto == nil {
+		t.Fatal("expected CancelTurn against idle agent to return error on both paths")
+	}
+	if errLeg.Error() != errProto.Error() {
+		t.Errorf("CancelTurn error message mismatch: %q vs %q", errProto.Error(), errLeg.Error())
+	}
+	// Test cancellation of in-flight turns
+	var legCancelled, protoCancelled bool
+	cleanupLeg := registerInFlightTurn("leg-running", func() { legCancelled = true })
+	defer cleanupLeg()
+	if err := sdk.cancelTurnLegacy("leg-running"); err != nil {
+		t.Fatalf("cancelTurnLegacy in-flight failed: %v", err)
+	}
+	if !legCancelled {
+		t.Error("cancelTurnLegacy did not trigger cancel func")
+	}
+	cleanupProto := registerInFlightTurn("proto-running", func() { protoCancelled = true })
+	defer cleanupProto()
+	if _, err := sdk.CancelTurn(ctx, &agentv1.CancelTurnRequest{AgentId: "proto-running"}); err != nil {
+		t.Fatalf("CancelTurn proto in-flight failed: %v", err)
+	}
+	if !protoCancelled {
+		t.Error("CancelTurn proto did not trigger cancel func")
+	}
+
+	// ==========================================
+	// Parity 4: StripSignatures vs stripSignaturesLegacy
+	// ==========================================
+	dirStripLeg := initAgent("agent-strip-leg")
+	dirStripProto := initAgent("agent-strip-proto")
+	signedTurn := `{"role":"model","parts":[{"text":"Thinking...","thoughtSignature":"sig123"}]}` + "\n"
+	if err := os.WriteFile(filepath.Join(dirStripLeg, "session.jsonl"), []byte(signedTurn), 0644); err != nil {
+		t.Fatalf("write signed session leg: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dirStripProto, "session.jsonl"), []byte(signedTurn), 0644); err != nil {
+		t.Fatalf("write signed session proto: %v", err)
+	}
+	modLeg, err := sdk.stripSignaturesLegacy("agent-strip-leg")
+	if err != nil {
+		t.Fatalf("stripSignaturesLegacy failed: %v", err)
+	}
+	modProto, err := sdk.StripSignatures(ctx, &agentv1.StripSignaturesRequest{AgentId: "agent-strip-proto"})
+	if err != nil {
+		t.Fatalf("StripSignatures proto failed: %v", err)
+	}
+	if int(modProto.GetModifiedTurns()) != modLeg {
+		t.Errorf("StripSignatures ModifiedTurns mismatch: %d vs %d", modProto.GetModifiedTurns(), modLeg)
+	}
+
+	// ==========================================
+	// Parity 5: CompactSession vs compactSessionLegacy
+	// ==========================================
+	initAgent("agent-compact-leg")
+	initAgent("agent-compact-proto")
+	compLeg, err := sdk.compactSessionLegacy(ctx, "agent-compact-leg", false)
+	if err != nil {
+		t.Fatalf("compactSessionLegacy failed: %v", err)
+	}
+	compProto, err := sdk.CompactSession(ctx, &agentv1.CompactSessionRequest{
+		AgentId: "agent-compact-proto",
+		Force:   false,
+	})
+	if err != nil {
+		t.Fatalf("CompactSession proto failed: %v", err)
+	}
+	if compProto.GetCompacted() != compLeg {
+		t.Errorf("CompactSession Compacted mismatch: %v vs %v", compProto.GetCompacted(), compLeg)
+	}
+
+	// ==========================================
+	// Parity 6: CreateScratchpad vs createScratchpadLegacy
+	// ==========================================
+	initAgent("agent-sp-leg")
+	initAgent("agent-sp-proto")
+	spLeg, err := sdk.createScratchpadLegacy("agent-sp-leg", "Line 1: Parity entry\nLine 2: Target\nLine 3: End\n", "tester")
+	if err != nil {
+		t.Fatalf("createScratchpadLegacy failed: %v", err)
+	}
+	spProto, err := sdk.CreateScratchpad(ctx, &agentv1.CreateScratchpadRequest{
+		AgentId:   "agent-sp-proto",
+		Text:      "Line 1: Parity entry\nLine 2: Target\nLine 3: End\n",
+		CreatedBy: "tester",
+	})
+	if err != nil {
+		t.Fatalf("CreateScratchpad proto failed: %v", err)
+	}
+	pe := spProto.GetEntry()
+	if len(pe.GetEntryId()) != len(spLeg.ID) || len(pe.GetEntryId()) != 4 {
+		t.Errorf("CreateScratchpad ID length mismatch: %d vs %d", len(pe.GetEntryId()), len(spLeg.ID))
+	}
+	if pe.GetSize() != int64(spLeg.Size) {
+		t.Errorf("CreateScratchpad Size mismatch: %d vs %d", pe.GetSize(), spLeg.Size)
+	}
+	if pe.GetLines() != int32(spLeg.Lines) {
+		t.Errorf("CreateScratchpad Lines mismatch: %d vs %d", pe.GetLines(), spLeg.Lines)
+	}
+	if pe.GetCreatedBy() != spLeg.CreatedBy {
+		t.Errorf("CreateScratchpad CreatedBy mismatch: %q vs %q", pe.GetCreatedBy(), spLeg.CreatedBy)
+	}
+	if pe.GetIsBinary() != spLeg.IsBinary {
+		t.Errorf("CreateScratchpad IsBinary mismatch: %v vs %v", pe.GetIsBinary(), spLeg.IsBinary)
+	}
+
+	// ==========================================
+	// Parity 7: GetScratchpad vs getScratchpadLegacy
+	// ==========================================
+	getLeg, err := sdk.getScratchpadLegacy("agent-sp-leg", spLeg.ID, nil, nil)
+	if err != nil {
+		t.Fatalf("getScratchpadLegacy failed: %v", err)
+	}
+	getProto, err := sdk.GetScratchpad(ctx, &agentv1.GetScratchpadRequest{
+		AgentId: "agent-sp-proto",
+		EntryId: pe.GetEntryId(),
+	})
+	if err != nil {
+		t.Fatalf("GetScratchpad proto failed: %v", err)
+	}
+	if getProto.GetText() != getLeg {
+		t.Errorf("GetScratchpad full text mismatch: %q vs %q", getProto.GetText(), getLeg)
+	}
+	// With pagination: skip 1, num 1
+	skip := 1
+	num := 1
+	getLegPaged, err := sdk.getScratchpadLegacy("agent-sp-leg", spLeg.ID, &skip, &num)
+	if err != nil {
+		t.Fatalf("getScratchpadLegacy paged failed: %v", err)
+	}
+	skip32 := int32(1)
+	num32 := int32(1)
+	getProtoPaged, err := sdk.GetScratchpad(ctx, &agentv1.GetScratchpadRequest{
+		AgentId:   "agent-sp-proto",
+		EntryId:   pe.GetEntryId(),
+		SkipLines: &skip32,
+		NumLines:  &num32,
+	})
+	if err != nil {
+		t.Fatalf("GetScratchpad proto paged failed: %v", err)
+	}
+	if getProtoPaged.GetText() != getLegPaged {
+		t.Errorf("GetScratchpad paged text mismatch: %q vs %q", getProtoPaged.GetText(), getLegPaged)
+	}
+
+	// ==========================================
+	// Parity 8: ListScratchpads vs listScratchpadsLegacy
+	// ==========================================
+	listLegItems, listLegCount, listLegCap, err := sdk.listScratchpadsLegacy("agent-sp-leg")
+	if err != nil {
+		t.Fatalf("listScratchpadsLegacy failed: %v", err)
+	}
+	listProto, err := sdk.ListScratchpads(ctx, &agentv1.ListScratchpadsRequest{
+		AgentId: "agent-sp-proto",
+	})
+	if err != nil {
+		t.Fatalf("ListScratchpads proto failed: %v", err)
+	}
+	if int(listProto.GetTotalEntries()) != listLegCount {
+		t.Errorf("ListScratchpads TotalEntries mismatch: %d vs %d", listProto.GetTotalEntries(), listLegCount)
+	}
+	if int(listProto.GetMaxCapacity()) != listLegCap {
+		t.Errorf("ListScratchpads MaxCapacity mismatch: %d vs %d", listProto.GetMaxCapacity(), listLegCap)
+	}
+	if len(listProto.GetEntries()) != len(listLegItems) {
+		t.Fatalf("ListScratchpads entries count mismatch: %d vs %d", len(listProto.GetEntries()), len(listLegItems))
+	}
+	if listProto.GetEntries()[0].GetSize() != int64(listLegItems[0].Size) {
+		t.Errorf("ListScratchpads entry size mismatch: %d vs %d", listProto.GetEntries()[0].GetSize(), listLegItems[0].Size)
+	}
+
+	// ==========================================
+	// Parity 9: SearchScratchpad vs searchScratchpadLegacy
+	// ==========================================
+	searchLeg, err := sdk.searchScratchpadLegacy("agent-sp-leg", spLeg.ID, "Target", nil, false, 10)
+	if err != nil {
+		t.Fatalf("searchScratchpadLegacy failed: %v", err)
+	}
+	searchProto, err := sdk.SearchScratchpad(ctx, &agentv1.SearchScratchpadRequest{
+		AgentId:    "agent-sp-proto",
+		EntryId:    pe.GetEntryId(),
+		Query:      "Target",
+		MaxResults: 10,
+	})
+	if err != nil {
+		t.Fatalf("SearchScratchpad proto failed: %v", err)
+	}
+	if int(searchProto.GetTotalMatches()) != searchLeg.TotalMatches {
+		t.Errorf("SearchScratchpad TotalMatches mismatch: %d vs %d", searchProto.GetTotalMatches(), searchLeg.TotalMatches)
+	}
+	if int(searchProto.GetMaxResults()) != searchLeg.MaxResults {
+		t.Errorf("SearchScratchpad MaxResults mismatch: %d vs %d", searchProto.GetMaxResults(), searchLeg.MaxResults)
+	}
+	if len(searchProto.GetMatches()) != len(searchLeg.Matches) {
+		t.Fatalf("SearchScratchpad Matches count mismatch: %d vs %d", len(searchProto.GetMatches()), len(searchLeg.Matches))
+	}
+	if searchProto.GetMatches()[0].GetLine() != int32(searchLeg.Matches[0].Line) {
+		t.Errorf("SearchScratchpad Line mismatch: %d vs %d", searchProto.GetMatches()[0].GetLine(), searchLeg.Matches[0].Line)
+	}
+	if searchProto.GetMatches()[0].GetText() != searchLeg.Matches[0].Text {
+		t.Errorf("SearchScratchpad Text mismatch: %q vs %q", searchProto.GetMatches()[0].GetText(), searchLeg.Matches[0].Text)
+	}
+
+	// ==========================================
+	// Parity 10: DiffScratchpadEntries vs diffScratchpadEntriesLegacy
+	// ==========================================
+	spLeg2, err := sdk.createScratchpadLegacy("agent-sp-leg", "Line 1: Parity entry\nLine 2: Modified Target\nLine 3: End\n", "tester")
+	if err != nil {
+		t.Fatalf("createScratchpadLegacy 2 failed: %v", err)
+	}
+	spProto2, err := sdk.CreateScratchpad(ctx, &agentv1.CreateScratchpadRequest{
+		AgentId:   "agent-sp-proto",
+		Text:      "Line 1: Parity entry\nLine 2: Modified Target\nLine 3: End\n",
+		CreatedBy: "tester",
+	})
+	if err != nil {
+		t.Fatalf("CreateScratchpad proto 2 failed: %v", err)
+	}
+	diffLeg, err := sdk.diffScratchpadEntriesLegacy("agent-sp-leg", spLeg.ID, spLeg2.ID)
+	if err != nil {
+		t.Fatalf("diffScratchpadEntriesLegacy failed: %v", err)
+	}
+	diffProto, err := sdk.DiffScratchpadEntries(ctx, &agentv1.DiffScratchpadEntriesRequest{
+		AgentId:       "agent-sp-proto",
+		BeforeEntryId: pe.GetEntryId(),
+		AfterEntryId:  spProto2.GetEntry().GetEntryId(),
+	})
+	if err != nil {
+		t.Fatalf("DiffScratchpadEntries proto failed: %v", err)
+	}
+	if diffLeg == "" || diffProto.GetDiff() == "" {
+		t.Error("expected non-empty diff output on both paths")
+	}
+	if !strings.Contains(diffProto.GetDiff(), "Modified Target") || !strings.Contains(diffLeg, "Modified Target") {
+		t.Errorf("diff output missing expected change line: %q", diffProto.GetDiff())
+	}
+
+	// ==========================================
+	// Parity 11: DeleteScratchpad vs deleteScratchpadLegacy
+	// ==========================================
+	if err := sdk.deleteScratchpadLegacy("agent-sp-leg", spLeg.ID); err != nil {
+		t.Fatalf("deleteScratchpadLegacy failed: %v", err)
+	}
+	if _, err := sdk.DeleteScratchpad(ctx, &agentv1.DeleteScratchpadRequest{
+		AgentId: "agent-sp-proto",
+		EntryId: pe.GetEntryId(),
+	}); err != nil {
+		t.Fatalf("DeleteScratchpad proto failed: %v", err)
+	}
+	// Verify deleted on both
+	if _, err := sdk.getScratchpadLegacy("agent-sp-leg", spLeg.ID, nil, nil); err == nil {
+		t.Error("expected legacy get to fail on deleted scratchpad")
+	}
+	if _, err := sdk.GetScratchpad(ctx, &agentv1.GetScratchpadRequest{
+		AgentId: "agent-sp-proto",
+		EntryId: pe.GetEntryId(),
+	}); err == nil {
+		t.Error("expected proto get to fail on deleted scratchpad")
+	}
+}
+
+// TestAddMedia_CeilingCheck tests that AddMedia enforces the 10MB ceiling (MaxMediaPayloadBytes)
+// before processing, returning an error when exceeded.
+func TestAddMedia_CeilingCheck(t *testing.T) {
+	wsDir := t.TempDir()
+	agentID := "ceiling-agent"
+	agentDir := filepath.Join(wsDir, agentID)
+	_ = os.MkdirAll(agentDir, 0755)
+	_ = os.WriteFile(filepath.Join(wsDir, RootMarkerFile), []byte(""), 0644)
+	_ = os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("Prompt"), 0644)
+	_ = os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte("ceiling-agent\n"), 0644)
+	_ = os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(`{"model":"m","maxImageDimension":400}`), 0644)
+
+	origCwd, _ := os.Getwd()
+	_ = os.Chdir(wsDir)
+	defer os.Chdir(origCwd)
+
+	sdk := NewSDK(wsDir)
+	ctx := context.Background()
+
+	// 10MB + 1 byte payload
+	oversized := make([]byte, MaxMediaPayloadBytes+1)
+	_, err := sdk.AddMedia(ctx, &agentv1.AddMediaRequest{
+		AgentId:   agentID,
+		MediaData: oversized,
+	})
+	if err == nil {
+		t.Fatal("expected error for oversized media payload (>10MB), got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds 10MB limit") {
+		t.Fatalf("expected error message mentioning 10MB limit, got: %v", err)
+	}
+}
+
+// TestProtoContract_CompactSession_CrossAgentAuthorization verifies D60 cross-agent
+// authorization gating on CompactSession: when invoked from a caller agent directory,
+// cross-agent compaction of a target agent is rejected unless the target is explicitly
+// permitted in the caller's allowed_agents allowlist. Internal/self-compaction paths
+// and authorized cross-agent invocations remain functional.
+func TestProtoContract_CompactSession_CrossAgentAuthorization(t *testing.T) {
+	wsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), []byte(""), 0644); err != nil {
+		t.Fatalf("write root marker: %v", err)
+	}
+
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer os.Chdir(origCwd)
+
+	origA2A := os.Getenv(Agent2AgentEnvVar)
+	defer os.Setenv(Agent2AgentEnvVar, origA2A)
+	os.Setenv(Agent2AgentEnvVar, "")
+
+	origChain := os.Getenv(CallChainEnvVar)
+	defer os.Setenv(CallChainEnvVar, origChain)
+	os.Setenv(CallChainEnvVar, "")
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"* compacted summary"},"finish_reason":"stop"}]}`)
+	}))
+	defer mockServer.Close()
+
+	// Caller agent: bob
+	bobDir := filepath.Join(wsDir, "bob")
+	if err := os.MkdirAll(bobDir, 0755); err != nil {
+		t.Fatalf("mkdir bob: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bobDir, "AGENTS.md"), []byte("You are Bob"), 0644); err != nil {
+		t.Fatalf("write bob AGENTS.md: %v", err)
+	}
+
+	// Target agent: alice
+	aliceDir := filepath.Join(wsDir, "alice")
+	if err := os.MkdirAll(aliceDir, 0755); err != nil {
+		t.Fatalf("mkdir alice: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(aliceDir, "AGENTS.md"), []byte("You are Alice"), 0644); err != nil {
+		t.Fatalf("write alice AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(aliceDir, AllowedAgentsFile), []byte("alice\n"), 0644); err != nil {
+		t.Fatalf("write alice allowed_agents: %v", err)
+	}
+	rtJSON := fmt.Sprintf(`{"model":"test-model","endpoint":%q,"contextWindow":128000,"maxImageDimension":400}`, mockServer.URL)
+	if err := os.WriteFile(filepath.Join(aliceDir, "runtime.json"), []byte(rtJSON), 0644); err != nil {
+		t.Fatalf("write alice runtime.json: %v", err)
+	}
+	if err := AppendSessionTurn(aliceDir, "user", "Alice turn 1"); err != nil {
+		t.Fatalf("write alice session turn: %v", err)
+	}
+
+	sdk := NewSDK(wsDir)
+	ctx := context.Background()
+
+	// Switch CWD to bob's directory
+	if err := os.Chdir(bobDir); err != nil {
+		t.Fatalf("chdir bobDir: %v", err)
+	}
+
+	// 1. Without allowed_agents in bob's directory, CompactSession targeting alice must fail
+	_, err = sdk.CompactSession(ctx, &agentv1.CompactSessionRequest{
+		AgentId: "alice",
+		Force:   false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "has no "+AllowedAgentsFile+" allowlist") {
+		t.Fatalf("expected CompactSession to fail with missing allowlist, got err: %v", err)
+	}
+
+	// 2. With an allowed_agents file that does NOT include alice (e.g. only charlie), it must fail
+	if err := os.WriteFile(filepath.Join(bobDir, AllowedAgentsFile), []byte("charlie\n"), 0644); err != nil {
+		t.Fatalf("write bob allowed_agents: %v", err)
+	}
+	_, err = sdk.CompactSession(ctx, &agentv1.CompactSessionRequest{
+		AgentId: "alice",
+		Force:   false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "not in "+AllowedAgentsFile+" allowlist") {
+		t.Fatalf("expected CompactSession to fail when target not in allowlist, got err: %v", err)
+	}
+
+	// 3. Grant alice in bob's allowlist -> CompactSession targeting alice must now SUCCEED
+	if err := os.WriteFile(filepath.Join(bobDir, AllowedAgentsFile), []byte("alice\n"), 0644); err != nil {
+		t.Fatalf("write bob allowed_agents: %v", err)
+	}
+	resp, err := sdk.CompactSession(ctx, &agentv1.CompactSessionRequest{
+		AgentId: "alice",
+		Force:   false,
+	})
+	if err != nil {
+		t.Fatalf("expected CompactSession to succeed once authorized in allowlist, got err: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil CompactSessionResponse")
+	}
+
+	// 4. Self-compaction from alice's own directory succeeds
+	if err := os.Chdir(aliceDir); err != nil {
+		t.Fatalf("chdir aliceDir: %v", err)
+	}
+	selfResp, err := sdk.CompactSession(ctx, &agentv1.CompactSessionRequest{
+		AgentId: "alice",
+		Force:   false,
+	})
+	if err != nil {
+		t.Fatalf("expected self-compaction from target agent directory to succeed, got err: %v", err)
+	}
+	if selfResp == nil {
+		t.Fatal("expected non-nil response for self-compaction")
 	}
 }

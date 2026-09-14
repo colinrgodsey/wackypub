@@ -7,6 +7,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -86,10 +87,70 @@ func (s *AgentSDK) AgentDir(agentID string) string {
 	return filepath.Join(s.WorkspaceDir, agentID)
 }
 
-// AddUserTurn appends a user message to <ws_dir>/<agent_id>/session.jsonl.
-// Creates the agent directory automatically if it does not exist yet.
-// Surfaces any hook execution warnings on the returned UserTurnResult.
-func (s *AgentSDK) AddUserTurn(agentID string, message string) (*UserTurnResult, error) {
+// AddUserTurn implements the behavior defined in proto/wackypub/v1/agent.proto.
+func (s *AgentSDK) AddUserTurn(ctx context.Context, req *agentv1.AddUserTurnRequest) (*agentv1.AddUserTurnResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+	agentID := req.GetAgentId()
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+	message := req.GetMessage()
+	if message == "" {
+		return nil, fmt.Errorf("message cannot be empty")
+	}
+
+	if _, err := ValidateAgentTarget(agentID); err != nil {
+		return nil, err
+	}
+
+	wsDir := s.WorkspaceDir
+	if req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create agent directory %s: %w", agentDir, err)
+	}
+
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	finalMsg, hookEnv, warnings, _ := RunUserMessageHooks(agentDir, message)
+
+	content := genai.NewContentFromText(finalMsg, "user")
+	if err := AppendSessionContent(agentDir, content); err != nil {
+		return nil, err
+	}
+
+	s.setLastHookEnv(agentID, hookEnv)
+
+	_ = CommitWorkspaceEvent(wsDir, agentID, "user")
+
+	turn := &agentv1.SessionTurn{
+		Role: "user",
+		Parts: []*agentv1.SessionPart{
+			{
+				Text: finalMsg,
+			},
+		},
+	}
+	return &agentv1.AddUserTurnResponse{
+		Turn:     turn,
+		Text:     finalMsg,
+		Warnings: warnings,
+	}, nil
+}
+
+// addUserTurnLegacy appends a user message to <ws_dir>/<agent_id>/session.jsonl using the
+// legacy positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) addUserTurnLegacy(agentID string, message string) (*UserTurnResult, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
@@ -129,11 +190,94 @@ func (s *AgentSDK) AddUserTurn(agentID string, message string) (*UserTurnResult,
 	}, nil
 }
 
-// AddMedia appends a normalized, resized JPEG image turn read from reader to
-// <ws_dir>/<agent_id>/session.jsonl according to D47.
-// Gated by runtime.json's maxImageDimension field — returns an error if
-// maxImageDimension is absent or <= 0.
-func (s *AgentSDK) AddMedia(agentID string, reader io.Reader) (*genai.Content, error) {
+// AddMedia implements the behavior defined in proto/wackypub/v1/agent.proto.
+func (s *AgentSDK) AddMedia(ctx context.Context, req *agentv1.AddMediaRequest) (*agentv1.AddMediaResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+	agentID := req.GetAgentId()
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+	data := req.GetMediaData()
+	if len(data) == 0 {
+		return nil, fmt.Errorf("image reader cannot be nil")
+	}
+	if len(data) > MaxMediaPayloadBytes {
+		return nil, fmt.Errorf("media payload exceeds 10MB limit (%d bytes > %d bytes)", len(data), MaxMediaPayloadBytes)
+	}
+
+	if _, err := ValidateAgentTarget(agentID); err != nil {
+		return nil, err
+	}
+
+	wsDir := s.WorkspaceDir
+	if req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create agent directory %s: %w", agentDir, err)
+	}
+
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	runtimeCfg, err := LoadRuntimeConfig(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load runtime config for agent %q: %w", agentID, err)
+	}
+	if runtimeCfg.MaxImageDimension <= 0 {
+		return nil, fmt.Errorf("image attachments disabled by runtime config for agent %q (maxImageDimension is not set or <= 0)", agentID)
+	}
+
+	jpegBytes, mimeType, err := NormalizeAndResizeImage(bytes.NewReader(data), runtimeCfg.MaxImageDimension)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process image attachment for agent %q: %w", agentID, err)
+	}
+
+	content := &genai.Content{
+		Role: "user",
+		Parts: []*genai.Part{
+			{
+				InlineData: &genai.Blob{
+					MIMEType: mimeType,
+					Data:     jpegBytes,
+				},
+			},
+		},
+	}
+
+	if err := AppendSessionContent(agentDir, content); err != nil {
+		return nil, fmt.Errorf("failed to append image turn: %w", err)
+	}
+
+	_ = CommitWorkspaceEvent(wsDir, agentID, "user (media)")
+
+	turn := &agentv1.SessionTurn{
+		Role: "user",
+		Parts: []*agentv1.SessionPart{
+			{
+				InlineData: jpegBytes,
+				MimeType:   mimeType,
+			},
+		},
+	}
+	return &agentv1.AddMediaResponse{
+		Turn:     turn,
+		MimeType: mimeType,
+		RawSize:  int64(len(jpegBytes)),
+	}, nil
+}
+
+// addMediaLegacy appends a normalized, resized JPEG image turn read from reader to
+// <ws_dir>/<agent_id>/session.jsonl using the legacy positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) addMediaLegacy(agentID string, reader io.Reader) (*genai.Content, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
@@ -221,9 +365,32 @@ func registerInFlightTurn(agentID string, cancel context.CancelFunc) func() {
 	}
 }
 
-// CancelTurn cancels an in-flight turn for the given agent if one is currently active (D85).
-// It is safe to call concurrently from any goroutine.
-func (s *AgentSDK) CancelTurn(agentID string) error {
+// CancelTurn implements the behavior defined in proto/wackypub/v1/agent.proto.
+func (s *AgentSDK) CancelTurn(ctx context.Context, req *agentv1.CancelTurnRequest) (*agentv1.CancelTurnResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+	agentID := req.GetAgentId()
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+
+	inFlightTurnsMu.Lock()
+	entry, ok := inFlightTurns[agentID]
+	inFlightTurnsMu.Unlock()
+
+	if !ok || entry == nil {
+		return nil, fmt.Errorf("no in-flight turn for agent %q", agentID)
+	}
+
+	entry.cancel()
+	return &agentv1.CancelTurnResponse{}, nil
+}
+
+// cancelTurnLegacy cancels an in-flight turn for the given agent using the legacy positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) cancelTurnLegacy(agentID string) error {
 	inFlightTurnsMu.Lock()
 	entry, ok := inFlightTurns[agentID]
 	inFlightTurnsMu.Unlock()
@@ -698,16 +865,45 @@ func (s *AgentSDK) renderSystemPromptLegacy(agentID string) (string, error) {
 	return RenderAgentSystemPrompt(s.WorkspaceDir, agentID)
 }
 
-// StripSignatures permanently removes provider-specific opaque
-// reasoning/thought signatures (OpenRouter reasoning_details block metadata,
-// e.g. encrypted/signed reasoning tied to a specific backend endpoint, and
-// Gemini's ThoughtSignature field) from every turn in
-// <ws_dir>/<agent_id>/session.jsonl, rewriting the file in place. Readable
-// plain-text reasoning is left untouched. Useful when switching an agent from
-// one model/provider to another, since a replayed signature from the old
-// provider is rejected outright by the new one. Returns the number of turns
-// that were modified.
-func (s *AgentSDK) StripSignatures(agentID string) (int, error) {
+// StripSignatures implements the behavior defined in proto/wackypub/v1/agent.proto.
+func (s *AgentSDK) StripSignatures(ctx context.Context, req *agentv1.StripSignaturesRequest) (*agentv1.StripSignaturesResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+	agentID := req.GetAgentId()
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+
+	if _, err := ValidateAgentTarget(agentID); err != nil {
+		return nil, err
+	}
+
+	wsDir := s.WorkspaceDir
+	if req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	agentDir := filepath.Join(wsDir, agentID)
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	count, err := StripSessionSignatures(agentDir)
+	if err != nil {
+		return nil, err
+	}
+	return &agentv1.StripSignaturesResponse{
+		ModifiedTurns: int32(count),
+	}, nil
+}
+
+// stripSignaturesLegacy permanently removes provider-specific opaque reasoning/thought signatures
+// using the legacy positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) stripSignaturesLegacy(agentID string) (int, error) {
 	if agentID == "" {
 		return 0, fmt.Errorf("agentID cannot be empty")
 	}
@@ -732,25 +928,120 @@ type CompactSessionOptions struct {
 	RuntimePath    string
 }
 
-// CompactSession manually triggers session compaction evaluation for an agent.
-// force bypasses the contextWindow/token-estimate gate checks (D44) - only this
-// manual path can force; the automatic pre-generation check never does.
-func (s *AgentSDK) CompactSession(ctx context.Context, agentID string, force bool) (bool, error) {
-	return s.CompactSessionWithOptions(ctx, agentID, force, CompactSessionOptions{})
+// CompactSession implements the behavior defined in proto/wackypub/v1/agent.proto.
+func (s *AgentSDK) CompactSession(ctx context.Context, req *agentv1.CompactSessionRequest) (*agentv1.CompactSessionResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+	agentID := req.GetAgentId()
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+
+	a2aMeta, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return nil, err
+	}
+
+	wsDir := s.WorkspaceDir
+	if req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	agentDir := filepath.Join(wsDir, agentID)
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	var cfgOverride *CompactConfig
+	if cov := req.GetConfigOverride(); cov != nil {
+		cfgOverride = &CompactConfig{
+			AppendOnly:         cov.GetAppendOnly(),
+			CompactPct:         cov.GetCompactPct(),
+			CompactOverheadPct: cov.GetCompactOverheadPct(),
+			CompactionNotice:   cov.GetCompactionNotice(),
+			Prompt:             cov.GetPrompt(),
+		}
+	}
+
+	force := req.GetForce()
+	runtimePath := req.GetRuntimePath()
+	var compacted bool
+	if runtimePath == "" {
+		fa, err := LoadFolderAgentWithA2A(wsDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
+		if err != nil {
+			return nil, err
+		}
+		compacted, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, force, cfgOverride)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if !pathExists(agentDir) {
+			return nil, fmt.Errorf("agent directory %s does not exist", agentDir)
+		}
+
+		_, _ = LoadAgentDotEnv(agentDir)
+
+		overrideRuntimeCfg, err := LoadRuntimeConfigFile(runtimePath)
+		if err != nil {
+			return nil, err
+		}
+
+		expandedPrompt, err := RenderAgentSystemPrompt(wsDir, agentID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to render system prompt for agent %s: %w", agentID, err)
+		}
+
+		overrideLLMModel, err := NewModelForRuntime(ctx, overrideRuntimeCfg, agentID)
+		if err != nil {
+			return nil, err
+		}
+
+		maxToolTurns := s.MaxToolTurns
+		if maxToolTurns <= 0 {
+			maxToolTurns = DefaultMaxToolTurns
+		}
+		adkAgent, err := BuildADKAgentWithConfig(agentID, expandedPrompt, maxToolTurns, overrideRuntimeCfg, overrideLLMModel)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build disposable ADK agent for compaction of %s: %w", agentID, err)
+		}
+
+		compacted, err = CheckAndCompactSession(ctx, agentDir, overrideRuntimeCfg, adkAgent, force, cfgOverride)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return &agentv1.CompactSessionResponse{
+		Compacted: compacted,
+	}, nil
 }
 
-// CompactSessionWithConfig manually triggers session compaction evaluation for an agent
-// with an optional CompactConfig override (D83). When cfgOverride is non-nil, it replaces
-// the agent's COMPACT.md configuration without reading or modifying it on disk.
-func (s *AgentSDK) CompactSessionWithConfig(ctx context.Context, agentID string, force bool, cfgOverride *CompactConfig) (bool, error) {
-	return s.CompactSessionWithOptions(ctx, agentID, force, CompactSessionOptions{
+// compactSessionLegacy manually triggers session compaction evaluation for an agent using the
+// legacy positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) compactSessionLegacy(ctx context.Context, agentID string, force bool) (bool, error) {
+	return s.compactSessionWithOptionsLegacy(ctx, agentID, force, CompactSessionOptions{})
+}
+
+// compactSessionWithConfigLegacy manually triggers session compaction evaluation with config override
+// using the legacy positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) compactSessionWithConfigLegacy(ctx context.Context, agentID string, force bool, cfgOverride *CompactConfig) (bool, error) {
+	return s.compactSessionWithOptionsLegacy(ctx, agentID, force, CompactSessionOptions{
 		ConfigOverride: cfgOverride,
 	})
 }
 
-// CompactSessionWithOptions manually triggers session compaction evaluation for an agent
-// with optional CompactConfig and RuntimeConfig overrides (D83, D84).
-func (s *AgentSDK) CompactSessionWithOptions(ctx context.Context, agentID string, force bool, opts CompactSessionOptions) (bool, error) {
+// compactSessionWithOptionsLegacy manually triggers session compaction evaluation with options
+// using the legacy positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) compactSessionWithOptionsLegacy(ctx context.Context, agentID string, force bool, opts CompactSessionOptions) (bool, error) {
 	if agentID == "" {
 		return false, fmt.Errorf("agentID cannot be empty")
 	}
@@ -814,9 +1105,61 @@ func (s *AgentSDK) CompactSessionWithOptions(ctx context.Context, agentID string
 	return CheckAndCompactSession(ctx, agentDir, overrideRuntimeCfg, adkAgent, force, opts.ConfigOverride)
 }
 
-// CreateScratchpad creates a new persistent scratchpad entry for an agent (<ws_dir>/<agent_id>/scratchpad/).
-// Atomic and collision-safe across processes without requiring the session lock.
-func (s *AgentSDK) CreateScratchpad(agentID string, text string, createdBy string) (*ScratchpadEntry, error) {
+// CreateScratchpad implements the behavior defined in proto/wackypub/v1/agent.proto.
+func (s *AgentSDK) CreateScratchpad(ctx context.Context, req *agentv1.CreateScratchpadRequest) (*agentv1.CreateScratchpadResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+	agentID := req.GetAgentId()
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+	text := req.GetText()
+	if text == "" {
+		return nil, fmt.Errorf("scratchpad content cannot be empty")
+	}
+
+	if _, err := ValidateAgentTarget(agentID); err != nil {
+		return nil, err
+	}
+
+	wsDir := s.WorkspaceDir
+	if req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	agentDir := filepath.Join(wsDir, agentID)
+	createdBy := req.GetCreatedBy()
+	if createdBy == "" {
+		createdBy = "cli"
+	}
+	entry, err := CreateScratchpad(agentDir, text, createdBy)
+	if err != nil {
+		return nil, err
+	}
+
+	warnings := entry.Warnings
+	if len(warnings) == 0 && entry.Warning != "" {
+		warnings = []string{entry.Warning}
+	}
+	pbEntry := &agentv1.ScratchpadEntry{
+		EntryId:   entry.ID,
+		Size:      int64(entry.Size),
+		Lines:     int32(entry.Lines),
+		CreatedBy: entry.CreatedBy,
+		Text:      entry.Text,
+		IsBinary:  entry.IsBinary,
+		MimeType:  entry.MIMEType,
+		Warnings:  warnings,
+	}
+	return &agentv1.CreateScratchpadResponse{
+		Entry: pbEntry,
+	}, nil
+}
+
+// createScratchpadLegacy creates a new persistent scratchpad entry using the legacy positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) createScratchpadLegacy(agentID string, text string, createdBy string) (*ScratchpadEntry, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
@@ -835,9 +1178,53 @@ func (s *AgentSDK) CreateScratchpad(agentID string, text string, createdBy strin
 	return CreateScratchpad(agentDir, text, createdBy)
 }
 
-// GetScratchpad retrieves stored text from <ws_dir>/<agent_id>/scratchpad.json by entry ID.
-// Does not acquire the session lock (read-only against atomic temp-file replace).
-func (s *AgentSDK) GetScratchpad(agentID string, entryID string, skipLines *int, numLines *int) (string, error) {
+// GetScratchpad implements the behavior defined in proto/wackypub/v1/agent.proto.
+func (s *AgentSDK) GetScratchpad(ctx context.Context, req *agentv1.GetScratchpadRequest) (*agentv1.GetScratchpadResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+	agentID := req.GetAgentId()
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+	entryID := req.GetEntryId()
+	if entryID == "" {
+		return nil, fmt.Errorf("entryID cannot be empty")
+	}
+
+	if err := AuthorizeAgentTarget(agentID); err != nil {
+		return nil, err
+	}
+
+	wsDir := s.WorkspaceDir
+	if req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	agentDir := filepath.Join(wsDir, agentID)
+
+	var skipPtr, numPtr *int
+	if req.SkipLines != nil {
+		skip := int(*req.SkipLines)
+		skipPtr = &skip
+	}
+	if req.NumLines != nil {
+		num := int(*req.NumLines)
+		numPtr = &num
+	}
+
+	text, err := GetScratchpad(agentDir, entryID, skipPtr, numPtr)
+	if err != nil {
+		return nil, err
+	}
+	return &agentv1.GetScratchpadResponse{
+		Text: text,
+	}, nil
+}
+
+// getScratchpadLegacy retrieves stored text by entry ID using the legacy positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) getScratchpadLegacy(agentID string, entryID string, skipLines *int, numLines *int) (string, error) {
 	if agentID == "" {
 		return "", fmt.Errorf("agentID cannot be empty")
 	}
@@ -853,9 +1240,54 @@ func (s *AgentSDK) GetScratchpad(agentID string, entryID string, skipLines *int,
 	return GetScratchpad(agentDir, entryID, skipLines, numLines)
 }
 
-// ListScratchpads returns metadata items for all live scratchpad entries in <ws_dir>/<agent_id>/scratchpad.json.
-// Does not acquire the session lock (read-only against atomic temp-file replace).
-func (s *AgentSDK) ListScratchpads(agentID string) ([]ScratchpadItem, int, int, error) {
+// ListScratchpads implements the behavior defined in proto/wackypub/v1/agent.proto.
+func (s *AgentSDK) ListScratchpads(ctx context.Context, req *agentv1.ListScratchpadsRequest) (*agentv1.ListScratchpadsResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+	agentID := req.GetAgentId()
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+
+	if err := AuthorizeAgentTarget(agentID); err != nil {
+		return nil, err
+	}
+
+	wsDir := s.WorkspaceDir
+	if req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	agentDir := filepath.Join(wsDir, agentID)
+
+	items, count, capVal, err := ListScratchpads(agentDir)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]*agentv1.ScratchpadEntry, len(items))
+	for i, item := range items {
+		entries[i] = &agentv1.ScratchpadEntry{
+			EntryId:   item.ID,
+			Size:      int64(item.Size),
+			Lines:     int32(item.Lines),
+			CreatedBy: item.CreatedBy,
+			IsBinary:  item.IsBinary,
+			MimeType:  item.MIMEType,
+		}
+	}
+
+	return &agentv1.ListScratchpadsResponse{
+		Entries:      entries,
+		TotalEntries: int32(count),
+		MaxCapacity:  int32(capVal),
+	}, nil
+}
+
+// listScratchpadsLegacy returns metadata items for all live scratchpads using the legacy positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) listScratchpadsLegacy(agentID string) ([]ScratchpadItem, int, int, error) {
 	if agentID == "" {
 		return nil, 0, MaxScratchpadEntries, fmt.Errorf("agentID cannot be empty")
 	}
@@ -868,9 +1300,67 @@ func (s *AgentSDK) ListScratchpads(agentID string) ([]ScratchpadItem, int, int, 
 	return ListScratchpads(agentDir)
 }
 
-// SearchScratchpad searches a specific scratchpad entry in <ws_dir>/<agent_id>/scratchpad.json for matching lines.
-// Does not acquire the session lock (read-only against atomic temp-file replace).
-func (s *AgentSDK) SearchScratchpad(agentID string, entryID string, query string, caseSensitive *bool, useRegex bool, maxResults int) (*SearchScratchpadResult, error) {
+// SearchScratchpad implements the behavior defined in proto/wackypub/v1/agent.proto.
+func (s *AgentSDK) SearchScratchpad(ctx context.Context, req *agentv1.SearchScratchpadRequest) (*agentv1.SearchScratchpadResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+	agentID := req.GetAgentId()
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+	entryID := req.GetEntryId()
+	if entryID == "" {
+		return nil, fmt.Errorf("entryID cannot be empty")
+	}
+	query := req.GetQuery()
+	if query == "" {
+		return nil, fmt.Errorf("query cannot be empty")
+	}
+
+	if err := AuthorizeAgentTarget(agentID); err != nil {
+		return nil, err
+	}
+
+	wsDir := s.WorkspaceDir
+	if req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	agentDir := filepath.Join(wsDir, agentID)
+
+	var caseSensPtr *bool
+	if req.CaseSensitive != nil {
+		val := *req.CaseSensitive
+		caseSensPtr = &val
+	}
+
+	res, err := SearchScratchpad(agentDir, entryID, query, caseSensPtr, req.GetUseRegex(), int(req.GetMaxResults()))
+	if err != nil {
+		return nil, err
+	}
+
+	matches := make([]*agentv1.ScratchpadMatch, len(res.Matches))
+	for i, m := range res.Matches {
+		matches[i] = &agentv1.ScratchpadMatch{
+			Line:      int32(m.Line),
+			SkipLines: int32(m.SkipLines),
+			Text:      m.Text,
+		}
+	}
+
+	return &agentv1.SearchScratchpadResponse{
+		EntryId:      res.ID,
+		Query:        res.Query,
+		TotalMatches: int32(res.TotalMatches),
+		MaxResults:   int32(res.MaxResults),
+		Matches:      matches,
+	}, nil
+}
+
+// searchScratchpadLegacy searches a specific scratchpad entry using the legacy positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) searchScratchpadLegacy(agentID string, entryID string, query string, caseSensitive *bool, useRegex bool, maxResults int) (*SearchScratchpadResult, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
@@ -889,14 +1379,43 @@ func (s *AgentSDK) SearchScratchpad(agentID string, entryID string, query string
 	return SearchScratchpad(agentDir, entryID, query, caseSensitive, useRegex, maxResults)
 }
 
-// DiffScratchpadEntries returns a unified diff between two of an agent's scratchpad entries,
-// or an empty string when they are byte-identical. A diff too large to be useful in one turn is
-// left as ordinary output: callers piping this command into their own tooling get the existing
-// output-capture behaviour, so the tool does not duplicate that machinery.
+// DiffScratchpadEntries implements the behavior defined in proto/wackypub/v1/agent.proto.
+func (s *AgentSDK) DiffScratchpadEntries(ctx context.Context, req *agentv1.DiffScratchpadEntriesRequest) (*agentv1.DiffScratchpadEntriesResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+	agentID := req.GetAgentId()
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+	beforeID := req.GetBeforeEntryId()
+	afterID := req.GetAfterEntryId()
+	if beforeID == "" || afterID == "" {
+		return nil, fmt.Errorf("beforeID and afterID cannot be empty")
+	}
+
+	if err := AuthorizeAgentTarget(agentID); err != nil {
+		return nil, err
+	}
+
+	wsDir := s.WorkspaceDir
+	if req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+
+	diff, err := DiffScratchpadEntries(wsDir, agentID, beforeID, afterID)
+	if err != nil {
+		return nil, err
+	}
+	return &agentv1.DiffScratchpadEntriesResponse{
+		Diff: diff,
+	}, nil
+}
+
+// diffScratchpadEntriesLegacy returns a unified diff between two entries using the legacy positional signature.
 //
-// Read-only, so it takes no session lock, and it authorizes with AuthorizeAgentTarget like the
-// other scratchpad reads.
-func (s *AgentSDK) DiffScratchpadEntries(agentID string, beforeID string, afterID string) (string, error) {
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) diffScratchpadEntriesLegacy(agentID string, beforeID string, afterID string) (string, error) {
 	if agentID == "" {
 		return "", fmt.Errorf("agentID cannot be empty")
 	}
@@ -911,8 +1430,39 @@ func (s *AgentSDK) DiffScratchpadEntries(agentID string, beforeID string, afterI
 	return DiffScratchpadEntries(s.WorkspaceDir, agentID, beforeID, afterID)
 }
 
-// DeleteScratchpad removes a scratchpad entry from <ws_dir>/<agent_id>/scratchpad/ by entry ID.
-func (s *AgentSDK) DeleteScratchpad(agentID string, entryID string) error {
+// DeleteScratchpad implements the behavior defined in proto/wackypub/v1/agent.proto.
+func (s *AgentSDK) DeleteScratchpad(ctx context.Context, req *agentv1.DeleteScratchpadRequest) (*agentv1.DeleteScratchpadResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+	agentID := req.GetAgentId()
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+	entryID := req.GetEntryId()
+	if entryID == "" {
+		return nil, fmt.Errorf("entryID cannot be empty")
+	}
+
+	if _, err := ValidateAgentTarget(agentID); err != nil {
+		return nil, err
+	}
+
+	wsDir := s.WorkspaceDir
+	if req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := DeleteScratchpad(agentDir, entryID); err != nil {
+		return nil, err
+	}
+	return &agentv1.DeleteScratchpadResponse{}, nil
+}
+
+// deleteScratchpadLegacy removes a scratchpad entry using the legacy positional signature.
+//
+// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+func (s *AgentSDK) deleteScratchpadLegacy(agentID string, entryID string) error {
 	if agentID == "" {
 		return fmt.Errorf("agentID cannot be empty")
 	}

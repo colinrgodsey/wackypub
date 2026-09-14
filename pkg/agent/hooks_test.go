@@ -432,7 +432,7 @@ printf '{"text":"Altered Quest","env":{"SPLIT_ENV":"active"}}\n'
 `)
 
 	sdk := NewSDK(wsDir)
-	if _, err := sdk.AddUserTurn(agentID, "Original Quest"); err != nil {
+	if _, err := sdk.addUserTurnLegacy(agentID, "Original Quest"); err != nil {
 		t.Fatalf("AddUserTurn failed: %v", err)
 	}
 
@@ -530,7 +530,7 @@ printf '{"text":"intercepted-by-hook","env":{"INTERCEPTED":"true"}}\n'
 
 	// Subtest 1: Human-style inbound message via AddUserTurn
 	t.Run("human-style AddUserTurn", func(t *testing.T) {
-		res, err := sdk.AddUserTurn("bob", "human message")
+		res, err := sdk.addUserTurnLegacy("bob", "human message")
 		if err != nil {
 			t.Fatalf("AddUserTurn failed: %v", err)
 		}
@@ -556,7 +556,7 @@ printf '{"text":"intercepted-by-hook","env":{"INTERCEPTED":"true"}}\n'
 		a2aPayload := `{"caller_id":"alice","call_chain":["alice"],"trace_id":"trace-a2a-test"}`
 		os.Setenv(Agent2AgentEnvVar, a2aPayload)
 
-		res, err := sdk.AddUserTurn("bob", "peer agent message from alice")
+		res, err := sdk.addUserTurnLegacy("bob", "peer agent message from alice")
 		if err != nil {
 			t.Fatalf("AddUserTurn for A2A failed: %v", err)
 		}
@@ -642,7 +642,7 @@ exit 1
 	sdk := NewSDK(wsDir)
 
 	// Subtest 1: Human turn via AddUserTurn
-	res, err := sdk.AddUserTurn(agentID, "hello")
+	res, err := sdk.addUserTurnLegacy(agentID, "hello")
 	if err != nil {
 		t.Fatalf("AddUserTurn failed: %v", err)
 	}
@@ -661,7 +661,7 @@ exit 1
 	defer os.Setenv(Agent2AgentEnvVar, origA2A)
 	os.Setenv(Agent2AgentEnvVar, `{"caller_id":"peer","call_chain":["peer"],"trace_id":"tr-1"}`)
 
-	resA2A, err := sdk.AddUserTurn(agentID, "peer turn")
+	resA2A, err := sdk.addUserTurnLegacy(agentID, "peer turn")
 	if err != nil {
 		t.Fatalf("AddUserTurn for A2A failed: %v", err)
 	}

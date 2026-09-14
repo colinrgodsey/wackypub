@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 // Cancellation scopes reported by CancelAgentTurn.
@@ -79,7 +82,7 @@ func (s *AgentSDK) CancelAgentTurn(agentID string) (TurnCancellation, error) {
 		return TurnCancellation{}, err
 	}
 
-	if err := s.CancelTurn(agentID); err == nil {
+	if _, err := s.CancelTurn(context.Background(), &agentv1.CancelTurnRequest{AgentId: agentID}); err == nil {
 		return TurnCancellation{AgentID: agentID, Scope: CancelScopeInProcess}, nil
 	}
 
