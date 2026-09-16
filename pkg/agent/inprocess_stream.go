@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"io"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -71,3 +72,57 @@ func (s *InProcessStream[T]) SendMsg(m any) error          { return nil }
 func (s *InProcessStream[T]) RecvMsg(m any) error          { return nil }
 
 var _ grpc.ServerStreamingServer[struct{}] = (*InProcessStream[struct{}])(nil)
+
+// inProcessStreamClient implements grpc.ServerStreamingClient[T] for in-process dispatch
+// (D116). It adapts an InProcessStream (server-side stream) into the client-side streaming
+// interface (Recv). It caches the terminal error so repeated Recv calls after EOF return
+// the cached terminal error without deadlocking on errCh (Fix #1). Concrete no-op methods
+// are implemented to prevent nil-pointer dereferences on embedded interfaces (Fix #2).
+type inProcessStreamClient[T any] struct {
+	stream   *InProcessStream[T]
+	errCh    chan error
+	finished bool
+	termErr  error
+}
+
+// InProcessStreamClient is an exported alias for inProcessStreamClient.
+type InProcessStreamClient[T any] = inProcessStreamClient[T]
+
+// NewInProcessStreamClient creates a new client-side stream adapter backed by stream and errCh.
+func NewInProcessStreamClient[T any](stream *InProcessStream[T], errCh chan error) *InProcessStreamClient[T] {
+	return &inProcessStreamClient[T]{
+		stream: stream,
+		errCh:  errCh,
+	}
+}
+
+func (c *inProcessStreamClient[T]) Recv() (*T, error) {
+	if c.finished {
+		if c.termErr != nil {
+			return nil, c.termErr
+		}
+		return nil, io.EOF
+	}
+	msg, ok := <-c.stream.Chunks()
+	if !ok {
+		c.finished = true
+		if c.errCh != nil {
+			if err := <-c.errCh; err != nil {
+				c.termErr = err
+				return nil, err
+			}
+		}
+		return nil, io.EOF
+	}
+	return msg, nil
+}
+
+// Concrete no-op methods for grpc.ClientStream (Fix #2)
+func (c *inProcessStreamClient[T]) Header() (metadata.MD, error) { return nil, nil }
+func (c *inProcessStreamClient[T]) Trailer() metadata.MD         { return nil }
+func (c *inProcessStreamClient[T]) CloseSend() error             { return nil }
+func (c *inProcessStreamClient[T]) Context() context.Context     { return c.stream.Context() }
+func (c *inProcessStreamClient[T]) SendMsg(m any) error          { return nil }
+func (c *inProcessStreamClient[T]) RecvMsg(m any) error          { return nil }
+
+var _ grpc.ServerStreamingClient[struct{}] = (*inProcessStreamClient[struct{}])(nil)

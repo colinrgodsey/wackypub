@@ -28,6 +28,15 @@ func signalCtx() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
+func cmdCtx(cmd *cobra.Command) context.Context {
+	if cmd != nil {
+		if ctx := cmd.Context(); ctx != nil {
+			return ctx
+		}
+	}
+	return context.Background()
+}
+
 func newSDK(wsDir string) *adkAgent.AgentSDK {
 	sdk := adkAgent.NewSDK(wsDir)
 	sdk.MaxToolTurns = GetMaxToolTurns()
@@ -36,45 +45,67 @@ func newSDK(wsDir string) *adkAgent.AgentSDK {
 }
 
 // generateTurnStreamProto drives the D112 Phase 2 streaming RPC for a continue-only turn
-// (AgentSDK.GenerateTurnStream) and returns an iterator of text chunks for the CLI loop.
-// The in-process stream adapter mediates between the generated grpc.ServerStreamingServer
-// shape and the CLI's pull-based iteration; the adapter is closed when the RPC returns so
-// the range terminates.
+// (AgentClient.GenerateTurnStream) and returns an iterator of text chunks for the CLI loop.
 func generateTurnStreamProto(sdk *adkAgent.AgentSDK, ctx context.Context, agentID string) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
-		stream := adkAgent.NewInProcessStream[agentv1.GenerateTurnStreamResponse](ctx, 16)
-		errCh := make(chan error, 1)
-		go func() {
-			// The producer owns Close: the consumer's range over Chunks() only terminates
-			// when this closes the channel. Deferring Close in the ranging closure (as in the
-			// original) deadlocks - the loop waits on a channel nobody ever closes.
-			defer stream.Close()
-			errCh <- sdk.GenerateTurnStream(&agentv1.GenerateTurnStreamRequest{AgentId: agentID}, stream)
-		}()
-		for chunk := range stream.Chunks() {
+		client, cleanup, err := adkAgent.ResolveAgentClient(ctx, sdk, agentID)
+		if err != nil {
+			yield("", err)
+			return
+		}
+		defer cleanup()
+
+		stream, err := client.GenerateTurnStream(ctx, &agentv1.GenerateTurnStreamRequest{
+			AgentId:      agentID,
+			WorkspaceDir: sdk.WorkspaceDir,
+		})
+		if err != nil {
+			yield("", err)
+			return
+		}
+		for {
+			chunk, err := stream.Recv()
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				yield("", err)
+				return
+			}
 			if !yield(chunk.GetText(), nil) {
 				return
 			}
-		}
-		if err := <-errCh; err != nil {
-			yield("", err)
 		}
 	}
 }
 
 func addAndGenerateTurnStreamProto(sdk *adkAgent.AgentSDK, ctx context.Context, agentID, userMsg string, onWarning func(string)) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
-		stream := adkAgent.NewInProcessStream[agentv1.AddAndGenerateTurnStreamResponse](ctx, 16)
-		errCh := make(chan error, 1)
-		go func() {
-			// Producer owns Close, same deadlock rationale as generateTurnStreamProto.
-			defer stream.Close()
-			errCh <- sdk.AddAndGenerateTurnStream(&agentv1.AddAndGenerateTurnStreamRequest{
-				AgentId:     agentID,
-				UserMessage: userMsg,
-			}, stream)
-		}()
-		for chunk := range stream.Chunks() {
+		client, cleanup, err := adkAgent.ResolveAgentClient(ctx, sdk, agentID)
+		if err != nil {
+			yield("", err)
+			return
+		}
+		defer cleanup()
+
+		stream, err := client.AddAndGenerateTurnStream(ctx, &agentv1.AddAndGenerateTurnStreamRequest{
+			AgentId:      agentID,
+			UserMessage:  userMsg,
+			WorkspaceDir: sdk.WorkspaceDir,
+		})
+		if err != nil {
+			yield("", err)
+			return
+		}
+		for {
+			chunk, err := stream.Recv()
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				yield("", err)
+				return
+			}
 			if w := chunk.GetWarning(); w != "" {
 				if onWarning != nil {
 					onWarning(w)
@@ -84,9 +115,6 @@ func addAndGenerateTurnStreamProto(sdk *adkAgent.AgentSDK, ctx context.Context, 
 			if !yield(chunk.GetText(), nil) {
 				return
 			}
-		}
-		if err := <-errCh; err != nil {
-			yield("", err)
 		}
 	}
 }
@@ -152,7 +180,13 @@ does not already exist.`,
 			return fmt.Errorf("user message is required. Provide via argument, --message flag, or stdin pipe")
 		}
 
-		turnRes, err := sdk.AddUserTurn(cmd.Context(), &agentv1.AddUserTurnRequest{
+		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		turnRes, err := client.AddUserTurn(cmdCtx(cmd), &agentv1.AddUserTurnRequest{
 			AgentId:      agentID,
 			Message:      userMsg,
 			WorkspaceDir: wsDir,
@@ -217,7 +251,13 @@ Transparencies in PNG/GIF inputs are flattened onto a white background before JP
 			return fmt.Errorf("media payload exceeds 10MB limit (%d bytes > %d bytes)", len(data), adkAgent.MaxMediaPayloadBytes)
 		}
 
-		resp, err := sdk.AddMedia(cmd.Context(), &agentv1.AddMediaRequest{
+		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		resp, err := client.AddMedia(cmdCtx(cmd), &agentv1.AddMediaRequest{
 			AgentId:      agentID,
 			MediaData:    data,
 			WorkspaceDir: wsDir,
@@ -331,7 +371,13 @@ the rewrite.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> strip-signatures")
 		}
 
-		resp, err := sdk.StripSignatures(cmd.Context(), &agentv1.StripSignaturesRequest{
+		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		resp, err := client.StripSignatures(cmdCtx(cmd), &agentv1.StripSignaturesRequest{
 			AgentId:      agentID,
 			WorkspaceDir: wsDir,
 		})
@@ -376,7 +422,13 @@ read.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> read-session")
 		}
 
-		resp, err := sdk.ReadSession(cmd.Context(), &agentv1.ReadSessionRequest{
+		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		resp, err := client.ReadSession(cmdCtx(cmd), &agentv1.ReadSessionRequest{
 			AgentId: agentID,
 		})
 		if err != nil {
@@ -420,7 +472,13 @@ modify anything. Acquires the session lock for the duration of the read.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> read-memory")
 		}
 
-		resp, err := sdk.ReadMemory(cmd.Context(), &agentv1.ReadMemoryRequest{
+		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		resp, err := client.ReadMemory(cmdCtx(cmd), &agentv1.ReadMemoryRequest{
 			AgentId: agentID,
 		})
 		if err != nil {
@@ -465,7 +523,13 @@ Read-only: does not modify anything.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> render-prompt")
 		}
 
-		resp, err := sdk.RenderSystemPrompt(cmd.Context(), &agentv1.RenderSystemPromptRequest{
+		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		resp, err := client.RenderSystemPrompt(cmdCtx(cmd), &agentv1.RenderSystemPromptRequest{
 			AgentId: agentID,
 		})
 		if err != nil {
@@ -595,7 +659,13 @@ operation.`,
 			}
 		}
 
-		resp, err := sdk.CompactSession(ctx, &agentv1.CompactSessionRequest{
+		client, cleanup, err := adkAgent.ResolveAgentClient(ctx, sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		resp, err := client.CompactSession(ctx, &agentv1.CompactSessionRequest{
 			AgentId:        agentID,
 			Force:          true,
 			ConfigOverride: cfgOverride,
@@ -822,7 +892,13 @@ Atomic and collision-safe across processes. Automatically evicts the entry with 
 			return fmt.Errorf("scratchpad content is required. Provide via argument, --message flag, or stdin pipe")
 		}
 
-		resp, err := sdk.CreateScratchpad(cmd.Context(), &agentv1.CreateScratchpadRequest{
+		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		resp, err := client.CreateScratchpad(cmdCtx(cmd), &agentv1.CreateScratchpadRequest{
 			AgentId:      agentID,
 			Text:         content,
 			CreatedBy:    "cli",
@@ -872,6 +948,12 @@ Pass --skip-lines N and/or --num-lines M for line-based pagination. Rejects bina
 		agentID := args[0]
 		entryID := args[1]
 
+		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
 		req := &agentv1.GetScratchpadRequest{
 			AgentId:      agentID,
 			EntryId:      entryID,
@@ -886,7 +968,7 @@ Pass --skip-lines N and/or --num-lines M for line-based pagination. Rejects bina
 			req.NumLines = &n
 		}
 
-		resp, err := sdk.GetScratchpad(cmd.Context(), req)
+		resp, err := client.GetScratchpad(cmdCtx(cmd), req)
 		if err != nil {
 			return err
 		}
@@ -929,8 +1011,15 @@ diff the pairs, then search the resulting patch for a symbol that should be gone
 		if len(args) < 3 {
 			return fmt.Errorf("agent_id, before_id and after_id are required. Usage: wackypub agent <agent_id> scratchpad diff <before_id> <after_id>")
 		}
+		agentID := args[0]
 
-		resp, err := sdk.DiffScratchpadEntries(cmd.Context(), &agentv1.DiffScratchpadEntriesRequest{
+		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		resp, err := client.DiffScratchpadEntries(cmdCtx(cmd), &agentv1.DiffScratchpadEntriesRequest{
 			AgentId:       args[0],
 			BeforeEntryId: args[1],
 			AfterEntryId:  args[2],
@@ -965,7 +1054,13 @@ Outputs JSON metadata. Does not acquire the session lock.`,
 		}
 		agentID := args[0]
 
-		resp, err := sdk.ListScratchpads(cmd.Context(), &agentv1.ListScratchpadsRequest{
+		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		resp, err := client.ListScratchpads(cmdCtx(cmd), &agentv1.ListScratchpadsRequest{
 			AgentId:      agentID,
 			WorkspaceDir: wsDir,
 		})
@@ -1033,6 +1128,12 @@ Rejects binary (.dat) entries outright per D48.`,
 		entryID := args[1]
 		query := args[2]
 
+		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
 		req := &agentv1.SearchScratchpadRequest{
 			AgentId:      agentID,
 			EntryId:      entryID,
@@ -1046,7 +1147,7 @@ Rejects binary (.dat) entries outright per D48.`,
 			req.CaseSensitive = &val
 		}
 
-		resp, err := sdk.SearchScratchpad(cmd.Context(), req)
+		resp, err := client.SearchScratchpad(cmdCtx(cmd), req)
 		if err != nil {
 			return err
 		}
@@ -1095,7 +1196,13 @@ Arguments:
 		agentID := args[0]
 		entryID := args[1]
 
-		_, err = sdk.DeleteScratchpad(cmd.Context(), &agentv1.DeleteScratchpadRequest{
+		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		_, err = client.DeleteScratchpad(cmdCtx(cmd), &agentv1.DeleteScratchpadRequest{
 			AgentId:      agentID,
 			EntryId:      entryID,
 			WorkspaceDir: wsDir,
@@ -1240,7 +1347,14 @@ var agentContextCmd = &cobra.Command{
 			return err
 		}
 		sdk := newSDK(wsDir)
-		report, err := sdk.InspectSessionContext(cmd.Context(), &agentv1.InspectSessionContextRequest{
+
+		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		report, err := client.InspectSessionContext(cmdCtx(cmd), &agentv1.InspectSessionContextRequest{
 			AgentId: agentID,
 		})
 		if err != nil {
