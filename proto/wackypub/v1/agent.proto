@@ -477,6 +477,9 @@ message AddUserTurnResponse {
 
   // warnings contains non-fatal diagnostic or hook execution warnings generated during the operation.
   repeated string warnings = 3;
+
+  // usage contains token consumption metrics if user turn processing consumed tokens (D116).
+  TurnUsage usage = 4;
 }
 
 // AddMediaRequest specifies parameters for attaching a binary media payload to an agent session.
@@ -778,11 +781,29 @@ message GenerateTurnStreamRequest {
   string workspace_dir = 2;
 }
 
+// TurnUsage contains token consumption metrics and backend attribution for an execution turn (D116).
+message TurnUsage {
+  // prompt_tokens is the count of input/context tokens consumed for the turn.
+  int64 prompt_tokens = 1;
+
+  // completion_tokens is the count of output/candidate tokens generated during the turn.
+  int64 completion_tokens = 2;
+
+  // total_tokens is the sum of prompt_tokens and completion_tokens.
+  int64 total_tokens = 3;
+
+  // backend identifies the bridge, harness, or execution engine that produced the turn.
+  string backend = 4;
+}
+
 // GenerateTurnStreamResponse is a single streamed slice of the assistant response text
 // for GenerateTurnStream.
 message GenerateTurnStreamResponse {
   // text is the next chunk of generated assistant content.
   string text = 1;
+
+  // usage carries token consumption metrics for the turn when emitted as the final chunk (D116).
+  TurnUsage usage = 2;
 }
 
 // GenerateTurnRequest specifies parameters for the non-streaming generate twin.
@@ -799,6 +820,9 @@ message GenerateTurnRequest {
 message GenerateTurnResponse {
   // text is the full assistant response joined across streamed chunks.
   string text = 1;
+
+  // usage contains token consumption metrics and backend attribution for the turn (D116).
+  TurnUsage usage = 2;
 }
 
 // AddAndGenerateTurnStreamRequest specifies parameters for appending a user message and
@@ -823,6 +847,9 @@ message AddAndGenerateTurnStreamResponse {
 
   // warning carries a hook execution warning for this turn (empty when text is set).
   string warning = 2;
+
+  // usage carries token consumption metrics for the turn when emitted as the final chunk (D116).
+  TurnUsage usage = 3;
 }
 
 // AddAndGenerateTurnRequest specifies parameters for the non-streaming add-and-generate twin.
@@ -845,6 +872,9 @@ message AddAndGenerateTurnResponse {
 
   // warnings are hook execution warnings collected during the turn.
   repeated string warnings = 2;
+
+  // usage contains token consumption metrics and backend attribution for the turn (D116).
+  TurnUsage usage = 3;
 }
 
 // A2AMetadata represents minified Agent2Agent context propagated across agent calls (D33).

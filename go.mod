@@ -4,6 +4,7 @@ go 1.25.7
 
 require (
 	github.com/achetronic/adk-utils-go v0.23.1-0.20260810132742-1f0a646bcdfd
+	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/google/jsonschema-go v0.4.2
 	github.com/h2non/filetype v1.1.3

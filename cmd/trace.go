@@ -70,7 +70,14 @@ Flags:
 			// Two arguments: agent_id, commit
 			agentID := args[0]
 			commitSpec := args[1]
-			resp, err = sdk.Trace(ctx, &agentv1.TraceRequest{
+
+			client, cleanup, err := adkAgent.ResolveAgentClient(ctx, sdk, agentID)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			resp, err = client.Trace(ctx, &agentv1.TraceRequest{
 				AgentId:   agentID,
 				Target:    &agentv1.TraceRequest_CommitSpec{CommitSpec: commitSpec},
 				MaxSteps:  int32(traceMaxSteps),

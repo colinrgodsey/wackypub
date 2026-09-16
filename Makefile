@@ -1,4 +1,4 @@
-.PHONY: all build build-wackypub build-tools test vet fmt tidy clean check
+.PHONY: all build build-wackypub build-tools test vet fmt tidy clean check proto
 
 BIN_DIR := ./bin
 SUBMODULES := tools/files-rw tools/wackyproc tools/wackydiscord
@@ -46,6 +46,9 @@ tidy:
 	done
 
 check: fmt vet test
+ 
+proto:
+	buf generate
 
 clean:
 	rm -rf $(BIN_DIR)
