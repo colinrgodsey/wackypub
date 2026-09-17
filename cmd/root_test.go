@@ -424,12 +424,12 @@ func TestD90_CLI_ScratchpadCreate_WarningOnStderr(t *testing.T) {
 		}
 	})
 
-	t.Run("backslash-escaped macro emits no warning on stderr", func(t *testing.T) {
+	t.Run("doubled-token macro emits no warning on stderr", func(t *testing.T) {
 		errBuf := new(bytes.Buffer)
 		RootCmd.SetErr(errBuf)
 		defer RootCmd.SetErr(os.Stderr)
 
-		RootCmd.SetArgs([]string{"--ws", wsDir, "agent", agentID, "scratchpad", "create", `\<SCRATCHPAD_DATA id="no99" />`})
+		RootCmd.SetArgs([]string{"--ws", wsDir, "agent", agentID, "scratchpad", "create", `<<SCRATCHPAD_DATA id="no99" />>`})
 		if err := RootCmd.Execute(); err != nil {
 			t.Fatalf("scratchpad create failed: %v", err)
 		}

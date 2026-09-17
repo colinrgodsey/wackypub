@@ -66,6 +66,16 @@ func TestCleanSessionTurns(t *testing.T) {
 		}
 	}
 
+	callWithText := func(name, id, s string) *genai.Content {
+		return &genai.Content{
+			Role: "model",
+			Parts: []*genai.Part{
+				{FunctionCall: &genai.FunctionCall{Name: name, ID: id, Args: map[string]any{"arg": "val"}}},
+				{Text: s},
+			},
+		}
+	}
+
 	funcResp := func(name, id string) *genai.Content {
 		return &genai.Content{
 			Role: "user",
@@ -118,129 +128,80 @@ func TestCleanSessionTurns(t *testing.T) {
 		if got[0].Role != "user" || len(got[0].Parts) != 2 {
 			t.Fatalf("expected merged user turn with 2 parts, got %+v", got[0])
 		}
-		if got[0].Parts[0].Text != "system+memory turn" || got[0].Parts[1].Text != "first real message" {
-			t.Errorf("merged parts out of order or wrong: %+v", got[0].Parts)
-		}
-		if got[1].Role != "model" || got[1].Parts[0].Text != "assistant reply" {
-			t.Errorf("expected trailing model turn untouched: %+v", got[1])
-		}
 	})
 
-	t.Run("merges multiple separate runs and skips nil", func(t *testing.T) {
+	t.Run("drops dangling function response (response without preceding call)", func(t *testing.T) {
 		in := []*genai.Content{
-			text("user", "u1"),
-			text("user", "u2"),
-			text("model", "m1"),
-			nil,
-			text("user", "u3"),
-			text("user", "u4"),
-			text("user", "u5"),
-		}
-		got := CleanSessionTurns(in)
-		if len(got) != 3 {
-			t.Fatalf("expected 3 turns (merged, model, merged), got %d", len(got))
-		}
-		if len(got[0].Parts) != 2 {
-			t.Errorf("expected first merged run to have 2 parts, got %d", len(got[0].Parts))
-		}
-		if got[1].Role != "model" {
-			t.Errorf("expected middle turn to be model, got %s", got[1].Role)
-		}
-		if len(got[2].Parts) != 3 {
-			t.Errorf("expected second merged run to have 3 parts, got %d", len(got[2].Parts))
-		}
-	})
-
-	t.Run("valid function call and matching response are preserved", func(t *testing.T) {
-		in := []*genai.Content{
-			text("user", "run tool"),
-			funcCall("run_command", "call_123"),
-			funcResp("run_command", "call_123"),
-			text("model", "tool finished"),
-		}
-		got := CleanSessionTurns(in)
-		if len(got) != 4 {
-			t.Fatalf("expected 4 turns, got %d", len(got))
-		}
-		if got[2].Parts[0].FunctionResponse == nil || got[2].Parts[0].FunctionResponse.ID != "call_123" {
-			t.Errorf("expected matching function response preserved, got %+v", got[2])
-		}
-	})
-
-	t.Run("dangling function response at start of session is dropped", func(t *testing.T) {
-		// Simulates compaction boundary where model turn with call was pruned
-		in := []*genai.Content{
-			funcResp("get_scratchpad", "call_orphan"),
-			text("user", "What is the capital of France?"),
+			text("user", "hello"),
+			funcResp("create_scratchpad", "call_x"),
 		}
 		got := CleanSessionTurns(in)
 		if len(got) != 1 {
-			t.Fatalf("expected 1 turn (dangling turn dropped), got %d", len(got))
+			t.Fatalf("expected 1 turn, got %d", len(got))
 		}
-		if got[0].Role != "user" || got[0].Parts[0].Text != "What is the capital of France?" {
-			t.Errorf("expected clean user turn, got %+v", got[0])
-		}
-	})
-
-	t.Run("dangling function response after model text turn is dropped", func(t *testing.T) {
-		in := []*genai.Content{
-			text("user", "hi"),
-			text("model", "hello (no tool called)"),
-			funcResp("run_command", "call_fake"),
-			text("user", "how are you?"),
-		}
-		got := CleanSessionTurns(in)
-		if len(got) != 3 {
-			t.Fatalf("expected 3 turns (user, model, user), got %d", len(got))
-		}
-		if got[1].Role != "model" || got[1].Parts[0].Text != "hello (no tool called)" {
-			t.Errorf("expected model turn untouched, got %+v", got[1])
-		}
-		if got[2].Role != "user" || got[2].Parts[0].Text != "how are you?" {
-			t.Errorf("expected clean trailing user turn, got %+v", got[2])
+		if len(got[0].Parts) != 1 || got[0].Parts[0].Text != "hello" {
+			t.Errorf("expected only the text part to survive, got %+v", got[0].Parts)
 		}
 	})
 
-	t.Run("mixed turn with text and dangling function response has only dangling part stripped", func(t *testing.T) {
+	t.Run("keeps call+response pair intact", func(t *testing.T) {
 		in := []*genai.Content{
-			text("model", "no tools here"),
-			{
-				Role: "user",
-				Parts: []*genai.Part{
-					{Text: "Important note: do not drop this"},
-					{
-						FunctionResponse: &genai.FunctionResponse{
-							Name: "phantom_tool",
-							ID:   "call_phantom",
-						},
-					},
-				},
-			},
+			funcCall("run_command", "call_1"),
+			funcResp("run_command", "call_1"),
 		}
 		got := CleanSessionTurns(in)
 		if len(got) != 2 {
 			t.Fatalf("expected 2 turns, got %d", len(got))
 		}
-		if len(got[1].Parts) != 1 || got[1].Parts[0].Text != "Important note: do not drop this" {
-			t.Errorf("expected text part kept and dangling response stripped, got %+v", got[1])
+		if got[0].Role != "model" || got[0].Parts[0].FunctionCall == nil {
+			t.Errorf("expected model call to survive, got %+v", got[0])
+		}
+		if got[1].Role != "user" || got[1].Parts[0].FunctionResponse == nil {
+			t.Errorf("expected user response to survive, got %+v", got[1])
 		}
 	})
 
-	t.Run("parallel function calls: matches valid, strips excess/unmatched responses", func(t *testing.T) {
+	t.Run("drops dangling function call (call with no following response)", func(t *testing.T) {
+		in := []*genai.Content{
+			funcCall("run_command", "call_1"),
+			text("user", "never mind"),
+		}
+		got := CleanSessionTurns(in)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 turn (model turn pruned entirely), got %d", len(got))
+		}
+		if got[0].Role != "user" || got[0].Parts[0].Text != "never mind" {
+			t.Errorf("expected only the user text turn to survive, got %+v", got)
+		}
+	})
+
+	t.Run("strips unanswered calls but keeps text in same model turn", func(t *testing.T) {
+		in := []*genai.Content{
+			callWithText("run_command", "call_1", "let me check"),
+			text("user", "ok"),
+		}
+		got := CleanSessionTurns(in)
+		if len(got) != 2 {
+			t.Fatalf("expected 2 turns, got %d", len(got))
+		}
+		if len(got[0].Parts) != 1 || got[0].Parts[0].Text != "let me check" {
+			t.Errorf("expected only text to survive in model turn, got %+v", got[0].Parts)
+		}
+	})
+
+	t.Run("multiple calls: only answered call survives", func(t *testing.T) {
 		in := []*genai.Content{
 			{
 				Role: "model",
 				Parts: []*genai.Part{
-					{FunctionCall: &genai.FunctionCall{Name: "tool_a", ID: "id_a"}},
-					{FunctionCall: &genai.FunctionCall{Name: "tool_b", ID: "id_b"}},
+					{FunctionCall: &genai.FunctionCall{Name: "good_tool", ID: "c1", Args: map[string]any{}}},
+					{FunctionCall: &genai.FunctionCall{Name: "flaky_tool", ID: "c2", Args: map[string]any{}}},
 				},
 			},
 			{
 				Role: "user",
 				Parts: []*genai.Part{
-					{FunctionResponse: &genai.FunctionResponse{Name: "tool_a", ID: "id_a"}},
-					{FunctionResponse: &genai.FunctionResponse{Name: "tool_b", ID: "id_b"}},
-					{FunctionResponse: &genai.FunctionResponse{Name: "tool_c", ID: "id_c"}}, // dangling
+					{FunctionResponse: &genai.FunctionResponse{Name: "good_tool", ID: "c1", Response: map[string]any{}}},
 				},
 			},
 		}
@@ -248,62 +209,50 @@ func TestCleanSessionTurns(t *testing.T) {
 		if len(got) != 2 {
 			t.Fatalf("expected 2 turns, got %d", len(got))
 		}
-		if len(got[1].Parts) != 2 {
-			t.Fatalf("expected 2 valid responses (tool_c stripped), got %d", len(got[1].Parts))
+		if len(got[0].Parts) != 1 || got[0].Parts[0].FunctionCall == nil || got[0].Parts[0].FunctionCall.ID != "c1" {
+			t.Errorf("expected only answered call c1 to survive, got %+v", got[0].Parts)
 		}
-		if got[1].Parts[0].FunctionResponse.Name != "tool_a" || got[1].Parts[1].FunctionResponse.Name != "tool_b" {
-			t.Errorf("unexpected responses in turn 1: %+v", got[1].Parts)
+		if len(got[1].Parts) != 1 || got[1].Parts[0].FunctionResponse == nil {
+			t.Errorf("expected response turn to survive, got %+v", got[1])
 		}
 	})
 
-	t.Run("parallel function calls matched by Name when IDs are omitted", func(t *testing.T) {
+	t.Run("call at end of history (compaction cut dropped its response)", func(t *testing.T) {
 		in := []*genai.Content{
-			{
-				Role: "model",
-				Parts: []*genai.Part{
-					{FunctionCall: &genai.FunctionCall{Name: "echo", Args: map[string]any{"msg": "1"}}},
-					{FunctionCall: &genai.FunctionCall{Name: "echo", Args: map[string]any{"msg": "2"}}},
-				},
-			},
-			{
-				Role: "user",
-				Parts: []*genai.Part{
-					{FunctionResponse: &genai.FunctionResponse{Name: "echo", Response: map[string]any{"out": "1"}}},
-					{FunctionResponse: &genai.FunctionResponse{Name: "echo", Response: map[string]any{"out": "2"}}},
-					{FunctionResponse: &genai.FunctionResponse{Name: "echo", Response: map[string]any{"out": "3"}}}, // excess/dangling
-				},
-			},
+			text("user", "do something"),
+			funcCall("run_command", "call_cut"),
 		}
 		got := CleanSessionTurns(in)
-		if len(got) != 2 {
-			t.Fatalf("expected 2 turns, got %d", len(got))
+		if len(got) != 1 {
+			t.Fatalf("expected 1 turn, got %d", len(got))
 		}
-		if len(got[1].Parts) != 2 {
-			t.Fatalf("expected 2 matched responses, 1 excess stripped, got %d", len(got[1].Parts))
+		if got[0].Role != "user" {
+			t.Errorf("expected only user turn to survive, got %+v", got)
 		}
 	})
 
-	t.Run("propagates call ID to response with empty ID", func(t *testing.T) {
+	t.Run("dangling response dropped from mixed user turn", func(t *testing.T) {
 		in := []*genai.Content{
-			{
-				Role: "model",
-				Parts: []*genai.Part{
-					{FunctionCall: &genai.FunctionCall{Name: "ls", ID: "call_abc123"}},
-				},
-			},
+			text("user", "hello"),
 			{
 				Role: "user",
 				Parts: []*genai.Part{
-					{FunctionResponse: &genai.FunctionResponse{Name: "ls", ID: ""}}, // empty ID (e.g. from Gemini or manual edit)
+					{FunctionResponse: &genai.FunctionResponse{Name: "ghost_tool", ID: "ghost", Response: map[string]any{}}},
+					{Text: "actual message"},
 				},
 			},
 		}
 		got := CleanSessionTurns(in)
-		if len(got) != 2 {
-			t.Fatalf("expected 2 turns, got %d", len(got))
+		if len(got) != 1 {
+			t.Fatalf("expected 1 merged turn, got %d", len(got))
 		}
-		if got[1].Parts[0].FunctionResponse.ID != "call_abc123" {
-			t.Errorf("expected response ID to be populated with call ID 'call_abc123', got %q", got[1].Parts[0].FunctionResponse.ID)
+		if len(got[0].Parts) != 2 {
+			t.Fatalf("expected both text parts, got %+v", got[0].Parts)
+		}
+		for _, p := range got[0].Parts {
+			if p.FunctionResponse != nil {
+				t.Errorf("dangling response must be dropped, got %+v", p)
+			}
 		}
 	})
 

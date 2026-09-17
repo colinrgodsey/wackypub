@@ -388,92 +388,122 @@ func CleanSessionTurns(contents []*genai.Content) []*genai.Content {
 		})
 	}
 
-	// 2. Validate and filter parts (remove dangling FunctionResponses, strip nil parts).
-	// Also prune any turns that become empty after filtering.
+	// 2. Validate and filter parts, deferring the previous model turn until we
+	// know which of its FunctionCalls received a FunctionResponse in the user
+	// turn that follows it:
+	//   - a FunctionResponse without a matching FunctionCall is dropped;
+	//   - a FunctionCall that is never answered is dropped from its model turn,
+	//     and a model turn left with zero parts is dropped entirely;
+	//   - turns whose parts are all dropped are pruned, then user turns that
+	//     become adjacent are merged back together.
 	cleaned := make([]*genai.Content, 0, len(mergedUserTurns))
-	for _, turn := range mergedUserTurns {
-		var prevModelTurn *genai.Content
-		if len(cleaned) > 0 && cleaned[len(cleaned)-1].Role == "model" {
-			prevModelTurn = cleaned[len(cleaned)-1]
-		}
+	var pendingModel *genai.Content
+	var pendingConsumed []bool
 
-		var availableCalls []*genai.FunctionCall
-		if prevModelTurn != nil {
-			for _, p := range prevModelTurn.Parts {
-				if p != nil && p.FunctionCall != nil {
-					availableCalls = append(availableCalls, p.FunctionCall)
-				}
+	// flushPending commits the previous model turn. Calls the following user
+	// turn answered stay (they are emitted with their responses); calls it left
+	// unanswered are stripped so the next model request carries no dangling
+	// assistant tool_call (OpenAI-compatible backends reject those with a 400).
+	// A model turn whose parts all vanish (e.g. it contained only one call and
+	// that call was never answered) is pruned.
+	flushPending := func() {
+		if pendingModel == nil {
+			return
+		}
+		hadCalls := false
+		for _, p := range pendingModel.Parts {
+			if p != nil && p.FunctionCall != nil {
+				hadCalls = true
+				break
 			}
 		}
-		usedCalls := make([]bool, len(availableCalls))
+		if !hadCalls {
+			cleaned = append(cleaned, pendingModel)
+			pendingModel = nil
+			return
+		}
+		kept := make([]*genai.Part, 0, len(pendingModel.Parts))
+		// pendingConsumed is indexed by part index (matching how responses mark
+		// consumption above), so walk parts by index rather than by call count.
+		for idx, p := range pendingModel.Parts {
+			if p == nil {
+				continue
+			}
+			if p.FunctionCall != nil && !pendingConsumed[idx] {
+				continue // unanswered call: strip it
+			}
+			kept = append(kept, p)
+		}
+		if len(kept) > 0 {
+			cleaned = append(cleaned, &genai.Content{Role: "model", Parts: kept})
+		}
+		pendingModel = nil
+	}
 
+	for _, turn := range mergedUserTurns {
+		if turn.Role == "model" {
+			flushPending()
+			pendingModel = turn
+			pendingConsumed = make([]bool, len(turn.Parts))
+			continue
+		}
+
+		// user turn: validate each FunctionResponse against the preceding model turn.
 		validParts := make([]*genai.Part, 0, len(turn.Parts))
 		for _, p := range turn.Parts {
 			if p == nil {
 				continue
 			}
-
-			// If this part is a FunctionResponse, check if it matches an unconsumed FunctionCall in prevModelTurn
-			if p.FunctionResponse != nil {
-				if prevModelTurn == nil || len(availableCalls) == 0 {
-					// No preceding model turn or preceding model turn had no function calls -> dangling!
-					continue
-				}
-
-				resp := p.FunctionResponse
-				matchedIdx := -1
-
-				// 1st pass: try exact ID match if response ID is non-empty
+			if p.FunctionResponse == nil {
+				validParts = append(validParts, p)
+				continue
+			}
+			resp := p.FunctionResponse
+			matched := -1
+			if pendingModel != nil {
 				if resp.ID != "" {
-					for idx, call := range availableCalls {
-						if !usedCalls[idx] && call.ID != "" && call.ID == resp.ID {
-							if resp.Name == "" || call.Name == "" || call.Name == resp.Name {
-								matchedIdx = idx
-								break
-							}
+					for idx, cp := range pendingModel.Parts {
+						if cp == nil || cp.FunctionCall == nil || pendingConsumed[idx] {
+							continue
 						}
-					}
-				}
-
-				// 2nd pass: match by Name if not matched by ID
-				if matchedIdx == -1 {
-					for idx, call := range availableCalls {
-						if !usedCalls[idx] && call.Name == resp.Name {
-							matchedIdx = idx
+						if cp.FunctionCall.ID == resp.ID && (resp.Name == "" || cp.FunctionCall.Name == "" || cp.FunctionCall.Name == resp.Name) {
+							matched = idx
 							break
 						}
 					}
 				}
-
-				if matchedIdx == -1 {
-					// No matching call found -> dangling response, discard it!
-					continue
+				if matched == -1 {
+					for idx, cp := range pendingModel.Parts {
+						if cp == nil || cp.FunctionCall == nil || pendingConsumed[idx] {
+							continue
+						}
+						if cp.FunctionCall.Name == resp.Name {
+							matched = idx
+							break
+						}
+					}
 				}
-
-				usedCalls[matchedIdx] = true
-				matchedCall := availableCalls[matchedIdx]
-
-				// Ensure response has the call's ID (or call has response's ID) so wire tool_call_id matches
-				if resp.ID == "" && matchedCall.ID != "" {
-					resp.ID = matchedCall.ID
-				} else if resp.ID != "" && matchedCall.ID == "" {
-					matchedCall.ID = resp.ID
-				}
-
-				validParts = append(validParts, p)
-				continue
 			}
-
-			// Non-FunctionResponse parts (text, images, FunctionCalls in model turns) are kept
+			if matched == -1 {
+				continue // dangling response: no matching call
+			}
+			pendingConsumed[matched] = true
+			matchedCall := pendingModel.Parts[matched].FunctionCall
+			// Ensure the wire tool_call_id matches between call and response.
+			if resp.ID == "" && matchedCall.ID != "" {
+				resp.ID = matchedCall.ID
+			} else if resp.ID != "" && matchedCall.ID == "" {
+				matchedCall.ID = resp.ID
+			}
 			validParts = append(validParts, p)
 		}
+		flushPending()
 
-		// If all parts in this turn were stripped, drop the turn entirely
+		// If all parts in this turn were stripped, drop the turn entirely.
 		if len(validParts) == 0 {
 			continue
 		}
-
-		// If dropping an earlier turn caused two user turns to become adjacent, merge them
+		// If dropping an earlier turn caused two user turns to become adjacent, merge them.
 		if n := len(cleaned); n > 0 && cleaned[n-1].Role == "user" && turn.Role == "user" {
 			combined := make([]*genai.Part, 0, len(cleaned[n-1].Parts)+len(validParts))
 			combined = append(combined, cleaned[n-1].Parts...)
@@ -481,12 +511,12 @@ func CleanSessionTurns(contents []*genai.Content) []*genai.Content {
 			cleaned[n-1] = &genai.Content{Role: "user", Parts: combined}
 			continue
 		}
-
 		cleaned = append(cleaned, &genai.Content{
 			Role:  turn.Role,
 			Parts: validParts,
 		})
 	}
+	flushPending()
 
 	return cleaned
 }
