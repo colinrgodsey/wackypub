@@ -1,8 +1,8 @@
-# 🎭 WackyPub
+# 🎭 wackypub
 
 <img align="right" src="https://github.com/user-attachments/assets/5b66dbfe-f35e-42b6-96be-c1c00404286d" alt="WackyPub logo: two mugs mid-cheers" width="240" />
 
-A CLI and Go SDK for folder-based AI agents — built on Google's **Agent Development Kit (ADK) v2** — where every agent is just a directory, every capability is a text file, every tool is an executable, and the same command interface an agent uses to explore its own tools is the one you use from your terminal or personal agent. Agents can call each other directly, turning a single assistant into a coordinated swarm.
+A CLI and Go SDK for folder-based AI agents where every agent is just a directory, every capability is a text file, every tool is an executable, and the same command interface an agent uses to explore its own tools is the one you use from your terminal or personal agent. Agents can call each other directly, turning a single assistant into a coordinated swarm.
 
 ### What's with the name?
 
