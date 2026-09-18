@@ -888,6 +888,10 @@ func LoadFolderAgentWithA2A(wsDir string, agentID string, a2aMeta *A2AMetadata, 
 }
 
 // LoadFolderAgentWithHookEnv loads and initializes an agent with explicit A2AMetadata context and hook environment mutations (D87).
+// LoadFolderAgentWithHookEnv loads and initializes an agent with explicit A2AMetadata context
+// and hook environment mutations (D87), resolving the runtime.json fallback chain to its
+// primary level. The fallback machinery re-invokes loadFolderAgentFromRuntime per level at
+// turn setup when the primary backend fails with a qualifying error.
 func LoadFolderAgentWithHookEnv(wsDir string, agentID string, a2aMeta *A2AMetadata, hookEnv map[string]string, maxToolTurns int, commandTimeoutSeconds ...int) (*FolderAgent, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
@@ -904,10 +908,21 @@ func LoadFolderAgentWithHookEnv(wsDir string, agentID string, a2aMeta *A2AMetada
 		return nil, fmt.Errorf("failed to load agent .env: %w", err)
 	}
 
-	// 1. Load runtime.json
+	// 1. Load runtime.json (primary level of the fallback chain)
 	runtimeCfg, err := LoadRuntimeConfig(agentDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read runtime config: %w", err)
+	}
+
+	return loadFolderAgentFromRuntime(agentDir, wsDir, agentID, a2aMeta, hookEnv, runtimeCfg, dotEnv, maxToolTurns, commandTimeoutSeconds...)
+}
+
+// loadFolderAgentFromRuntime initializes an agent from an already-resolved runtime config
+// (one level of the fallback chain). Each level is fully self-describing: the model
+// constructor runs per level, so a fallback may be a different provider entirely.
+func loadFolderAgentFromRuntime(agentDir, wsDir, agentID string, a2aMeta *A2AMetadata, hookEnv map[string]string, runtimeCfg *RuntimeConfig, dotEnv map[string]string, maxToolTurns int, commandTimeoutSeconds ...int) (*FolderAgent, error) {
+	if runtimeCfg == nil {
+		return nil, fmt.Errorf("runtime config cannot be nil for agent %s", agentID)
 	}
 
 	// 2. Render AGENTS.md (expanding @<FILE_PATH> macros)

@@ -79,7 +79,19 @@ type RuntimeConfig struct {
 
 	// DisableAutoContinuation disables automatic continuation turns (D88).
 	DisableAutoContinuation bool `json:"disableAutoContinuation,omitempty"`
+
+	// Fallback is an optional fully-specified RuntimeConfig used when the primary
+	// backend fails with a qualifying error (transport, 429-after-retries, 5xx) at turn
+	// setup before any text has been yielded. Each level is self-describing - no sparse
+	// inheritance - and may itself carry a Fallback, giving a recursive failover chain.
+	// Validated at load time: depth capped at MaxFallbackDepth, cycles rejected.
+	Fallback *RuntimeConfig `json:"fallback,omitempty"`
 }
+
+// MaxFallbackDepth caps how deeply a runtime.json fallback chain may nest. Inline JSON
+// nesting makes true cycles structurally impossible (a config can only embed its children),
+// so the caps guards pathological hand-edits and bounds the failover fan-out.
+const MaxFallbackDepth = 4
 
 // DefaultRuntimeJSON holds examples/runtimes/openrouter-auto.json's content (D74).
 //
@@ -133,17 +145,103 @@ func LoadRuntimeConfig(agentDir string) (*RuntimeConfig, error) {
 		return nil, fmt.Errorf("no runtime.json found for agent in %s; using bundled default openrouter-auto configuration, but OPENROUTER_API_KEY is not set (see examples/runtimes/README.md for setup instructions)", agentDir)
 	}
 
-	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
-	if provider == "" {
-		if cfg.Endpoint != "" {
-			provider = "openai"
-		} else {
-			provider = "gemini"
-		}
+	normalizeProviderDefaults(&cfg)
+	if err := validateFallbackChain(&cfg); err != nil {
+		return nil, fmt.Errorf("invalid runtime.json at %s: %w", runtimePath, err)
 	}
-	cfg.Provider = provider
 
 	return &cfg, nil
+}
+
+// normalizeProviderDefaults applies the provider defaulting rule to a config and each of
+// its recursive fallback levels. Fallback levels are fully-specified configs, but the
+// "endpoint set => openai, else gemini" shorthand is still honored per level so a fallback
+// does not silently inherit the root provider.
+func normalizeProviderDefaults(cfg *RuntimeConfig) {
+	for cur := cfg; cur != nil; cur = cur.Fallback {
+		provider := strings.ToLower(strings.TrimSpace(cur.Provider))
+		if provider == "" {
+			if cur.Endpoint != "" {
+				provider = "openai"
+			} else {
+				provider = "gemini"
+			}
+		}
+		cur.Provider = provider
+	}
+}
+
+// validateFallbackChain walks the nested fallback pointers, enforcing the depth cap.
+// Called at load time so a broken chain fails fast instead of at turn setup. Inline JSON
+// nesting makes true pointer cycles structurally impossible (each unmarshaled level is a
+// distinct object that can only embed its children), so the depth cap is the guard.
+func validateFallbackChain(cfg *RuntimeConfig) error {
+	depth := 0
+	for cur := cfg; cur != nil; cur = cur.Fallback {
+		if depth > MaxFallbackDepth {
+			return fmt.Errorf("runtime fallback chain exceeds maximum depth %d: nested fallback at level %d", MaxFallbackDepth, depth)
+		}
+		depth++
+	}
+	return nil
+}
+
+// FallbackChain returns the ordered list of runtime configs to attempt for one turn:
+// the primary first, then each nested fallback in depth order. Always non-empty (holds
+// at least the receiver). Each element is fully-specified; no inheritance is applied.
+func (c *RuntimeConfig) FallbackChain() []*RuntimeConfig {
+	var chain []*RuntimeConfig
+	for cur := c; cur != nil; cur = cur.Fallback {
+		chain = append(chain, cur)
+	}
+	return chain
+}
+
+// IsQualifyingFallbackError reports whether a turn setup/generation error may flip to the
+// next runtime fallback backend. Qualifying classes: transport failures (connection refused,
+// timeout, DNS), 429-after-retries, and 5xx server errors. Explicitly NOT qualifying: 401/403
+// auth failures (fallback would repeat them or mask credential rot - fail loud) and empty
+// model output (a quality judgment, not an availability signal).
+func IsQualifyingFallbackError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+
+	// Non-qualifying checks first so a message containing both "401" and "connection"
+	// (e.g. a proxy 401 wrapping a dial failure) never flips.
+	if strings.Contains(msg, "unauthorized") || strings.Contains(msg, "authentication") ||
+		strings.Contains(msg, "invalid api key") || strings.Contains(msg, "401") ||
+		strings.Contains(msg, "403") ||
+		strings.Contains(msg, "empty response from agent") {
+		return false
+	}
+
+	// Transport: refused, reset, timeout, DNS, handshake, unreachable.
+	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "no such host") || strings.Contains(msg, "network is unreachable") ||
+		strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "tls handshake") || strings.Contains(msg, "read: connection") ||
+		strings.Contains(msg, "write: connection") || strings.Contains(msg, "lookup ") ||
+		strings.Contains(msg, "eof") || strings.Contains(msg, "connection closed") ||
+		strings.Contains(msg, "http: connection has been closed") {
+		return true
+	}
+
+	// Rate limit after retries: 429 is conventionally the qualifying marker.
+	if strings.Contains(msg, "429") || strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "too many requests") {
+		return true
+	}
+
+	// 5xx server errors.
+	for _, code := range []string{"500", "501", "502", "503", "504", "505", "507", "508"} {
+		if strings.Contains(msg, code) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // LoadRuntimeConfigFile reads and unmarshals a RuntimeConfig from an explicit file path (D84).
@@ -171,15 +269,10 @@ func LoadRuntimeConfigFile(path string) (*RuntimeConfig, error) {
 		return nil, fmt.Errorf("failed to parse runtime config file: %w", err)
 	}
 
-	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
-	if provider == "" {
-		if cfg.Endpoint != "" {
-			provider = "openai"
-		} else {
-			provider = "gemini"
-		}
+	normalizeProviderDefaults(&cfg)
+	if err := validateFallbackChain(&cfg); err != nil {
+		return nil, fmt.Errorf("invalid runtime config at %s: %w", path, err)
 	}
-	cfg.Provider = provider
 
 	return &cfg, nil
 }
