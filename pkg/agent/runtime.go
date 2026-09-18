@@ -222,7 +222,9 @@ func IsQualifyingFallbackError(err error) bool {
 		strings.Contains(msg, "no such host") || strings.Contains(msg, "network is unreachable") ||
 		strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded") ||
 		strings.Contains(msg, "tls handshake") || strings.Contains(msg, "read: connection") ||
-		strings.Contains(msg, "write: connection") || strings.Contains(msg, "lookup ") {
+		strings.Contains(msg, "write: connection") || strings.Contains(msg, "lookup ") ||
+		strings.Contains(msg, "eof") || strings.Contains(msg, "connection closed") ||
+		strings.Contains(msg, "http: connection has been closed") {
 		return true
 	}
 
