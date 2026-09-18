@@ -1,20 +1,16 @@
 # 🎭 WackyPub
 
-<img src="https://github.com/user-attachments/assets/5b66dbfe-f35e-42b6-96be-c1c00404286d" alt="WackyPub logo: two mugs mid-cheers" width="240" />
+<img align="right" src="https://github.com/user-attachments/assets/5b66dbfe-f35e-42b6-96be-c1c00404286d" alt="WackyPub logo: two mugs mid-cheers" width="240" />
 
 A CLI and Go SDK for folder-based AI agents — built on Google's **Agent Development Kit (ADK) v2** — where every agent is just a directory, every capability is a text file, every tool is an executable, and the same command interface an agent uses to explore its own tools is the one you use from your terminal or personal agent. Agents can call each other directly, turning a single assistant into a coordinated swarm.
 
----
-
-## What's with the name?
+### What's with the name?
 
 Modern agent frameworks drown you in 500-class abstractions, opaque DAGs, and hosted queues just to pass text between two models. We rejected all that. Instead: dead-simple POSIX primitives, and a bunch of miscreant folder agents thrown into a room together to get work done.
 
 The Pub: the filesystem is the public house. Independent agents live side-by-side, yell across tables via pipes and scratchpads, and coordinate without a corporate orchestrator policing the room.
 
 The Wacky: building an autonomous multi-agent swarm out of plain directories, symlinks, and executables sounds completely unhinged — right up until it boots instantly, never desyncs, and debugs with git diff.
-
----
 
 ## What it is
 
@@ -27,8 +23,6 @@ This came up almost by accident in an actual working session building this proje
 > **Me:** heh yea its been a trend with all these new agent platforms- all of them know how to run commands, so its easier to make tools that are just a command/executable. we're taking it a step further by making the whole agent platform a command/executable as well lol
 >
 > **My faithful assistant:** And yeah, I'll cop to the joke writing itself here: I'm an agent that mostly runs commands, currently running commands to help build a thing whose entire pitch is "agents that run commands," some of which will probably end up running `wackypub` itself as a command. It's recursive in a way that's either elegant or mildly unsettling depending on how long I stare at it. I'm going with elegant.
-
----
 
 ## Quick Start
 
@@ -51,8 +45,6 @@ Describe what you want to build (a coding assistant, a Discord bot persona, a mu
 
 If your service ever crashes or errors, the container's bootloader automatically falls back to the Director REPL for interactive inspection and recovery. And because `./workspace` is a standard host bind mount, you can inspect, edit, or reset files directly from your host at any time.
 
----
-
 ## Quick Start: Bring Your Own Agent
 
 Already driving this from a coding agent (Claude Code, or whatever you're using to read this)? Skip the container - install the binary and let your agent bootstrap the rest itself.
@@ -66,8 +58,6 @@ Then hand your agent a prompt along these lines:
 > I've installed a CLI called `wackypub` (it's on my PATH). Run `wackypub skill` to see what's bundled, then `wackypub skill ws` to learn how workspaces and agents are structured, and set one up for me right here - a workspace with one agent I can start talking to.
 
 That's the whole point of the bundled skills (D34, D40): the CLI teaches your agent how to use itself. Nothing in this README is required reading for it to get started.
-
----
 
 ## Philosophy
 
@@ -85,8 +75,6 @@ That's the whole point of the bundled skills (D34, D40): the CLI teaches your ag
 
 **A small tool surface is easier to secure — and easier to test.** Every capability is one small, independent command rather than a sprawling do-everything API, which means each one can be reasoned about — and attacked — in isolation. That composability turns out to double as a testing methodology - and this isn't a design aspiration, there's a real, dogfooded protocol for it, with a tracked pass/fail record per tool. See [Security](#security) below.
 
----
-
 ## Why it's simple
 
 - An agent's entire identity and behavior lives in files you already know how to read: Markdown for prompts and memory, JSON Lines for history, JSON for config.
@@ -102,8 +90,6 @@ That's the whole point of the bundled skills (D34, D40): the CLI teaches your ag
 - **A session isn't locked to the model that started it.** `session.jsonl` is a plain, model-agnostic wire format - moving an agent's entire history to a different backend is repointing `runtime.json` (often just one symlink), nothing about the conversation itself has to change.
 - **Nothing here is a black box.** Every claim above has been verified by literally reading the session transcript afterward, not just trusting the summary — and the honest gaps (a `--help` ordering quirk, a lock that needed to not exist) get written down and fixed, not glossed over.
 
----
-
 ## Security
 
 Security testing here is agent-driven, not just aspirational documentation. `wackypub` orchestrates a coordinator-and-worker swarm of its own agents to red-team a target tool's actual live build — propose → dedupe → execute → report rounds against a real binary running inside a disposable Docker container ([`docs/SWARM_TESTING.md`](docs/SWARM_TESTING.md)), not a hypothetical threat model on paper. It's also a legitimate standalone use case for `wackypub` itself, distinct from roleplay or orchestration - point the swarm at anything with a CLI surface, including `wackypub`'s own companion tools.
@@ -111,8 +97,6 @@ Security testing here is agent-driven, not just aspirational documentation. `wac
 It's already found real things. A swarm run caught a critical cross-agent hardlink bypass in [`files-rw`](https://github.com/colinrgodsey/files-rw) (a companion filesystem access-control tool) - one agent could read another's supposedly walled-off files by hardlinking to them first. Found, documented, fixed, and re-verified against the fix - not a paper finding. The original report is preserved at the commit where it was written, before the fix it drove made the report itself obsolete: [`docs/files-rw-security-test.md`](https://github.com/colinrgodsey/wackypub/blob/3b65cdcd6b3322c540e4b0950de5232408f4e711/docs/files-rw-security-test.md).
 
 Every security-relevant tool is tracked in a 3-state checklist ([`.agents/SECURITY_TESTING.md`](.agents/SECURITY_TESTING.md)): untested, tested-and-clean, or tested-with-a-finding. A tool's state resets to untested the instant its enforcement logic changes, so a passing grade can never silently go stale, and a finding stays on record - report and all - even after it's fixed, superseded by a dated follow-up rather than quietly erased.
-
----
 
 ## Use cases
 
@@ -125,8 +109,6 @@ Four domains — what people actually do with wackypub:
 **Script** — one-shot agent workflows from the command line. API docs written on PR merge, automated code review on new PRs — a shell script invoking `wackypub agent prompt`, composed with everything else Unix already gives you. No workflow DSL, no harness support required: the shell is the orchestrator.
 
 **Extend** — the protocol realm. Alternate drivers against one workspace, alternate runtimes behind one CLI, bridges to other agent platforms. Distilled, reusable knowledge across agents fits here too — write a skill once, symlink it into every agent that needs it, update it in one place.
-
----
 
 ## Recommended Tooling
 
