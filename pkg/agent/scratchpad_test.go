@@ -744,38 +744,39 @@ func TestD90_ExpandScratchpadMacros_ExistenceGatedAndEscape(t *testing.T) {
 		}
 		if len(warnings) != 0 {
 			t.Errorf("expected 0 warnings on genuine expansion, got: %v", warnings)
-	
-	t.Run("doubled-token escape renders as single tag, without warning", func(t *testing.T) {
-		input := fmt.Sprintf(`Doc example: <<<SCRATCHPAD_DATA id=%q skip_lines=\"1\" />>`, realEntry.ID)
-		expanded, warnings, err := ExpandScratchpadMacros(agentDir, input)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		expected := fmt.Sprintf(`Doc example: <<SCRATCHPAD_DATA id=%q skip_lines=\"1\" />`, realEntry.ID)
-		if expanded != expected {
-			t.Errorf("expected %q, got %q", expected, expanded)
-		}
-		if len(warnings) != 0 {
-			t.Errorf("expected 0 warnings on doubled-token escape, got: %v", warnings)
-		}
-	})
 
-	t.Run("doubled-token escape with nonexistent id renders as single tag, without warning", func(t *testing.T) {
-		input := `Doc example: <<<SCRATCHPAD_DATA id=\"zz77\" />>`
-		expanded, warnings, err := ExpandScratchpadMacros(agentDir, input)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		expected := `Doc example: <<SCRATCHPAD_DATA id=\"zz77\" />`
-		if expanded != expected {
-			t.Errorf("expected %q, got %q", expected, expanded)
-		}
-		if len(warnings) != 0 {
-			t.Errorf("expected 0 warnings on doubled-token escape, got: %v", warnings)
+			t.Run("doubled-token escape renders as single tag, without warning", func(t *testing.T) {
+				input := fmt.Sprintf(`Doc example: <<<SCRATCHPAD_DATA id=%q skip_lines=\"1\" />>`, realEntry.ID)
+				expanded, warnings, err := ExpandScratchpadMacros(agentDir, input)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				expected := fmt.Sprintf(`Doc example: <<SCRATCHPAD_DATA id=%q skip_lines=\"1\" />`, realEntry.ID)
+				if expanded != expected {
+					t.Errorf("expected %q, got %q", expected, expanded)
+				}
+				if len(warnings) != 0 {
+					t.Errorf("expected 0 warnings on doubled-token escape, got: %v", warnings)
+				}
+			})
+
+			t.Run("doubled-token escape with nonexistent id renders as single tag, without warning", func(t *testing.T) {
+				input := `Doc example: <<<SCRATCHPAD_DATA id=\"zz77\" />>`
+				expanded, warnings, err := ExpandScratchpadMacros(agentDir, input)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				expected := `Doc example: <<SCRATCHPAD_DATA id=\"zz77\" />`
+				if expanded != expected {
+					t.Errorf("expected %q, got %q", expected, expanded)
+				}
+				if len(warnings) != 0 {
+					t.Errorf("expected 0 warnings on doubled-token escape, got: %v", warnings)
+				}
+			})
 		}
 	})
-	}
-	})}
+}
 
 func TestD90_ExecuteTool_ArgsAndStdin_PassthroughAndWarnings(t *testing.T) {
 	agentDir := t.TempDir()
@@ -909,7 +910,8 @@ func TestD90_InProcessCreateScratchpad_WarningSurface(t *testing.T) {
 		if !strings.Contains(entry.Warning, `scratchpad entry "no01" not found; macro passed through literally`) {
 			t.Errorf("unexpected entry.Warning: %q", entry.Warning)
 		}
-	})}
+	})
+}
 
 func TestD90_ToolResultLayer_MissingEntryWarningsNotDuplicatedInOutput(t *testing.T) {
 	agentDir := t.TempDir()
