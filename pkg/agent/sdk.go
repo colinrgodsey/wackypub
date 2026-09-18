@@ -408,6 +408,81 @@ func (s *AgentSDK) cancelTurnLegacy(agentID string) error {
 // Holds the session lock for the entire duration of the stream.
 //
 // TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+// runTurnWithRuntimeFallback walks the runtime fallback chain at turn setup: it attempts
+// the primary backend first, and on a qualifying error (transport, 429-after-retries, 5xx)
+// that arrives BEFORE any text was yielded for this turn, descends to the next fallback
+// level by rebuilding the folder agent with that level's fully-specified config (possibly a
+// different provider, so the model constructor re-runs per level). Once text has been
+// yielded, failures are NOT masked - a mid-turn backend switch would produce frankenstein
+// output. Every turn starts primary-first again (fail-forward per turn, never sticky) because
+// the chain is resolved fresh at each turn setup.
+func (s *AgentSDK) runTurnWithRuntimeFallback(
+	ctx context.Context,
+	agentID string,
+	primary *FolderAgent,
+	chain []*RuntimeConfig,
+	load func(cfg *RuntimeConfig) (*FolderAgent, error),
+	yieldStream func(fa *FolderAgent) iter.Seq2[string, error],
+	onWarnings []func(string),
+	yield func(string, error) bool,
+) {
+	var lastErr error
+	for level, levelCfg := range chain {
+		fa := primary
+		if level > 0 {
+			var err error
+			fa, err = load(levelCfg)
+			if err != nil {
+				yield("", fmt.Errorf("failed to load fallback backend %q for agent %q: %w", levelCfg.Endpoint, agentID, err))
+				return
+			}
+		}
+
+		var yieldedText bool
+		descend := false
+		for chunk, err := range yieldStream(fa) {
+			if err != nil {
+				lastErr = err
+				if !yieldedText && IsQualifyingFallbackError(err) && level+1 < len(chain) {
+					// Failover window closed: no text yet, qualifying error, more levels.
+					descend = true
+					break
+				}
+				yield("", err)
+				return
+			}
+			if chunk != "" {
+				yieldedText = true
+			}
+			if !yield(chunk, nil) {
+				return
+			}
+		}
+		if ctx.Err() != nil {
+			yield("", ctx.Err())
+			return
+		}
+		if !descend {
+			return
+		}
+
+		// Warn which backend failed and which fallback engaged, then retry next level.
+		next := chain[level+1]
+		warn := fmt.Sprintf("backend %s/%s failed: %v; falling back to %s/%s", levelCfg.Endpoint, levelCfg.Model, lastErr, next.Endpoint, next.Model)
+		for _, fn := range onWarnings {
+			if fn != nil {
+				fn(warn)
+			}
+		}
+	}
+	// Chain exhausted: the last error was qualifying but every fallback failed.
+	if ctx.Err() != nil {
+		yield("", ctx.Err())
+		return
+	}
+	yield("", fmt.Errorf("all runtime fallback backends failed for agent %q; last error: %w", agentID, lastErr))
+}
+
 func (s *AgentSDK) generateTurnStreamLegacy(ctx context.Context, agentID string) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		if agentID == "" {
@@ -433,28 +508,19 @@ func (s *AgentSDK) generateTurnStreamLegacy(ctx context.Context, agentID string)
 		defer registerInFlightTurn(agentID, cancel)()
 
 		hookEnv := s.popLastHookEnv(agentID)
-		fa, err := LoadFolderAgentWithHookEnv(s.WorkspaceDir, agentID, a2aMeta, hookEnv, s.MaxToolTurns, s.CommandTimeoutSeconds)
+		primary, err := LoadFolderAgentWithHookEnv(s.WorkspaceDir, agentID, a2aMeta, hookEnv, s.MaxToolTurns, s.CommandTimeoutSeconds)
 		if err != nil {
 			yield("", fmt.Errorf("failed to load agent %q: %w", agentID, err))
 			return
 		}
+		chain := primary.RuntimeConfig.FallbackChain()
 
-		for chunk, err := range fa.GenerateTurnStream(turnCtx) {
-			if turnCtx.Err() != nil {
-				yield("", turnCtx.Err())
-				return
-			}
-			if !yield(chunk, err) {
-				return
-			}
-			if err != nil {
-				return
-			}
+		load := func(cfg *RuntimeConfig) (*FolderAgent, error) {
+			return loadFolderAgentFromRuntime(primary.AgentDir, s.WorkspaceDir, agentID, a2aMeta, hookEnv, cfg, primary.DotEnv, s.MaxToolTurns, s.CommandTimeoutSeconds)
 		}
-		if turnCtx.Err() != nil {
-			yield("", turnCtx.Err())
-			return
-		}
+		s.runTurnWithRuntimeFallback(turnCtx, agentID, primary, chain, load,
+			func(fa *FolderAgent) iter.Seq2[string, error] { return fa.GenerateTurnStream(turnCtx) },
+			nil, yield)
 	}
 }
 
@@ -575,29 +641,22 @@ func (s *AgentSDK) addAndGenerateTurnStreamLegacy(ctx context.Context, agentID s
 			return
 		}
 
-		// 2. Load Folder Agent & Stream Assistant Turn
-		fa, err := LoadFolderAgentWithHookEnv(s.WorkspaceDir, agentID, a2aMeta, hookEnv, s.MaxToolTurns, s.CommandTimeoutSeconds)
+		// 2. Load Folder Agent & Stream Assistant Turn, walking the runtime fallback chain.
+		// The user turn is already appended above; fallback levels only re-run generation
+		// against the same session, never re-append the user message.
+		primary, err := LoadFolderAgentWithHookEnv(s.WorkspaceDir, agentID, a2aMeta, hookEnv, s.MaxToolTurns, s.CommandTimeoutSeconds)
 		if err != nil {
 			yield("", fmt.Errorf("failed to load agent %q: %w", agentID, err))
 			return
 		}
+		chain := primary.RuntimeConfig.FallbackChain()
 
-		for chunk, err := range fa.GenerateTurnStream(turnCtx) {
-			if turnCtx.Err() != nil {
-				yield("", turnCtx.Err())
-				return
-			}
-			if !yield(chunk, err) {
-				return
-			}
-			if err != nil {
-				return
-			}
+		load := func(cfg *RuntimeConfig) (*FolderAgent, error) {
+			return loadFolderAgentFromRuntime(primary.AgentDir, s.WorkspaceDir, agentID, a2aMeta, hookEnv, cfg, primary.DotEnv, s.MaxToolTurns, s.CommandTimeoutSeconds)
 		}
-		if turnCtx.Err() != nil {
-			yield("", turnCtx.Err())
-			return
-		}
+		s.runTurnWithRuntimeFallback(turnCtx, agentID, primary, chain, load,
+			func(fa *FolderAgent) iter.Seq2[string, error] { return fa.GenerateTurnStream(turnCtx) },
+			onWarning, yield)
 	}
 }
 
