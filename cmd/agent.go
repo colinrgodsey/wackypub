@@ -119,6 +119,19 @@ func addAndGenerateTurnStreamProto(sdk *adkAgent.AgentSDK, ctx context.Context, 
 	}
 }
 
+// printStreamChunk writes one streamed chunk contiguously: model newlines already live
+// inside chunk text, so a separator newline would double-space every chunk boundary
+// (bridged harnesses stream tiny deltas and words get chopped with \n\n between
+// fragments). See the streamed-replies-double-newlines bug.
+func printStreamChunk(w io.Writer, text string) {
+	fmt.Fprint(w, text)
+}
+
+// finishStream terminates a streamed reply with a single trailing newline.
+func finishStream(w io.Writer) {
+	fmt.Fprintln(w)
+}
+
 var agentCmd = &cobra.Command{
 	Use:   "agent <agent_id>",
 	Short: "Manage folder-based agent sessions (<ws_dir>/<agent_id>)",
@@ -318,19 +331,15 @@ Acquires the session lock for the duration of the operation.`,
 
 		ctx, stop := signalCtx()
 		defer stop()
-		first := true
 		for text, err := range generateTurnStreamProto(sdk, ctx, agentID) {
 			if err != nil {
 				return err
 			}
 			if text != "" {
-				if !first {
-					fmt.Println()
-				}
-				fmt.Println(text)
-				first = false
+				printStreamChunk(cmd.OutOrStdout(), text)
 			}
 		}
+		finishStream(cmd.OutOrStdout())
 		return nil
 	},
 }
@@ -741,7 +750,6 @@ what's printed, though it is still persisted to session.jsonl).`,
 
 		ctx, stop := signalCtx()
 		defer stop()
-		first := true
 		for text, err := range addAndGenerateTurnStreamProto(sdk, ctx, agentID, userMsg, func(w string) {
 			cmd.PrintErrln(w)
 		}) {
@@ -749,13 +757,10 @@ what's printed, though it is still persisted to session.jsonl).`,
 				return err
 			}
 			if text != "" {
-				if !first {
-					fmt.Println()
-				}
-				fmt.Println(text)
-				first = false
+				printStreamChunk(cmd.OutOrStdout(), text)
 			}
 		}
+		finishStream(cmd.OutOrStdout())
 		return nil
 	},
 }
@@ -815,7 +820,6 @@ real terminal, not something an agent should invoke on itself via run_command.`,
 				break
 			}
 
-			first := true
 			for text, err := range addAndGenerateTurnStreamProto(sdk, ctx, agentID, line, func(w string) {
 				cmd.PrintErrln(w)
 			}) {
@@ -824,11 +828,7 @@ real terminal, not something an agent should invoke on itself via run_command.`,
 					break
 				}
 				if text != "" {
-					if !first {
-						fmt.Println()
-					}
-					fmt.Println(text)
-					first = false
+					printStreamChunk(cmd.OutOrStdout(), text)
 				}
 			}
 			fmt.Println()

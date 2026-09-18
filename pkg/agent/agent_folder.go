@@ -1445,5 +1445,9 @@ func (fa *FolderAgent) GenerateTurn(ctx context.Context) (string, error) {
 	if len(chunks) == 0 {
 		return "", fmt.Errorf("received empty response from agent")
 	}
+	// \n\n between chunks is load-bearing: each chunk is one model event (D69), and
+	// native multi-event turns (narration + tool call, then final answer) intentionally
+	// separate paragraphs. Do not make this contiguous - that would merge distinct
+	// events into one run-on paragraph.
 	return strings.Join(chunks, "\n\n"), nil
 }

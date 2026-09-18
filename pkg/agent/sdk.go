@@ -512,6 +512,8 @@ func (s *AgentSDK) generateTurnLegacy(ctx context.Context, agentID string) (stri
 	if len(chunks) == 0 {
 		return "", fmt.Errorf("received empty response from agent")
 	}
+	// \n\n between chunks is load-bearing: each chunk is one model event (D69), so native
+	// multi-event turns intentionally separate paragraphs. Do not make this contiguous.
 	return strings.Join(chunks, "\n\n"), nil
 }
 
@@ -628,6 +630,8 @@ func (s *AgentSDK) addAndGenerateTurnLegacy(ctx context.Context, agentID string,
 		return nil, fmt.Errorf("received empty response from agent")
 	}
 	return &GenerateTurnResult{
+		// \n\n between chunks is load-bearing: each chunk is one model event (D69), so native
+		// multi-event turns intentionally separate paragraphs. Do not make this contiguous.
 		Text:     strings.Join(chunks, "\n\n"),
 		Warnings: warnings,
 	}, nil
