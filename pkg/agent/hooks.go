@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode"
@@ -21,6 +22,18 @@ const (
 	EnvHooks                  = "WACKYPUB_HOOKS"
 	DefaultHookTimeoutSeconds = 5
 	EnvHookTimeoutSeconds     = "WACKYPUB_HOOK_TIMEOUT_SECONDS"
+
+	// EventPreCompact fires once CheckAndCompactSession has committed to compacting, before
+	// the compaction runner executes. Observe-only: nothing in its HookOutput is applied, so
+	// a hook cannot veto or alter the compaction that is about to happen.
+	EventPreCompact = "pre-compact"
+	// EventPostCompact fires after a compaction completes successfully. Run asynchronously
+	// (see runPostCompactHookAsync) so a slow hook script never delays the next turn.
+	EventPostCompact = "post-compact"
+	// EventCompactFailed fires whenever CheckAndCompactSession returns an error, after it has
+	// read at least the session turns for the agent. Run synchronously: there is nothing left
+	// to delay, and an async dispatch risks losing the diagnostic if the process exits first.
+	EventCompactFailed = "compact-failed"
 )
 
 // HookOutput defines the JSON schema emitted on stdout by a hook script.
@@ -273,4 +286,101 @@ func RunUserMessageHooksWithContext(ctx context.Context, agentDir string, text s
 		return text, nil, nil, err
 	}
 	return res.Text, res.MutatedEnv, res.Warnings, nil
+}
+
+// PreCompactPayload is delivered as JSON text on stdin to every pre-compact hook script,
+// exactly the way on-user-message delivers its message text on stdin - the same one shape,
+// just carrying a JSON-encoded struct instead of raw text.
+type PreCompactPayload struct {
+	AgentID       string `json:"agent_id"`
+	SessionPath   string `json:"session_path"`
+	TurnCount     int    `json:"turn_count"`
+	TokenEstimate int    `json:"token_estimate"`
+	// Trigger is "auto" (CheckAndCompactSession's own token-threshold check decided to
+	// compact) or "forced" (a caller - an explicit CLI/RPC force, or a mid-turn short-circuit
+	// that already made the decision itself - asked to compact unconditionally).
+	Trigger string `json:"trigger"`
+}
+
+// PostCompactPayload is delivered as JSON text on stdin to every post-compact hook script,
+// after a compaction has completed successfully.
+type PostCompactPayload struct {
+	AgentID       string `json:"agent_id"`
+	SessionPath   string `json:"session_path"`
+	TurnsArchived int    `json:"turns_archived"`
+	TokensBefore  int    `json:"tokens_before"`
+	TokensAfter   int    `json:"tokens_after"`
+	// CompactionModel is the model identifier the compaction runner used, when known.
+	CompactionModel string `json:"compaction_model,omitempty"`
+	// ToolDenials is the number of tool invocations the compaction model attempted and were
+	// denied (D50/CompactionToolDenials); always 0 for a no-tools compaction agent.
+	ToolDenials int64 `json:"tool_denials"`
+}
+
+// CompactFailedPayload is delivered as JSON text on stdin to every compact-failed hook
+// script.
+type CompactFailedPayload struct {
+	AgentID     string `json:"agent_id"`
+	SessionPath string `json:"session_path"`
+	// Stage names which phase of CheckAndCompactSession failed (e.g. "read-session",
+	// "generation", "write-session"), so a hook can tell a transient I/O failure apart from
+	// a genuine compaction-model error without parsing the error text.
+	Stage string `json:"stage"`
+	Error string `json:"error"`
+}
+
+// postCompactHookDone is invoked, if non-nil, with the agentDir immediately after an async
+// post-compact hook chain finishes running for that agent. It exists purely so tests can
+// observe the fire-and-forget goroutine's completion deterministically instead of
+// sleep-polling; production code leaves it nil. Guarded by its own mutex (not
+// compaction-critical-path) and keyed by agentDir because many tests in this package compact
+// successfully without any awareness of hooks - each installs its own callback and must
+// ignore completions for a different agentDir, since a still-running goroutine from an
+// earlier, unrelated test can otherwise fire after a later test has installed its own.
+var (
+	postCompactHookDoneMu sync.Mutex
+	postCompactHookDone   func(agentDir string)
+)
+
+// runCompactionHookSync marshals payload to JSON and runs the hook chain for a compaction
+// lifecycle event synchronously, matching the on-user-message convention exactly: the
+// payload travels as JSON text on the same stdin channel RunHookChain already provides, and
+// a hook script answers with the same HookOutput JSON schema on stdout. These three events
+// are observe-only - any Text/Env a hook returns is discarded here, never applied to
+// anything - so a hook failure (timeout, non-zero exit, malformed JSON) can only ever
+// produce a warning, never abort or alter the compaction that is already happening.
+func runCompactionHookSync(ctx context.Context, agentDir string, event string, payload any) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: compaction hook %s: failed to marshal payload: %v\n", event, err)
+		return
+	}
+	res, err := RunHookChain(ctx, agentDir, event, string(data))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: compaction hook %s: %v\n", event, err)
+		return
+	}
+	for _, w := range res.Warnings {
+		fmt.Fprintf(os.Stderr, "Warning: compaction hook %s: %s\n", event, w)
+	}
+}
+
+// runPostCompactHookAsync fires the post-compact hook chain in its own goroutine so a slow
+// or hanging hook script never taxes the next turn (D-compaction-hooks). This is
+// best-effort: the goroutine is bounded by the same per-hook timeout RunHookChain already
+// enforces (~5s default, WACKYPUB_HOOK_TIMEOUT_SECONDS-configurable), but if the process
+// exits before it completes, the hook is simply abandoned mid-flight - the same risk any
+// fire-and-forget background work carries at process exit. Callers that need every
+// post-compact hook to have actually run before a process exits (e.g. a short-lived CLI
+// invocation) are not yet served by this v1; that is a documented gap, not an oversight.
+func runPostCompactHookAsync(agentDir string, payload PostCompactPayload) {
+	go func() {
+		runCompactionHookSync(context.Background(), agentDir, EventPostCompact, payload)
+		postCompactHookDoneMu.Lock()
+		fn := postCompactHookDone
+		postCompactHookDoneMu.Unlock()
+		if fn != nil {
+			fn(agentDir)
+		}
+	}()
 }
