@@ -41,6 +41,7 @@ const (
 	AgentService_GenerateTurn_FullMethodName             = "/wackypub.agent.v1.AgentService/GenerateTurn"
 	AgentService_AddAndGenerateTurnStream_FullMethodName = "/wackypub.agent.v1.AgentService/AddAndGenerateTurnStream"
 	AgentService_AddAndGenerateTurn_FullMethodName       = "/wackypub.agent.v1.AgentService/AddAndGenerateTurn"
+	AgentService_AsideQuestion_FullMethodName            = "/wackypub.agent.v1.AgentService/AsideQuestion"
 	AgentService_Trace_FullMethodName                    = "/wackypub.agent.v1.AgentService/Trace"
 )
 
@@ -181,6 +182,15 @@ type AgentServiceClient interface {
 	// the user message, runs the full generation, and returns the complete assistant text
 	// plus any hook warnings on the response.
 	AddAndGenerateTurn(ctx context.Context, in *AddAndGenerateTurnRequest, opts ...grpc.CallOption) (*AddAndGenerateTurnResponse, error)
+	// AsideQuestion answers a one-shot question against a forked, in-memory copy of the agent's
+	// session (D45 disposable-session shape). The aside model sees the agent's tool declarations
+	// (cache-prefix identity preserved) but tool INVOCATION is denied - a functionCall yields a
+	// completable denial, never an execution. The main agent session is byte-identical after the
+	// call: no session.jsonl append, no MEMORY.md update, no scratchpad writes, no workspace
+	// git/trace events, no post-turn hooks, no compaction self-trigger. No exclusive session lock
+	// is acquired (copy-on-read snapshot), so an aside never blocks a live turn. Usage is returned
+	// as metadata only, never written to session state.
+	AsideQuestion(ctx context.Context, in *AsideQuestionRequest, opts ...grpc.CallOption) (*AsideQuestionResponse, error)
 	// Trace performs backward causal graph traversal starting from an agent's git commit or a global
 	// correlation trace identifier (D36). Callers invoke this method to audit cross-agent workflows,
 	// inspect multi-hop turn histories, and reconstruct causal chains. The request uses a oneof to enforce
@@ -434,6 +444,16 @@ func (c *agentServiceClient) AddAndGenerateTurn(ctx context.Context, in *AddAndG
 	return out, nil
 }
 
+func (c *agentServiceClient) AsideQuestion(ctx context.Context, in *AsideQuestionRequest, opts ...grpc.CallOption) (*AsideQuestionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AsideQuestionResponse)
+	err := c.cc.Invoke(ctx, AgentService_AsideQuestion_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *agentServiceClient) Trace(ctx context.Context, in *TraceRequest, opts ...grpc.CallOption) (*TraceResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TraceResponse)
@@ -581,6 +601,15 @@ type AgentServiceServer interface {
 	// the user message, runs the full generation, and returns the complete assistant text
 	// plus any hook warnings on the response.
 	AddAndGenerateTurn(context.Context, *AddAndGenerateTurnRequest) (*AddAndGenerateTurnResponse, error)
+	// AsideQuestion answers a one-shot question against a forked, in-memory copy of the agent's
+	// session (D45 disposable-session shape). The aside model sees the agent's tool declarations
+	// (cache-prefix identity preserved) but tool INVOCATION is denied - a functionCall yields a
+	// completable denial, never an execution. The main agent session is byte-identical after the
+	// call: no session.jsonl append, no MEMORY.md update, no scratchpad writes, no workspace
+	// git/trace events, no post-turn hooks, no compaction self-trigger. No exclusive session lock
+	// is acquired (copy-on-read snapshot), so an aside never blocks a live turn. Usage is returned
+	// as metadata only, never written to session state.
+	AsideQuestion(context.Context, *AsideQuestionRequest) (*AsideQuestionResponse, error)
 	// Trace performs backward causal graph traversal starting from an agent's git commit or a global
 	// correlation trace identifier (D36). Callers invoke this method to audit cross-agent workflows,
 	// inspect multi-hop turn histories, and reconstruct causal chains. The request uses a oneof to enforce
@@ -660,6 +689,9 @@ func (UnimplementedAgentServiceServer) AddAndGenerateTurnStream(*AddAndGenerateT
 }
 func (UnimplementedAgentServiceServer) AddAndGenerateTurn(context.Context, *AddAndGenerateTurnRequest) (*AddAndGenerateTurnResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddAndGenerateTurn not implemented")
+}
+func (UnimplementedAgentServiceServer) AsideQuestion(context.Context, *AsideQuestionRequest) (*AsideQuestionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AsideQuestion not implemented")
 }
 func (UnimplementedAgentServiceServer) Trace(context.Context, *TraceRequest) (*TraceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Trace not implemented")
@@ -1066,6 +1098,24 @@ func _AgentService_AddAndGenerateTurn_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_AsideQuestion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AsideQuestionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).AsideQuestion(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_AsideQuestion_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).AsideQuestion(ctx, req.(*AsideQuestionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AgentService_Trace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TraceRequest)
 	if err := dec(in); err != nil {
@@ -1170,6 +1220,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AddAndGenerateTurn",
 			Handler:    _AgentService_AddAndGenerateTurn_Handler,
+		},
+		{
+			MethodName: "AsideQuestion",
+			Handler:    _AgentService_AsideQuestion_Handler,
 		},
 		{
 			MethodName: "Trace",

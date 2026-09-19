@@ -85,9 +85,9 @@ func TestAside_ContextualAnswerAndNothingPersisted(t *testing.T) {
 	}
 	before := snapshot()
 
-	result, err := sdk.AsideTurn(context.Background(), "asideagent", "what is the project state?")
+	result, err := sdk.asideTurn(context.Background(), "asideagent", "what is the project state?")
 	if err != nil {
-		t.Fatalf("AsideTurn: %v", err)
+		t.Fatalf("asideTurn: %v", err)
 	}
 	if result.Text == "" {
 		t.Fatal("aside returned empty text")
@@ -170,9 +170,9 @@ func TestAside_ToolInvocationDenied(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(origCwd) })
 
 	sdk := NewSDK(wsDir)
-	result, err := sdk.AsideTurn(context.Background(), agentID, "echo hi")
+	result, err := sdk.asideTurn(context.Background(), agentID, "echo hi")
 	if err != nil {
-		t.Fatalf("AsideTurn: %v", err)
+		t.Fatalf("asideTurn: %v", err)
 	}
 	if !strings.Contains(result.Text, "Done after denial") {
 		t.Fatalf("aside should complete after denial, got %q", result.Text)
@@ -194,7 +194,7 @@ func TestAside_DoesNotContendWithLiveTurnLock(t *testing.T) {
 	}
 	defer lock.Release()
 
-	result, err := sdk.AsideTurn(context.Background(), "asideagent", "are you there?")
+	result, err := sdk.asideTurn(context.Background(), "asideagent", "are you there?")
 	if err != nil {
 		t.Fatalf("aside should succeed while session lock is held: %v", err)
 	}
