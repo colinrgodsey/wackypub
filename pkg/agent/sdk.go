@@ -16,8 +16,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -739,6 +743,190 @@ func (s *AgentSDK) addAndGenerateTurnStreamLegacy(ctx context.Context, agentID s
 			func(fa *FolderAgent) iter.Seq2[string, error] { return fa.GenerateTurnStream(turnCtx) },
 			onWarning, yield)
 	}
+}
+
+// AsideUsage carries the token counts billed to an aside turn. Returned as metadata only;
+// aside never writes usage into session state (the caller may bill externally).
+type AsideUsage struct {
+	PromptTokens     int32
+	CandidatesTokens int32
+	TotalTokens      int32
+}
+
+// AsideTurnResult is the completed aside: the streamed answer's full text, tool denials, and
+// usage metadata. Nothing about the aside is persisted anywhere.
+type AsideTurnResult struct {
+	Text        string
+	Warnings    []string
+	ToolDenials int64
+	Usage       AsideUsage
+}
+
+// AsideTurnStream answers a one-shot question against a FORKED in-memory copy of the agent's
+// session (D45 disposable-session shape): system prompt + persistent-memory turn + session
+// history + the question as the final user turn. The aside model sees the agent's tools
+// (cache-prefix identity preserved) but tool INVOCATION is denied via the compaction deny
+// machinery - a functionCall emits a completable denial, never an execution.
+//
+// Side-effect contract (archon): NOTHING persists. No session lock is taken (copy-on-read
+// snapshot, never the exclusive turn lock, so a live turn is never blocked), no session.jsonl
+// append, no MEMORY.md update, no scratchpad writes, no workspace git/trace events, no
+// post-turn hooks, no compaction self-trigger. Usage is returned as metadata only.
+func (s *AgentSDK) AsideTurnStream(ctx context.Context, agentID, question string, onWarning ...func(string)) iter.Seq2[string, error] {
+	return s.asideTurnStreamWithResult(ctx, agentID, question, nil, onWarning...)
+}
+
+// asideTurnStreamWithResult is AsideTurnStream with an out-param: callers that iterate the
+// stream directly can inspect denials/usage after the loop without a second round trip.
+func (s *AgentSDK) asideTurnStreamWithResult(ctx context.Context, agentID, question string, asideResult *AsideTurnResult, onWarning ...func(string)) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		_ = asideInternal(s, ctx, agentID, question, asideResult, onWarning, yield)
+	}
+}
+
+// AsideTurn is the non-streaming twin of AsideTurnStream: same fork, same denial, same
+// nothing-persists contract, returning the full text plus warnings/denials/usage metadata.
+func (s *AgentSDK) AsideTurn(ctx context.Context, agentID, question string) (*AsideTurnResult, error) {
+	var warnings []string
+	var chunks []string
+	result := &AsideTurnResult{}
+	for chunk, err := range s.asideTurnStreamWithResult(ctx, agentID, question, result, func(w string) { warnings = append(warnings, w) }) {
+		if err != nil {
+			return nil, err
+		}
+		if chunk != "" {
+			chunks = append(chunks, chunk)
+		}
+	}
+	result.Text = strings.Join(chunks, "\n\n")
+	result.Warnings = warnings
+	return result, nil
+}
+
+// asideInternal implements the aside fork-and-run. It is an iterator body factory shared by
+// the streaming and non-streaming surfaces. asideResult (optional) is filled with tool
+// denial count and usage metadata after the run - metadata only, never persisted.
+//
+// Order of operations (all read-only on the main agent):
+//  1. Validate agent + A2A allowlist/cycle check (same gate as prompt). NO session lock.
+//  2. Load the folder agent (system prompt, model, tools, runtime) - read-only.
+//  3. Snapshot session.jsonl + MEMORY.md under copy-on-read.
+//  4. Fork into session.InMemoryService using the D45 shape (memory turn + cleaned history).
+//  5. Build an aside-scoped agent with tool invocation denied and its own usage tracker.
+//  6. Run the runner over the in-memory fork (never FileSessionService), stream text.
+//  7. Nothing written: no AppendSessionTurn, no ReadMemoryFile+write, no scratchpad, no git.
+func asideInternal(s *AgentSDK, ctx context.Context, agentID, question string, asideResult *AsideTurnResult, onWarning []func(string), yield func(string, error) bool) error {
+	if agentID == "" {
+		yield("", fmt.Errorf("agentID cannot be empty"))
+		return fmt.Errorf("agentID cannot be empty")
+	}
+	if question == "" {
+		yield("", fmt.Errorf("question cannot be empty"))
+		return fmt.Errorf("question cannot be empty")
+	}
+
+	a2aMeta, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		yield("", err)
+		return err
+	}
+
+	agentDir := s.AgentDir(agentID)
+	if !pathExists(agentDir) {
+		yield("", fmt.Errorf("agent directory %s does not exist", agentDir))
+		return fmt.Errorf("agent directory %s does not exist", agentDir)
+	}
+	// NO AcquireSessionLock: aside must never block a live turn (archon lock discipline). The
+	// snapshot below is a copy-on-read of whatever the file currently contains.
+
+	fa, err := LoadFolderAgentWithHookEnv(s.WorkspaceDir, agentID, a2aMeta, nil, s.MaxToolTurns, s.CommandTimeoutSeconds)
+	if err != nil {
+		yield("", fmt.Errorf("failed to load agent %q: %w", agentID, err))
+		return err
+	}
+
+	// Copy-on-read snapshot: session history + persistent memory.
+	sessionTurns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		yield("", fmt.Errorf("failed to read session for aside: %w", err))
+		return err
+	}
+	memContent, _ := ReadMemoryFile(agentDir)
+	memTurnText := FormatPersistentMemoryTurn(memContent)
+	memTurn := genai.NewContentFromText(memTurnText, "user")
+	seedContents := CleanSessionTurns(append([]*genai.Content{memTurn}, sessionTurns...))
+	// The aside question rides as the final user turn in the fork - the same shape a real
+	// addAndGenerate would produce, minus any persistence.
+	seedContents = append(seedContents, genai.NewContentFromText(question, "user"))
+
+	asideSessionID := agentID + "-aside"
+	sessionSvc := session.InMemoryService()
+	createResp, err := sessionSvc.Create(ctx, &session.CreateRequest{
+		AppName:   "wackypub",
+		UserID:    "user",
+		SessionID: asideSessionID,
+	})
+	if err != nil {
+		yield("", fmt.Errorf("failed to create aside session: %w", err))
+		return err
+	}
+	for i, c := range seedContents {
+		evt := session.NewEvent(ctx, fmt.Sprintf("aside_seed_%d", i))
+		evt.Content = c
+		if c.Role == "model" {
+			evt.Author = agentID
+		} else {
+			evt.Author = "user"
+		}
+		if err := sessionSvc.AppendEvent(ctx, createResp.Session, evt); err != nil {
+			yield("", fmt.Errorf("failed to seed aside session: %w", err))
+			return err
+		}
+	}
+
+	// Aside-scoped agent: same prompt/model/tools (cache prefix identical), but tool
+	// invocation denied via the #50 deny machinery; fresh tracker for usage metadata only.
+	var denials int64
+	tracker := &TurnUsageTracker{}
+	asideAgent, err := BuildADKAgentWithConfigAndTrackerForCompaction(fa.AgentID, fa.SystemPrompt, fa.MaxToolTurns, fa.RuntimeConfig, fa.Model, fa.AgentDir, tracker, &denials, fa.Tools...)
+	if err != nil {
+		yield("", fmt.Errorf("failed to build aside agent for %q: %w", agentID, err))
+		return err
+	}
+
+	r, err := runner.New(runner.Config{
+		AppName:        "wackypub",
+		Agent:          asideAgent,
+		SessionService: sessionSvc,
+	})
+	if err != nil {
+		yield("", fmt.Errorf("failed to create aside runner: %w", err))
+		return err
+	}
+
+	for event, err := range r.Run(ctx, "user", asideSessionID, nil, agent.RunConfig{}) {
+		if err != nil {
+			yield("", fmt.Errorf("aside generation failed: %w", err))
+			return err
+		}
+		if event == nil {
+			continue
+		}
+		if text := ExtractTextFromEvent(event); text != "" {
+			if !yield(text, nil) {
+				return nil
+			}
+		}
+	}
+	if asideResult != nil {
+		asideResult.ToolDenials = atomic.LoadInt64(&denials)
+		tracker.mu.Lock()
+		asideResult.Usage.PromptTokens = tracker.LastPromptTokens
+		asideResult.Usage.CandidatesTokens = tracker.LastCandidatesTokens
+		asideResult.Usage.TotalTokens = tracker.LastTotalTokens
+		tracker.mu.Unlock()
+	}
+	return nil
 }
 
 // GenerateTurnResult contains the assistant response text and any hook warnings (D87).

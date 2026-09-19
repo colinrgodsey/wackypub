@@ -227,3 +227,159 @@ func TestCompactionBlockTools_NormalGenerationStillExecutesTools(t *testing.T) {
 		t.Fatalf("echo_tool executed %d times in normal generation, want 1", got)
 	}
 }
+
+// TestCompactionBlockTools_MultiPartFunctionCallsDenied is the #50 fast-follow: a model can
+// emit MULTIPLE functionCalls in a single response (batch tool calls). Each must be denied;
+// the tool must never execute; the denial count must equal the batch size; and the summary
+// still completes once the denials are fed back.
+func TestCompactionBlockTools_MultiPartFunctionCallsDenied(t *testing.T) {
+	tempDir := t.TempDir()
+	turns := []*genai.Content{
+		genai.NewContentFromText("user one", "user"),
+		genai.NewContentFromText("model one", "model"),
+	}
+	if err := WriteSessionTurns(tempDir, turns); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+	if err := WriteMemoryFile(tempDir, "Initial Memory"); err != nil {
+		t.Fatalf("write memory: %v", err)
+	}
+
+	var toolRuns int32
+	echoTool, err := functiontool.New(functiontool.Config{
+		Name: "echo_tool",
+	}, func(ctx agent.Context, args d45EchoArgs) (map[string]any, error) {
+		atomic.AddInt32(&toolRuns, 1)
+		return map[string]any{"output": args.Text}, nil
+	})
+	if err != nil {
+		t.Fatalf("build echo tool: %v", err)
+	}
+
+	// Stub that emits two functionCalls on call 1, then a plain summary on call 2. Records
+	// whether the tool DECLARATIONS reached the payload.
+	var declaredCnt int32
+	stub := &multiCallStubModel{declarations: &declaredCnt, sawDenial: false}
+	runtimeCfg := &RuntimeConfig{ContextWindow: 100000}
+
+	// Register both batch-called tools under their real names so each functionCall resolves
+	// to a registered tool and hits the deny callback (a not-found call would take the
+	// onError path and not count as a denial).
+	getTool, err := functiontool.New(functiontool.Config{
+		Name: "get_scratchpad",
+	}, func(ctx agent.Context, args multiCallGetArgs) (map[string]any, error) {
+		return map[string]any{"output": "never reached"}, nil
+	})
+	if err != nil {
+		t.Fatalf("build get_scratchpad stub: %v", err)
+	}
+
+	compacted, denials, err := compactionRunWithToolDenied2(t, tempDir, runtimeCfg, stub, echoTool, getTool)
+	if err != nil {
+		t.Fatalf("compaction failed: %v", err)
+	}
+	if !compacted {
+		t.Fatal("expected compaction to occur")
+	}
+	if got := atomic.LoadInt32(&toolRuns); got != 0 {
+		t.Fatalf("echo_tool executed %d times, want 0", got)
+	}
+	if denials != 2 {
+		t.Fatalf("expected 2 tool denials (batch), got %d", denials)
+	}
+	if atomic.LoadInt32(&declaredCnt) == 0 {
+		t.Fatal("tool declarations missing from compaction request payload")
+	}
+	mem, err := ReadMemoryFile(tempDir)
+	if err != nil {
+		t.Fatalf("read memory: %v", err)
+	}
+	if !strings.Contains(mem, "Batch summary complete.") {
+		t.Fatalf("summary missing from MEMORY.md: %q", mem)
+	}
+}
+
+// multiCallGetArgs is the minimal argument shape for the get_scratchpad stub tool.
+type multiCallGetArgs struct {
+	ID string `json:"id"`
+}
+
+// multiCallStubModel emits two functionCalls on the first invocation and a text summary on
+// every later invocation.
+type multiCallStubModel struct {
+	calls        int32
+	declarations *int32
+	sawDenial    bool
+}
+
+func (m *multiCallStubModel) Name() string { return "multi-call-stub" }
+
+func (m *multiCallStubModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		atomic.AddInt32(&m.calls, 1)
+
+		// Declarations live in req.Config.Tools.
+		if req.Config != nil {
+			for _, td := range req.Config.Tools {
+				for _, fd := range td.FunctionDeclarations {
+					if fd != nil {
+						atomic.StoreInt32(m.declarations, 1)
+					}
+				}
+			}
+		}
+		// Check the denial responses made it into the request history.
+		reqText := ""
+		for _, c := range req.Contents {
+			for _, p := range c.Parts {
+				if p == nil {
+					continue
+				}
+				reqText += p.Text
+				if p.FunctionResponse != nil {
+					if v, ok := p.FunctionResponse.Response["result"].(string); ok {
+						reqText += " " + v
+					}
+				}
+			}
+		}
+		if strings.Contains(reqText, "denied: tools are unavailable during compaction") {
+			m.sawDenial = true
+		}
+
+		if atomic.LoadInt32(&m.calls) == 1 {
+			yield(&model.LLMResponse{
+				Content: &genai.Content{
+					Role: "model",
+					Parts: []*genai.Part{
+						{FunctionCall: &genai.FunctionCall{Name: "echo_tool", Args: map[string]any{"text": "a"}}},
+						{FunctionCall: &genai.FunctionCall{Name: "get_scratchpad", Args: map[string]any{"id": "abcd"}}},
+					},
+				},
+			}, nil)
+			return
+		}
+		yield(&model.LLMResponse{
+			Content: &genai.Content{
+				Role:  "model",
+				Parts: []*genai.Part{{Text: "Batch summary complete."}},
+			},
+		}, nil)
+	}
+}
+
+// compactionRunWithToolDenied2 mirrors compactionRunWithToolDenied but exposes the stub's
+// declaration counter through two runnable tools (echo_tool + get_scratchpad are both part
+// of the standard folder toolset, so the batch calls resolve to real denials).
+func compactionRunWithToolDenied2(t *testing.T, agentDir string, runtimeCfg *RuntimeConfig, stub model.LLM, tools ...tool.Tool) (bool, int64, error) {
+	t.Helper()
+	var denials int64
+	// get_scratchpad is a real built-in with a different signature; provide a stand-in tool
+	// implementation registered under that name so the batch denial path resolves both.
+	ca, err := BuildADKAgentWithConfigAndTrackerForCompaction("agent", "system", DefaultMaxToolTurns, runtimeCfg, stub, agentDir, nil, &denials, tools...)
+	if err != nil {
+		t.Fatalf("build compaction agent: %v", err)
+	}
+	compacted, err := CheckAndCompactSession(context.Background(), agentDir, runtimeCfg, ca, true, nil)
+	return compacted, denials, err
+}
