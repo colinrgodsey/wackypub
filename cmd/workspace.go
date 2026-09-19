@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -29,6 +32,10 @@ file's presence, runtime.json's resolved path (following a symlink) and whether 
 session/memory stats - including anything that looks broken or incomplete. Works even if the
 agent directory doesn't exist yet or is only partially set up; in that case it explains what's
 missing rather than erroring, so this doubles as a guide for setting up a new agent correctly.
+
+Agents listed in REMOTE_MANIFEST appear too, including ones with no directory of their
+own: a bridged agent’s runtime is its route (the harness it runs through) rather than a
+runtime.json, and its session state is the bridge’s acp-session.json.
 
 This command is read-only: it never creates or modifies any file.`,
 	Args: cobra.MaximumNArgs(1),
@@ -72,6 +79,111 @@ var initGitCmd = &cobra.Command{
 	},
 }
 
+// loadRemoteRoutes loads REMOTE_MANIFEST once per rendering pass. A manifest that does
+// not parse is announced rather than ignored: routes that exist but are not listed would
+// be a lie by omission, which is the failure mode this command exists to prevent. The
+// returned pointer may be nil, and RemoteManifest.Lookup is nil-safe.
+func loadRemoteRoutes(wsDir string) *adkAgent.RemoteManifest {
+	manifest, err := adkAgent.LoadRemoteManifest(wsDir)
+	if err != nil {
+		fmt.Printf("\nREMOTE_MANIFEST did not parse, so no bridged agents are shown: %v\n", err)
+		return nil
+	}
+	return manifest
+}
+
+// harnessName names what a bridged agent actually runs, taken from the route's
+// --harness-cmd argument: the route command is the generic bridge for every ACP harness.
+func harnessName(route adkAgent.RemoteRoute) string {
+	for i, arg := range route.Args {
+		for _, flag := range []string{"--harness-cmd=", "-harness-cmd="} {
+			if value, ok := strings.CutPrefix(arg, flag); ok && value != "" {
+				return filepath.Base(value)
+			}
+		}
+		if (arg == "--harness-cmd" || arg == "-harness-cmd") && i+1 < len(route.Args) {
+			return filepath.Base(route.Args[i+1])
+		}
+	}
+	return filepath.Base(route.Command)
+}
+
+// bridgeAgentFolder is where a bridge keeps the agent state: the route's --agent-folder
+// when it sets one, otherwise the ordinary agent directory under the workspace.
+func bridgeAgentFolder(wsDir, agentID string, route adkAgent.RemoteRoute) string {
+	for i, arg := range route.Args {
+		for _, flag := range []string{"--agent-folder=", "-agent-folder="} {
+			if value, ok := strings.CutPrefix(arg, flag); ok && value != "" {
+				return value
+			}
+		}
+		if (arg == "--agent-folder" || arg == "-agent-folder") && i+1 < len(route.Args) {
+			return route.Args[i+1]
+		}
+	}
+	return filepath.Join(wsDir, agentID)
+}
+
+// acpSessionFile is what the ACP bridge writes into the agent folder to remember which
+// harness session it is continuing. It is the only session state a bridged agent has.
+type acpSessionFile struct {
+	SessionID   string `json:"sessionId"`
+	AgentFolder string `json:"agent_folder"`
+	CreatedAt   string `json:"createdAt"`
+}
+
+func bridgeSessionState(folder string) string {
+	path := filepath.Join(folder, "acp-session.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "no acp-session.json yet, so no bridged turn has completed a session"
+		}
+		return fmt.Sprintf("acp-session.json could not be read: %v", err)
+	}
+	var session acpSessionFile
+	if err := json.Unmarshal(data, &session); err != nil {
+		return fmt.Sprintf("acp-session.json at %s is not valid JSON: %v", path, err)
+	}
+	if session.SessionID == "" {
+		return fmt.Sprintf("acp-session.json at %s records no sessionId", path)
+	}
+	if session.CreatedAt == "" {
+		return fmt.Sprintf("acp-session.json holds session %s", session.SessionID)
+	}
+	return fmt.Sprintf("acp-session.json holds session %s, created %s", session.SessionID, session.CreatedAt)
+}
+
+// renderArgs joins arguments for display, quoting any that contain whitespace: the manifest
+// quotes an argument that carries spaces itself, and printing it bare would claim the route
+// has arguments it does not have.
+func renderArgs(args []string) string {
+	rendered := make([]string, 0, len(args))
+	for _, arg := range args {
+		if strings.ContainsAny(arg, " \t\n\"'") {
+			arg = strconv.Quote(arg)
+		}
+		rendered = append(rendered, arg)
+	}
+	return strings.Join(rendered, " ")
+}
+
+func printBridgeRoute(wsDir, agentID string, route adkAgent.RemoteRoute) {
+	folder := bridgeAgentFolder(wsDir, agentID, route)
+	folderState := "missing"
+	if info, err := os.Stat(folder); err == nil && info.IsDir() {
+		folderState = "present"
+	}
+	fmt.Println("Remote route (REMOTE_MANIFEST):")
+	fmt.Printf("  command                   %s\n", route.Command)
+	fmt.Printf("  harness                   %s\n", harnessName(route))
+	if args := route.RedactedArgs(); len(args) > 0 {
+		fmt.Printf("  args                      %s\n", renderArgs(args))
+	}
+	fmt.Printf("  agent folder              %s (%s)\n", folder, folderState)
+	fmt.Printf("  bridge session            %s\n", bridgeSessionState(folder))
+}
+
 func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 	if selfID, ok := adkAgent.CurrentAgentIDFromCWD(); ok {
 		fmt.Printf("You are agent %q.\n", selfID)
@@ -104,6 +216,20 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 	}
 	ids := resp.GetAgentIds()
 
+	manifest := loadRemoteRoutes(wsDir)
+	var routeOnly []string
+	if manifest != nil {
+		for id := range manifest.Routes {
+			if !slices.Contains(ids, id) {
+				routeOnly = append(routeOnly, id)
+			}
+		}
+	}
+	if len(routeOnly) > 0 {
+		ids = append(ids, routeOnly...)
+		slices.Sort(ids)
+	}
+
 	if len(ids) == 0 {
 		fmt.Println("\nNo agent directories found.")
 		fmt.Println("An agent directory needs at least one of AGENTS.md, runtime.json, or session.jsonl directly inside it to be recognized.")
@@ -122,13 +248,18 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 			continue
 		}
 
+		route, bridged := manifest.Lookup(id)
+
 		runtimeStatus := "missing"
-		if insp.GetRuntimeJsonExists() {
-			if insp.GetRuntimeJsonValid() {
-				runtimeStatus = "ok"
-			} else {
-				runtimeStatus = "invalid"
-			}
+		switch {
+		case bridged:
+			// There is no runtime.json for a bridged agent to be missing: the route below
+			// decides how it runs, so the cell names the harness instead of a nonexistent file.
+			runtimeStatus = fmt.Sprintf("bridged (%s)", harnessName(route))
+		case insp.GetRuntimeJsonExists() && insp.GetRuntimeJsonValid():
+			runtimeStatus = "ok"
+		case insp.GetRuntimeJsonExists():
+			runtimeStatus = "invalid"
 		}
 
 		turns := "-"
@@ -176,6 +307,19 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 		return err
 	}
 
+	manifest := loadRemoteRoutes(sdk.WorkspaceDir)
+	route, bridged := manifest.Lookup(agentID)
+
+	if !insp.GetAgentDirExists() && bridged {
+		fmt.Printf("Agent %q has no local agent directory, and does not need one.\n", agentID)
+		fmt.Printf("REMOTE_MANIFEST routes it to the %s harness, so runtime.json, session.jsonl and\n", harnessName(route))
+		fmt.Println("MEMORY.md are never read or written for it.")
+		fmt.Println()
+		printBridgeRoute(sdk.WorkspaceDir, agentID, route)
+		fmt.Printf("\nSend a turn with: wackypub agent %s prompt \"...\"\n", agentID)
+		return nil
+	}
+
 	if !insp.GetAgentDirExists() {
 		fmt.Printf("Agent %q does not exist yet at %s.\n\n", agentID, insp.GetAgentDir())
 		fmt.Println("To create it, add at minimum:")
@@ -187,6 +331,10 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 
 	fmt.Printf("Agent: %s\n", insp.GetAgentId())
 	fmt.Printf("Directory: %s\n\n", insp.GetAgentDir())
+
+	if bridged {
+		printBridgeRoute(sdk.WorkspaceDir, agentID, route)
+	}
 
 	fmt.Println("Files:")
 	fmt.Printf("  AGENTS.md                 %s\n", presence(insp.GetAgentsMdExists()))
@@ -214,7 +362,11 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 	}
 
 	if !insp.GetRuntimeJsonExists() {
-		fmt.Println("  runtime.json              missing")
+		if bridged {
+			fmt.Println("  runtime.json              unused (this agent is bridged)")
+		} else {
+			fmt.Println("  runtime.json              missing")
+		}
 	} else {
 		runtimeLine := "present"
 		if insp.GetRuntimeJsonIsSymlink() {
@@ -244,7 +396,10 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 
 	var issues []string
 	if !insp.GetRuntimeJsonExists() {
-		issues = append(issues, "runtime.json is missing - generation will fall back to the bundled openrouter-auto default (requires OPENROUTER_API_KEY), or add your own (see docs/agents.md §3 for the schema).")
+		if !bridged {
+			// A bridged agent is not falling back to any runtime default: the route is what runs it.
+			issues = append(issues, "runtime.json is missing - generation will fall back to the bundled openrouter-auto default (requires OPENROUTER_API_KEY), or add your own (see docs/agents.md §3 for the schema).")
+		}
 	} else if !insp.GetRuntimeJsonValid() {
 		issues = append(issues, fmt.Sprintf("runtime.json failed to parse: %s", insp.GetRuntimeJsonError()))
 	}

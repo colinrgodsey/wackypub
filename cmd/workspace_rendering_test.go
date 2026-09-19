@@ -107,3 +107,184 @@ func TestNativeOnlyWorkspaceRendersUnchanged(t *testing.T) {
 	ws := nativeOnlyWorkspaceFixture(t)
 	compareWorkspaceGolden(t, "workspace_native_only.golden", renderWorkspace(t, ws))
 }
+
+// bridgedWorkspaceFixture mirrors how REMOTE_MANIFEST is actually written: one bridged
+// agent that also has a folder and bridge state (the agy shape), one that exists only as a
+// route, and a native agent that must keep rendering as a native.
+func bridgedWorkspaceFixture(t *testing.T) string {
+	t.Helper()
+	ws := t.TempDir()
+	writeFixtureFile(t, filepath.Join(ws, adkAgent.RootMarkerFile), "")
+	writeFixtureFile(t, filepath.Join(ws, "native-peer", "AGENTS.md"), "You are native-peer.\n")
+	writeFixtureFile(t, filepath.Join(ws, "native-peer", "runtime.json"), `{"model":"test-model","apiKey":"sk-test","contextWindow":4096}`+"\n")
+
+	agyFolder := filepath.Join(ws, "agy")
+	writeFixtureFile(t, filepath.Join(agyFolder, "AGENTS.md"), "You are agy.\n")
+	writeFixtureFile(t, filepath.Join(agyFolder, "acp-session.json"), `{"sessionId":"a276f8fc-384a-4f63-938b-5454742d4b92","agent_folder":"`+agyFolder+`","createdAt":"2026-09-18T01:04:21Z"}`+"\n")
+
+	ghostFolder := filepath.Join(ws, "ghost")
+	writeFixtureFile(t, filepath.Join(ws, adkAgent.RemoteManifestFile),
+		"agy: /usr/local/bin/wackyacp --harness-cmd=/usr/local/bin/wackyagy --agent-folder="+agyFolder+"\n"+
+			"ghost: /usr/local/bin/wackyacp --harness-cmd=/usr/local/bin/claude-agent-acp --agent-folder="+ghostFolder+"\n")
+	return ws
+}
+
+func overviewOf(t *testing.T, ws string) string {
+	t.Helper()
+	out, err := captureStdout(t, func() error {
+		return printWorkspaceOverview(adkAgent.NewSDK(ws), ws)
+	})
+	if err != nil {
+		t.Fatalf("printWorkspaceOverview: %v", err)
+	}
+	return out
+}
+
+func inspectionOf(t *testing.T, ws, agentID string) string {
+	t.Helper()
+	out, err := captureStdout(t, func() error {
+		return printAgentInspection(adkAgent.NewSDK(ws), agentID)
+	})
+	if err != nil {
+		t.Fatalf("printAgentInspection(%s): %v", agentID, err)
+	}
+	return out
+}
+
+func tableRow(output, agentID string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), agentID) {
+			return line
+		}
+	}
+	return ""
+}
+
+func TestOverviewShowsBridgedAgentsAndTheirHarnesses(t *testing.T) {
+	out := overviewOf(t, bridgedWorkspaceFixture(t))
+
+	if !strings.Contains(out, "Agents found: 3") {
+		t.Fatalf("the manifest-only agent is not counted, output:\n%s", out)
+	}
+	if row := tableRow(out, "agy"); !strings.Contains(row, "bridged (wackyagy)") {
+		t.Fatalf("agy row does not name its harness, row = %q", row)
+	}
+	if row := tableRow(out, "ghost"); !strings.Contains(row, "bridged (claude-agent-acp)") {
+		t.Fatalf("a route with no folder is not listed as bridged, row = %q", row)
+	}
+	for _, row := range []string{tableRow(out, "agy"), tableRow(out, "ghost")} {
+		if strings.Contains(row, "missing") {
+			t.Fatalf("a bridged agent is still flagged as missing a runtime, row = %q", row)
+		}
+	}
+	if row := tableRow(out, "native-peer"); !strings.Contains(row, "ok") || strings.Contains(row, "bridged") {
+		t.Fatalf("the native peer changed columns, row = %q", row)
+	}
+}
+
+func TestInspectionOfBridgedAgentDescribesRouteNotMissingRuntime(t *testing.T) {
+	ws := bridgedWorkspaceFixture(t)
+	out := inspectionOf(t, ws, "agy")
+
+	for _, want := range []string{
+		"Remote route (REMOTE_MANIFEST):",
+		"command                   /usr/local/bin/wackyacp",
+		"harness                   wackyagy",
+		"agent folder              " + filepath.Join(ws, "agy") + " (present)",
+		"acp-session.json holds session a276f8fc-384a-4f63-938b-5454742d4b92, created 2026-09-18T01:04:21Z",
+		"runtime.json              unused (this agent is bridged)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output is missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "runtime.json is missing - generation will fall back") {
+		t.Fatalf("a bridged agent is told its runtime.json is required:\n%s", out)
+	}
+}
+
+func TestInspectionOfManifestOnlyAgentExplainsTheBridge(t *testing.T) {
+	ws := bridgedWorkspaceFixture(t)
+	out := inspectionOf(t, ws, "ghost")
+
+	for _, want := range []string{
+		`Agent "ghost" has no local agent directory, and does not need one.`,
+		"routes it to the claude-agent-acp harness",
+		"agent folder              " + filepath.Join(ws, "ghost") + " (missing)",
+		"no acp-session.json yet",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output is missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "does not exist yet") || strings.Contains(out, "To create it, add at minimum") {
+		t.Fatalf("a bridged-only agent is told to create native files:\n%s", out)
+	}
+}
+
+func TestInspectionReportsUnreadableBridgeSession(t *testing.T) {
+	ws := bridgedWorkspaceFixture(t)
+	writeFixtureFile(t, filepath.Join(ws, "agy", "acp-session.json"), "{not json\n")
+
+	out := inspectionOf(t, ws, "agy")
+	if !strings.Contains(out, "acp-session.json at ") || !strings.Contains(out, "is not valid JSON") {
+		t.Fatalf("a corrupt acp-session.json is not reported:\n%s", out)
+	}
+}
+
+func TestUnparsableManifestIsAnnouncedInsteadOfSilentlyNative(t *testing.T) {
+	ws := bridgedWorkspaceFixture(t)
+	routes, err := os.ReadFile(filepath.Join(ws, adkAgent.RemoteManifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureFile(t, filepath.Join(ws, adkAgent.RemoteManifestFile), string(routes)+"ghost: /usr/local/bin/wackyacp\n")
+
+	out := overviewOf(t, ws)
+	if !strings.Contains(out, "REMOTE_MANIFEST did not parse") {
+		t.Fatalf("a manifest that does not parse is not mentioned:\n%s", out)
+	}
+	if !strings.Contains(out, "native-peer") {
+		t.Fatalf("a bad manifest stopped the native listing:\n%s", out)
+	}
+}
+
+func TestHarnessNameComesFromTheRouteArgument(t *testing.T) {
+	routes := []adkAgent.RemoteRoute{
+		{Command: "/usr/bin/wackyacp", Args: []string{"--harness-cmd=/opt/bin/wackyagy"}},
+		{Command: "/usr/bin/wackyacp", Args: []string{"--harness-cmd", "/opt/bin/claude-agent-acp"}},
+		{Command: "/usr/bin/wackyacp", Args: []string{"-harness-cmd=/opt/bin/wackyagy", "--agent-folder=/tmp"}},
+		{Command: "/opt/bin/acpx-bridge", Args: []string{"--agent-folder=/tmp"}},
+		{Command: "/opt/bin/acpx-bridge", Args: []string{"--harness-cmd="}},
+	}
+	want := []string{"wackyagy", "claude-agent-acp", "wackyagy", "acpx-bridge", "acpx-bridge"}
+
+	for i, route := range routes {
+		if got := harnessName(route); got != want[i] {
+			t.Fatalf("harnessName(%v %v) = %q, want %q", route.Command, route.Args, got, want[i])
+		}
+	}
+}
+
+func TestBridgeAgentFolderDefaultsToTheAgentDirectory(t *testing.T) {
+	withFlag := adkAgent.RemoteRoute{Command: "wackyacp", Args: []string{"--agent-folder=/srv/claude"}}
+	if got := bridgeAgentFolder("/ws", "claude", withFlag); got != "/srv/claude" {
+		t.Fatalf("bridgeAgentFolder with --agent-folder = %q, want /srv/claude", got)
+	}
+	bare := adkAgent.RemoteRoute{Command: "wackyacp", Args: []string{"--permission-mode=approve"}}
+	if got := bridgeAgentFolder("/ws", "claude", bare); got != filepath.Join("/ws", "claude") {
+		t.Fatalf("bridgeAgentFolder without --agent-folder = %q, want the agent directory", got)
+	}
+}
+
+func TestRouteArgsContainingSpacesStayQuoted(t *testing.T) {
+	route := adkAgent.RemoteRoute{
+		Command: "/usr/bin/wackyacp",
+		Args:    []string{"--harness-cmd=/bin/wackyagy", "--harness-args=-a 1 -b 2", "-permission-mode=approve"},
+	}
+	want := `--harness-cmd=/bin/wackyagy "--harness-args=-a 1 -b 2" -permission-mode=approve`
+
+	if got := renderArgs(route.RedactedArgs()); got != want {
+		t.Fatalf("renderArgs = %s, want %s - a single argument that carries spaces must not print as three", got, want)
+	}
+}
