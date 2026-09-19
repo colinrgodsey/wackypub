@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/genai"
 	"google.golang.org/grpc"
@@ -34,6 +35,12 @@ type AgentSDK struct {
 	CommandTimeoutSeconds int
 	lastHookEnvMu         sync.Mutex
 	lastHookEnv           map[string]map[string]string
+
+	// failedUntil maps a backend identity (endpoint + "/" + model) to the time at which a
+	// usage-limit failure is expected to reset. Managed by the fallback machinery in
+	// runTurnWithRuntimeFallback; in-memory per process for v1 (persisted nothing).
+	failedUntilMu sync.Mutex
+	failedUntil   map[string]time.Time
 }
 
 var _ agentv1.AgentServiceServer = (*AgentSDK)(nil)
@@ -48,6 +55,7 @@ func NewSDK(workspaceDir string) *AgentSDK {
 		MaxToolTurns:          DefaultMaxToolTurns,
 		CommandTimeoutSeconds: DefaultCommandTimeoutSeconds,
 		lastHookEnv:           make(map[string]map[string]string),
+		failedUntil:           make(map[string]time.Time),
 	}
 }
 
@@ -408,14 +416,51 @@ func (s *AgentSDK) cancelTurnLegacy(agentID string) error {
 // Holds the session lock for the entire duration of the stream.
 //
 // TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
+// backendIdentity returns the map key used for the failed-until-reset tracker. Endpoint and
+// model together identify a backend: a fallback may differ from the primary in either, so
+// both are part of the identity.
+func backendIdentity(cfg *RuntimeConfig) string {
+	return cfg.Endpoint + "/" + cfg.Model
+}
+
+// markFailedUntil records a backend as failed until the given reset time. In-memory per
+// process (v1 scope - nothing persisted); a later turn in this process will start at the
+// first fallback instead of retrying a backend that is provably down until reset.
+func (s *AgentSDK) markFailedUntil(cfg *RuntimeConfig, resetAt time.Time) {
+	s.failedUntilMu.Lock()
+	defer s.failedUntilMu.Unlock()
+	s.failedUntil[backendIdentity(cfg)] = resetAt
+}
+
+// backendFailedUntilReset reports whether cfg is currently inside its failed-until window.
+func (s *AgentSDK) backendFailedUntilReset(cfg *RuntimeConfig) bool {
+	s.failedUntilMu.Lock()
+	resetAt, ok := s.failedUntil[backendIdentity(cfg)]
+	s.failedUntilMu.Unlock()
+	if !ok {
+		return false
+	}
+	if time.Now().After(resetAt) {
+		// Window closed; drop the stale entry so we don't leak map entries per outage.
+		s.failedUntilMu.Lock()
+		delete(s.failedUntil, backendIdentity(cfg))
+		s.failedUntilMu.Unlock()
+		return false
+	}
+	return true
+}
+
 // runTurnWithRuntimeFallback walks the runtime fallback chain at turn setup: it attempts
 // the primary backend first, and on a qualifying error (transport, 429-after-retries, 5xx)
 // that arrives BEFORE any text was yielded for this turn, descends to the next fallback
 // level by rebuilding the folder agent with that level's fully-specified config (possibly a
 // different provider, so the model constructor re-runs per level). Once text has been
 // yielded, failures are NOT masked - a mid-turn backend switch would produce frankenstein
-// output. Every turn starts primary-first again (fail-forward per turn, never sticky) because
-// the chain is resolved fresh at each turn setup.
+// output - but the failure is surfaced with an annotated warning (including the backend's
+// quota-reset hint when present). Backends marked failed-until-reset by a prior turn's 429
+// are skipped at turn start so a provably-down quota doesn't burn a turn. Every turn starts
+// primary-first again unless that primary is inside its failed-until window (fail-forward
+// per turn, never sticky beyond the reset hint).
 func (s *AgentSDK) runTurnWithRuntimeFallback(
 	ctx context.Context,
 	agentID string,
@@ -428,6 +473,17 @@ func (s *AgentSDK) runTurnWithRuntimeFallback(
 ) {
 	var lastErr error
 	for level, levelCfg := range chain {
+		// Skip a backend that a previous turn's 429 marked failed-until-reset: retrying it
+		// now would burn a whole turn on a quota that is provably still exhausted.
+		if s.backendFailedUntilReset(levelCfg) {
+			for _, fn := range onWarnings {
+				if fn != nil {
+					fn(fmt.Sprintf("skipping backend %s/%s: usage limit not yet reset", levelCfg.Endpoint, levelCfg.Model))
+				}
+			}
+			continue
+		}
+
 		fa := primary
 		if level > 0 {
 			var err error
@@ -443,10 +499,30 @@ func (s *AgentSDK) runTurnWithRuntimeFallback(
 		for chunk, err := range yieldStream(fa) {
 			if err != nil {
 				lastErr = err
+				// Record quota-reset metadata when the provider supplies it, so the NEXT turn skips
+				// this backend instead of waiting for another fresh 429 (semantics 3, v1 in-memory).
+				if resetAt, ok := ParseQuotaResetHint(err); ok {
+					s.markFailedUntil(levelCfg, resetAt)
+				}
 				if !yieldedText && IsQualifyingFallbackError(err) && level+1 < len(chain) {
-					// Failover window closed: no text yet, qualifying error, more levels.
+					// Zero-text mid-turn failover (semantics 1): nothing was emitted, so re-running
+					// the turn from scratch on the fallback is clean - no frankenstein risk.
 					descend = true
 					break
+				}
+				// Text was already emitted: never swap backends mid-stream (frankenstein guard).
+				// Surface the failure with an annotated warning naming the backend and, when known,
+				// its quota reset time so the operator/agent knows the next turn will skip it.
+				if IsQualifyingFallbackError(err) {
+					warn := fmt.Sprintf("backend %s/%s failed mid-turn: %v", levelCfg.Endpoint, levelCfg.Model, err)
+					if resetAt, ok := ParseQuotaResetHint(err); ok {
+						warn += fmt.Sprintf("; usage limit reached, resets %s", resetAt.Format("2006-01-02 15:04:05"))
+					}
+					for _, fn := range onWarnings {
+						if fn != nil {
+							fn(warn)
+						}
+					}
 				}
 				yield("", err)
 				return
@@ -475,12 +551,17 @@ func (s *AgentSDK) runTurnWithRuntimeFallback(
 			}
 		}
 	}
-	// Chain exhausted: the last error was qualifying but every fallback failed.
+	// Chain exhausted: the last error was qualifying but every fallback failed (or all were
+	// skipped as failed-until-reset).
 	if ctx.Err() != nil {
 		yield("", ctx.Err())
 		return
 	}
-	yield("", fmt.Errorf("all runtime fallback backends failed for agent %q; last error: %w", agentID, lastErr))
+	if lastErr != nil {
+		yield("", fmt.Errorf("all runtime fallback backends failed for agent %q; last error: %w", agentID, lastErr))
+		return
+	}
+	yield("", fmt.Errorf("no runtime backend available for agent %q: all backends were skipped as failed-until-reset", agentID))
 }
 
 func (s *AgentSDK) generateTurnStreamLegacy(ctx context.Context, agentID string) iter.Seq2[string, error] {
