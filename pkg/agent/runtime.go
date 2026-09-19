@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 
 	"google.golang.org/adk/v2/model"
 )
@@ -297,4 +299,35 @@ func NewModelForRuntime(ctx context.Context, runtimeCfg *RuntimeConfig, agentID 
 	default:
 		return nil, fmt.Errorf("unsupported provider %q in runtime configuration for agent %s (supported: openai, gemini, anthropic)", runtimeCfg.Provider, agentID)
 	}
+}
+
+// quotaResetTimeLayout is the timestamp format z.ai (and similar providers) embed in 429
+// bodies: "Your limit will reset at 2026-09-19 12:14:43". No timezone suffix means the
+// provider's local clock; we treat it as UTC for the failed-until window, which is a
+// conservative over-estimate of the outage (any offset makes us skip a little longer, never
+// less).
+const quotaResetTimeLayout = "2006-01-02 15:04:05"
+
+// usecQuotaResetRe matches the two known quota-reset shapes in error text:
+//
+//	... limit will reset at 2026-09-19 12:14:43 ...
+//	... resets at 2026-09-19 12:14:43 ...
+var quotaResetRe = regexp.MustCompile(`(?i)reset\s+at\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})`)
+
+// ParseQuotaResetHint extracts a backend-supplied quota reset timestamp from an error
+// message when present (e.g. z.ai 429 bodies "Your limit will reset at 2026-09-19 12:14:43",
+// or generic "resets at <time>"). Returns (zero time, false) when absent or unparseable.
+func ParseQuotaResetHint(err error) (time.Time, bool) {
+	if err == nil {
+		return time.Time{}, false
+	}
+	m := quotaResetRe.FindStringSubmatch(err.Error())
+	if len(m) < 2 {
+		return time.Time{}, false
+	}
+	t, perr := time.Parse(quotaResetTimeLayout, m[1])
+	if perr != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
