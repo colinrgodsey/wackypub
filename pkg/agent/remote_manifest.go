@@ -98,6 +98,36 @@ func LoadRemoteManifest(wsDir string) (*RemoteManifest, error) {
 	}, nil
 }
 
+// RedactedArgs returns the route arguments with any credential-bearing value replaced by
+// "[redacted]", in both the "--flag=value" and "--flag value" forms. Diagnostic commands
+// print routes, and an operator may have had no choice but to put a key on a bridge command
+// line, so the credential rules already used for process command lines apply here too.
+func (r RemoteRoute) RedactedArgs() []string {
+	if len(r.Args) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(r.Args))
+	redactNext := false
+	for _, arg := range r.Args {
+		if redactNext {
+			out = append(out, "[redacted]")
+			redactNext = false
+			continue
+		}
+		name, _, hasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		switch {
+		case hasValue && holdsSecretFlag(name):
+			out = append(out, name+"=[redacted]")
+		case holdsSecretFlag(name):
+			out = append(out, arg)
+			redactNext = true
+		default:
+			out = append(out, arg)
+		}
+	}
+	return out
+}
+
 // Lookup finds the configured RemoteRoute for agentID. Returns (route, true) if configured,
 // or (empty, false) if native dispatch should be used.
 func (m *RemoteManifest) Lookup(agentID string) (RemoteRoute, bool) {

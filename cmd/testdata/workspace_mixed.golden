@@ -1,0 +1,51 @@
+Workspace: <WS> (git: disabled)
+
+Agents found: 3
+
+AGENT_ID      RUNTIME.JSON   SESSION TURNS   MEMORY.MD   TOOLS   SKILLS   ALLOWED_AGENTS
+agy           wackyacp       -               no          -       -        deny-all
+ghost         acpx-bridge    -               no          -       -        deny-all
+native-peer   ok             -               no          -       -        deny-all
+===== inspect agy =====
+Agent: agy
+Directory: <WS>/agy
+
+Remote route (REMOTE_MANIFEST):
+  command                   /usr/local/bin/wackyacp
+  harness                   wackyagy
+  args                      --harness-cmd=/usr/local/bin/wackyagy --agent-folder=<WS>/agy
+  agent folder              <WS>/agy (present)
+  bridge session            acp-session.json holds session a276f8fc-384a-4f63-938b-5454742d4b92, created 2026-09-18T01:04:21Z
+Files:
+  AGENTS.md                 present
+  MEMORY.md                 missing
+  WACKYPUB_ALLOWED_AGENTS   missing (deny-all cross-agent access)
+  tools/                    missing
+  skills/                   missing
+  runtime.json              unused (this agent is bridged)
+  session.jsonl             missing (no turns yet)
+===== inspect ghost =====
+Agent "ghost" has no local agent directory, and does not need one.
+REMOTE_MANIFEST routes it to the claude-agent-acp harness, so runtime.json, session.jsonl and
+MEMORY.md are never read or written for it.
+
+Remote route (REMOTE_MANIFEST):
+  command                   /opt/bin/acpx-bridge
+  harness                   claude-agent-acp
+  args                      --harness-cmd=/usr/local/bin/claude-agent-acp --agent-folder=<WS>/ghost
+  agent folder              <WS>/ghost (missing)
+  bridge session            no acp-session.json yet, so no bridged turn has completed a session
+
+Send a turn with: wackypub agent ghost prompt "..."
+===== inspect native-peer =====
+Agent: native-peer
+Directory: <WS>/native-peer
+
+Files:
+  AGENTS.md                 present
+  MEMORY.md                 missing
+  WACKYPUB_ALLOWED_AGENTS   missing (deny-all cross-agent access)
+  tools/                    missing
+  skills/                   missing
+  runtime.json              present, valid
+  session.jsonl             missing (no turns yet)

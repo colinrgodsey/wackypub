@@ -194,3 +194,25 @@ agent1: bridge_cmd
 		t.Errorf("expected route for agent1")
 	}
 }
+
+func TestRemoteRouteRedactedArgsHidesCredentials(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "inline key value is hidden", args: []string{"--apiKey=sk-live-123", "--workdir=/ws"}, want: "apiKey=[redacted] --workdir=/ws"},
+		{name: "separate token value is hidden", args: []string{"--token", "abc123", "--model", "gemini"}, want: "--token [redacted] --model gemini"},
+		{name: "routing args survive", args: []string{"--harness-cmd=/bin/wackyagy", "-permission-mode=approve"}, want: "--harness-cmd=/bin/wackyagy -permission-mode=approve"},
+		{name: "no args", args: nil, want: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			route := RemoteRoute{AgentID: "agy", Command: "/bin/wackyacp", Args: tc.args}
+			if got := strings.Join(route.RedactedArgs(), " "); got != tc.want {
+				t.Fatalf("RedactedArgs(%v) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
+	}
+}
