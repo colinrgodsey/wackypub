@@ -120,6 +120,10 @@ func (l *localAgentClient) DeleteScratchpad(ctx context.Context, in *agentv1.Del
 	return l.sdk.DeleteScratchpad(ctx, in)
 }
 
+func (l *localAgentClient) AsideQuestion(ctx context.Context, in *agentv1.AsideQuestionRequest, _ ...grpc.CallOption) (*agentv1.AsideQuestionResponse, error) {
+	return l.sdk.AsideQuestion(ctx, in)
+}
+
 func (l *localAgentClient) GenerateTurn(ctx context.Context, in *agentv1.GenerateTurnRequest, _ ...grpc.CallOption) (*agentv1.GenerateTurnResponse, error) {
 	return l.sdk.GenerateTurn(ctx, in)
 }

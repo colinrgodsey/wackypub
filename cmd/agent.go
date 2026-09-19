@@ -119,6 +119,33 @@ func addAndGenerateTurnStreamProto(sdk *adkAgent.AgentSDK, ctx context.Context, 
 	}
 }
 
+// asideQuestionProto drives the D112 protocol surface for a one-shot aside question through
+// ResolveAgentClient - so it works for LOCAL folder agents and bridged/remote agents via the
+// REMOTE_MANIFEST bridge dispatch, not just the SDK. Returns the complete answer text; the
+// protocol path is unary (AsideQuestion), matching the other single-shot RPCs.
+func asideQuestionProto(sdk *adkAgent.AgentSDK, ctx context.Context, agentID, question string, onWarning func(string)) (string, error) {
+	client, cleanup, err := adkAgent.ResolveAgentClient(ctx, sdk, agentID)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	resp, err := client.AsideQuestion(ctx, &agentv1.AsideQuestionRequest{
+		AgentId:      agentID,
+		Question:     question,
+		WorkspaceDir: sdk.WorkspaceDir,
+	})
+	if err != nil {
+		return "", err
+	}
+	for _, w := range resp.GetWarnings() {
+		if onWarning != nil {
+			onWarning(w)
+		}
+	}
+	return resp.GetText(), nil
+}
+
 var agentCmd = &cobra.Command{
 	Use:   "agent <agent_id>",
 	Short: "Manage folder-based agent sessions (<ws_dir>/<agent_id>)",
@@ -817,18 +844,14 @@ byte-identical afterward.`,
 
 		ctx, stop := signalCtx()
 		defer stop()
-		first := true
-		for text, err := range sdk.AsideTurnStream(ctx, agentID, userMsg) {
-			if err != nil {
-				return err
-			}
-			if text != "" {
-				if !first {
-					fmt.Println()
-				}
-				fmt.Println(text)
-				first = false
-			}
+		text, err := asideQuestionProto(sdk, ctx, agentID, userMsg, func(w string) {
+			cmd.PrintErrln(w)
+		})
+		if err != nil {
+			return err
+		}
+		if text != "" {
+			fmt.Println(text)
 		}
 		return nil
 	},
