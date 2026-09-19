@@ -1,0 +1,59 @@
+Workspace: <WS> (git: disabled)
+
+Agents found: 3
+
+AGENT_ID         RUNTIME.JSON   SESSION TURNS   MEMORY.MD   TOOLS       SKILLS       ALLOWED_AGENTS
+native-broken    invalid        0 (1 corrupt)   no          -           -            deny-all
+native-full      ok             2               yes         1 tool(s)   1 skill(s)   1 allowed
+native-minimal   missing        -               no          -           -            deny-all
+===== inspect native-broken =====
+Agent: native-broken
+Directory: <WS>/native-broken
+
+Files:
+  AGENTS.md                 present
+  MEMORY.md                 missing
+  WACKYPUB_ALLOWED_AGENTS   missing (deny-all cross-agent access)
+  tools/                    missing
+  skills/                   missing
+  runtime.json              present, INVALID
+  session.jsonl             present, 0 turn(s), 1 line(s) failed to parse and were skipped
+
+Issues:
+  - runtime.json failed to parse: failed to parse runtime.json at <WS>/native-broken/runtime.json: invalid character 'n' looking for beginning of object key string
+  - session.jsonl has 1 line(s) that don't parse as JSON turns - they're silently skipped on every read, which can cause the agent to lose context. See .agents/AGENTS.md's session.jsonl corruption gotcha.
+===== inspect native-full =====
+Agent: native-full
+Directory: <WS>/native-full
+
+Files:
+  AGENTS.md                 present
+  MEMORY.md                 present
+  WACKYPUB_ALLOWED_AGENTS   present (1 allowed)
+  tools/                    present (1 tool(s) discovered)
+  skills/                   present (1 skill(s) discovered)
+  runtime.json              present, valid
+  session.jsonl             present, 2 turn(s)
+===== inspect native-minimal =====
+Agent: native-minimal
+Directory: <WS>/native-minimal
+
+Files:
+  AGENTS.md                 present
+  MEMORY.md                 missing
+  WACKYPUB_ALLOWED_AGENTS   missing (deny-all cross-agent access)
+  tools/                    missing
+  skills/                   missing
+  runtime.json              missing
+  session.jsonl             missing (no turns yet)
+
+Issues:
+  - runtime.json is missing - generation will fall back to the bundled openrouter-auto default (requires OPENROUTER_API_KEY), or add your own (see docs/agents.md §3 for the schema).
+===== inspect native-absent =====
+Agent "native-absent" does not exist yet at <WS>/native-absent.
+
+To create it, add at minimum:
+  <WS>/native-absent/runtime.json   LLM endpoint/model config - see docs/agents.md §3
+AGENTS.md is optional (falls back to a generic "You are agent <id>." prompt if missing).
+
+Then run: wackypub agent native-absent prompt "..."
