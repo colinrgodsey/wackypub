@@ -3485,6 +3485,145 @@ func (x *AddAndGenerateTurnResponse) GetUsage() *TurnUsage {
 	return nil
 }
 
+// AsideQuestionRequest specifies parameters for a one-shot aside question.
+type AsideQuestionRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose session context the aside draws on. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// question is the one-shot question to answer against the forked session. Required.
+	Question string `protobuf:"bytes,2,opt,name=question,proto3" json:"question,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir  string `protobuf:"bytes,3,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AsideQuestionRequest) Reset() {
+	*x = AsideQuestionRequest{}
+	mi := &file_agent_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AsideQuestionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AsideQuestionRequest) ProtoMessage() {}
+
+func (x *AsideQuestionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AsideQuestionRequest.ProtoReflect.Descriptor instead.
+func (*AsideQuestionRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *AsideQuestionRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *AsideQuestionRequest) GetQuestion() string {
+	if x != nil {
+		return x.Question
+	}
+	return ""
+}
+
+func (x *AsideQuestionRequest) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
+}
+
+// AsideQuestionResponse returns the complete aside answer plus metadata. Nothing about the
+// aside is persisted anywhere; the main session is byte-identical after the call.
+type AsideQuestionResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// text is the full aside answer joined across generated chunks.
+	Text string `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
+	// warnings are non-fatal diagnostics surfaced during the aside (e.g. fallback notes).
+	Warnings []string `protobuf:"bytes,2,rep,name=warnings,proto3" json:"warnings,omitempty"`
+	// tool_denials counts how many tool invocations the aside model attempted and were denied.
+	ToolDenials int64 `protobuf:"varint,3,opt,name=tool_denials,json=toolDenials,proto3" json:"tool_denials,omitempty"`
+	// usage contains token consumption billed to the aside turn (metadata only, never persisted).
+	Usage         *TurnUsage `protobuf:"bytes,4,opt,name=usage,proto3" json:"usage,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AsideQuestionResponse) Reset() {
+	*x = AsideQuestionResponse{}
+	mi := &file_agent_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AsideQuestionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AsideQuestionResponse) ProtoMessage() {}
+
+func (x *AsideQuestionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AsideQuestionResponse.ProtoReflect.Descriptor instead.
+func (*AsideQuestionResponse) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *AsideQuestionResponse) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *AsideQuestionResponse) GetWarnings() []string {
+	if x != nil {
+		return x.Warnings
+	}
+	return nil
+}
+
+func (x *AsideQuestionResponse) GetToolDenials() int64 {
+	if x != nil {
+		return x.ToolDenials
+	}
+	return 0
+}
+
+func (x *AsideQuestionResponse) GetUsage() *TurnUsage {
+	if x != nil {
+		return x.Usage
+	}
+	return nil
+}
+
 // A2AMetadata represents minified Agent2Agent context propagated across agent calls (D33).
 type A2AMetadata struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -3502,7 +3641,7 @@ type A2AMetadata struct {
 
 func (x *A2AMetadata) Reset() {
 	*x = A2AMetadata{}
-	mi := &file_agent_proto_msgTypes[51]
+	mi := &file_agent_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3514,7 +3653,7 @@ func (x *A2AMetadata) String() string {
 func (*A2AMetadata) ProtoMessage() {}
 
 func (x *A2AMetadata) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[51]
+	mi := &file_agent_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3527,7 +3666,7 @@ func (x *A2AMetadata) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use A2AMetadata.ProtoReflect.Descriptor instead.
 func (*A2AMetadata) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{51}
+	return file_agent_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *A2AMetadata) GetCallerId() string {
@@ -3583,7 +3722,7 @@ type TraceStep struct {
 
 func (x *TraceStep) Reset() {
 	*x = TraceStep{}
-	mi := &file_agent_proto_msgTypes[52]
+	mi := &file_agent_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3595,7 +3734,7 @@ func (x *TraceStep) String() string {
 func (*TraceStep) ProtoMessage() {}
 
 func (x *TraceStep) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[52]
+	mi := &file_agent_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3608,7 +3747,7 @@ func (x *TraceStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TraceStep.ProtoReflect.Descriptor instead.
 func (*TraceStep) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{52}
+	return file_agent_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *TraceStep) GetStepIndex() int32 {
@@ -3694,7 +3833,7 @@ type TraceRequest struct {
 
 func (x *TraceRequest) Reset() {
 	*x = TraceRequest{}
-	mi := &file_agent_proto_msgTypes[53]
+	mi := &file_agent_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3706,7 +3845,7 @@ func (x *TraceRequest) String() string {
 func (*TraceRequest) ProtoMessage() {}
 
 func (x *TraceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[53]
+	mi := &file_agent_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3719,7 +3858,7 @@ func (x *TraceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TraceRequest.ProtoReflect.Descriptor instead.
 func (*TraceRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{53}
+	return file_agent_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *TraceRequest) GetAgentId() string {
@@ -3810,7 +3949,7 @@ type TraceResponse struct {
 
 func (x *TraceResponse) Reset() {
 	*x = TraceResponse{}
-	mi := &file_agent_proto_msgTypes[54]
+	mi := &file_agent_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3822,7 +3961,7 @@ func (x *TraceResponse) String() string {
 func (*TraceResponse) ProtoMessage() {}
 
 func (x *TraceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[54]
+	mi := &file_agent_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3835,7 +3974,7 @@ func (x *TraceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TraceResponse.ProtoReflect.Descriptor instead.
 func (*TraceResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{54}
+	return file_agent_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *TraceResponse) GetTargetAgentId() string {
@@ -4113,7 +4252,16 @@ const file_agent_proto_rawDesc = "" +
 	"\x1aAddAndGenerateTurnResponse\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x1a\n" +
 	"\bwarnings\x18\x02 \x03(\tR\bwarnings\x122\n" +
-	"\x05usage\x18\x03 \x01(\v2\x1c.wackypub.agent.v1.TurnUsageR\x05usage\"\xeb\x01\n" +
+	"\x05usage\x18\x03 \x01(\v2\x1c.wackypub.agent.v1.TurnUsageR\x05usage\"r\n" +
+	"\x14AsideQuestionRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x1a\n" +
+	"\bquestion\x18\x02 \x01(\tR\bquestion\x12#\n" +
+	"\rworkspace_dir\x18\x03 \x01(\tR\fworkspaceDir\"\x9e\x01\n" +
+	"\x15AsideQuestionResponse\x12\x12\n" +
+	"\x04text\x18\x01 \x01(\tR\x04text\x12\x1a\n" +
+	"\bwarnings\x18\x02 \x03(\tR\bwarnings\x12!\n" +
+	"\ftool_denials\x18\x03 \x01(\x03R\vtoolDenials\x122\n" +
+	"\x05usage\x18\x04 \x01(\v2\x1c.wackypub.agent.v1.TurnUsageR\x05usage\"\xeb\x01\n" +
 	"\vA2AMetadata\x12\x1b\n" +
 	"\tcaller_id\x18\x01 \x01(\tR\bcallerId\x12\x1d\n" +
 	"\n" +
@@ -4148,7 +4296,7 @@ const file_agent_proto_rawDesc = "" +
 	"\x0ftarget_agent_id\x18\x01 \x01(\tR\rtargetAgentId\x12#\n" +
 	"\rtarget_commit\x18\x02 \x01(\tR\ftargetCommit\x12\x19\n" +
 	"\btrace_id\x18\x03 \x01(\tR\atraceId\x122\n" +
-	"\x05steps\x18\x04 \x03(\v2\x1c.wackypub.agent.v1.TraceStepR\x05steps2\xef\x12\n" +
+	"\x05steps\x18\x04 \x03(\v2\x1c.wackypub.agent.v1.TraceStepR\x05steps2\xd3\x13\n" +
 	"\fAgentService\x12Y\n" +
 	"\n" +
 	"ListAgents\x12$.wackypub.agent.v1.ListAgentsRequest\x1a%.wackypub.agent.v1.ListAgentsResponse\x12_\n" +
@@ -4174,7 +4322,8 @@ const file_agent_proto_rawDesc = "" +
 	"\x12GenerateTurnStream\x12,.wackypub.agent.v1.GenerateTurnStreamRequest\x1a-.wackypub.agent.v1.GenerateTurnStreamResponse0\x01\x12_\n" +
 	"\fGenerateTurn\x12&.wackypub.agent.v1.GenerateTurnRequest\x1a'.wackypub.agent.v1.GenerateTurnResponse\x12\x85\x01\n" +
 	"\x18AddAndGenerateTurnStream\x122.wackypub.agent.v1.AddAndGenerateTurnStreamRequest\x1a3.wackypub.agent.v1.AddAndGenerateTurnStreamResponse0\x01\x12q\n" +
-	"\x12AddAndGenerateTurn\x12,.wackypub.agent.v1.AddAndGenerateTurnRequest\x1a-.wackypub.agent.v1.AddAndGenerateTurnResponse\x12J\n" +
+	"\x12AddAndGenerateTurn\x12,.wackypub.agent.v1.AddAndGenerateTurnRequest\x1a-.wackypub.agent.v1.AddAndGenerateTurnResponse\x12b\n" +
+	"\rAsideQuestion\x12'.wackypub.agent.v1.AsideQuestionRequest\x1a(.wackypub.agent.v1.AsideQuestionResponse\x12J\n" +
 	"\x05Trace\x12\x1f.wackypub.agent.v1.TraceRequest\x1a .wackypub.agent.v1.TraceResponseB7Z5github.com/colinrgodsey/wackypub/pkg/agent/v1;agentv1b\x06proto3"
 
 var (
@@ -4189,7 +4338,7 @@ func file_agent_proto_rawDescGZIP() []byte {
 	return file_agent_proto_rawDescData
 }
 
-var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 56)
+var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 58)
 var file_agent_proto_goTypes = []any{
 	(*ListAgentsRequest)(nil),                // 0: wackypub.agent.v1.ListAgentsRequest
 	(*ListAgentsResponse)(nil),               // 1: wackypub.agent.v1.ListAgentsResponse
@@ -4242,19 +4391,21 @@ var file_agent_proto_goTypes = []any{
 	(*AddAndGenerateTurnStreamResponse)(nil), // 48: wackypub.agent.v1.AddAndGenerateTurnStreamResponse
 	(*AddAndGenerateTurnRequest)(nil),        // 49: wackypub.agent.v1.AddAndGenerateTurnRequest
 	(*AddAndGenerateTurnResponse)(nil),       // 50: wackypub.agent.v1.AddAndGenerateTurnResponse
-	(*A2AMetadata)(nil),                      // 51: wackypub.agent.v1.A2AMetadata
-	(*TraceStep)(nil),                        // 52: wackypub.agent.v1.TraceStep
-	(*TraceRequest)(nil),                     // 53: wackypub.agent.v1.TraceRequest
-	(*TraceResponse)(nil),                    // 54: wackypub.agent.v1.TraceResponse
-	nil,                                      // 55: wackypub.agent.v1.A2AMetadata.MetadataEntry
-	(*timestamppb.Timestamp)(nil),            // 56: google.protobuf.Timestamp
+	(*AsideQuestionRequest)(nil),             // 51: wackypub.agent.v1.AsideQuestionRequest
+	(*AsideQuestionResponse)(nil),            // 52: wackypub.agent.v1.AsideQuestionResponse
+	(*A2AMetadata)(nil),                      // 53: wackypub.agent.v1.A2AMetadata
+	(*TraceStep)(nil),                        // 54: wackypub.agent.v1.TraceStep
+	(*TraceRequest)(nil),                     // 55: wackypub.agent.v1.TraceRequest
+	(*TraceResponse)(nil),                    // 56: wackypub.agent.v1.TraceResponse
+	nil,                                      // 57: wackypub.agent.v1.A2AMetadata.MetadataEntry
+	(*timestamppb.Timestamp)(nil),            // 58: google.protobuf.Timestamp
 }
 var file_agent_proto_depIdxs = []int32{
 	6,  // 0: wackypub.agent.v1.ReadSessionResponse.turns:type_name -> wackypub.agent.v1.SessionTurn
 	7,  // 1: wackypub.agent.v1.SessionTurn.parts:type_name -> wackypub.agent.v1.SessionPart
 	16, // 2: wackypub.agent.v1.InspectAgentLocksResponse.observations:type_name -> wackypub.agent.v1.AgentLockObservation
-	56, // 3: wackypub.agent.v1.AgentLockObservation.lock_held_since:type_name -> google.protobuf.Timestamp
-	56, // 4: wackypub.agent.v1.AgentLockObservation.last_write:type_name -> google.protobuf.Timestamp
+	58, // 3: wackypub.agent.v1.AgentLockObservation.lock_held_since:type_name -> google.protobuf.Timestamp
+	58, // 4: wackypub.agent.v1.AgentLockObservation.last_write:type_name -> google.protobuf.Timestamp
 	6,  // 5: wackypub.agent.v1.AddUserTurnResponse.turn:type_name -> wackypub.agent.v1.SessionTurn
 	43, // 6: wackypub.agent.v1.AddUserTurnResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
 	6,  // 7: wackypub.agent.v1.AddMediaResponse.turn:type_name -> wackypub.agent.v1.SessionTurn
@@ -4266,61 +4417,64 @@ var file_agent_proto_depIdxs = []int32{
 	43, // 13: wackypub.agent.v1.GenerateTurnResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
 	43, // 14: wackypub.agent.v1.AddAndGenerateTurnStreamResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
 	43, // 15: wackypub.agent.v1.AddAndGenerateTurnResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
-	55, // 16: wackypub.agent.v1.A2AMetadata.metadata:type_name -> wackypub.agent.v1.A2AMetadata.MetadataEntry
-	51, // 17: wackypub.agent.v1.TraceStep.a2a_metadata:type_name -> wackypub.agent.v1.A2AMetadata
-	6,  // 18: wackypub.agent.v1.TraceStep.turn_contents:type_name -> wackypub.agent.v1.SessionTurn
-	52, // 19: wackypub.agent.v1.TraceResponse.steps:type_name -> wackypub.agent.v1.TraceStep
-	0,  // 20: wackypub.agent.v1.AgentService.ListAgents:input_type -> wackypub.agent.v1.ListAgentsRequest
-	2,  // 21: wackypub.agent.v1.AgentService.InspectAgent:input_type -> wackypub.agent.v1.InspectAgentRequest
-	4,  // 22: wackypub.agent.v1.AgentService.ReadSession:input_type -> wackypub.agent.v1.ReadSessionRequest
-	8,  // 23: wackypub.agent.v1.AgentService.ReadMemory:input_type -> wackypub.agent.v1.ReadMemoryRequest
-	10, // 24: wackypub.agent.v1.AgentService.RenderSystemPrompt:input_type -> wackypub.agent.v1.RenderSystemPromptRequest
-	12, // 25: wackypub.agent.v1.AgentService.InspectSessionContext:input_type -> wackypub.agent.v1.InspectSessionContextRequest
-	14, // 26: wackypub.agent.v1.AgentService.InspectAgentLocks:input_type -> wackypub.agent.v1.InspectAgentLocksRequest
-	17, // 27: wackypub.agent.v1.AgentService.AddUserTurn:input_type -> wackypub.agent.v1.AddUserTurnRequest
-	19, // 28: wackypub.agent.v1.AgentService.AddMedia:input_type -> wackypub.agent.v1.AddMediaRequest
-	21, // 29: wackypub.agent.v1.AgentService.CancelTurn:input_type -> wackypub.agent.v1.CancelTurnRequest
-	23, // 30: wackypub.agent.v1.AgentService.StripSignatures:input_type -> wackypub.agent.v1.StripSignaturesRequest
-	25, // 31: wackypub.agent.v1.AgentService.CompactSession:input_type -> wackypub.agent.v1.CompactSessionRequest
-	28, // 32: wackypub.agent.v1.AgentService.CreateScratchpad:input_type -> wackypub.agent.v1.CreateScratchpadRequest
-	31, // 33: wackypub.agent.v1.AgentService.GetScratchpad:input_type -> wackypub.agent.v1.GetScratchpadRequest
-	33, // 34: wackypub.agent.v1.AgentService.ListScratchpads:input_type -> wackypub.agent.v1.ListScratchpadsRequest
-	35, // 35: wackypub.agent.v1.AgentService.SearchScratchpad:input_type -> wackypub.agent.v1.SearchScratchpadRequest
-	38, // 36: wackypub.agent.v1.AgentService.DiffScratchpadEntries:input_type -> wackypub.agent.v1.DiffScratchpadEntriesRequest
-	40, // 37: wackypub.agent.v1.AgentService.DeleteScratchpad:input_type -> wackypub.agent.v1.DeleteScratchpadRequest
-	42, // 38: wackypub.agent.v1.AgentService.GenerateTurnStream:input_type -> wackypub.agent.v1.GenerateTurnStreamRequest
-	45, // 39: wackypub.agent.v1.AgentService.GenerateTurn:input_type -> wackypub.agent.v1.GenerateTurnRequest
-	47, // 40: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:input_type -> wackypub.agent.v1.AddAndGenerateTurnStreamRequest
-	49, // 41: wackypub.agent.v1.AgentService.AddAndGenerateTurn:input_type -> wackypub.agent.v1.AddAndGenerateTurnRequest
-	53, // 42: wackypub.agent.v1.AgentService.Trace:input_type -> wackypub.agent.v1.TraceRequest
-	1,  // 43: wackypub.agent.v1.AgentService.ListAgents:output_type -> wackypub.agent.v1.ListAgentsResponse
-	3,  // 44: wackypub.agent.v1.AgentService.InspectAgent:output_type -> wackypub.agent.v1.InspectAgentResponse
-	5,  // 45: wackypub.agent.v1.AgentService.ReadSession:output_type -> wackypub.agent.v1.ReadSessionResponse
-	9,  // 46: wackypub.agent.v1.AgentService.ReadMemory:output_type -> wackypub.agent.v1.ReadMemoryResponse
-	11, // 47: wackypub.agent.v1.AgentService.RenderSystemPrompt:output_type -> wackypub.agent.v1.RenderSystemPromptResponse
-	13, // 48: wackypub.agent.v1.AgentService.InspectSessionContext:output_type -> wackypub.agent.v1.InspectSessionContextResponse
-	15, // 49: wackypub.agent.v1.AgentService.InspectAgentLocks:output_type -> wackypub.agent.v1.InspectAgentLocksResponse
-	18, // 50: wackypub.agent.v1.AgentService.AddUserTurn:output_type -> wackypub.agent.v1.AddUserTurnResponse
-	20, // 51: wackypub.agent.v1.AgentService.AddMedia:output_type -> wackypub.agent.v1.AddMediaResponse
-	22, // 52: wackypub.agent.v1.AgentService.CancelTurn:output_type -> wackypub.agent.v1.CancelTurnResponse
-	24, // 53: wackypub.agent.v1.AgentService.StripSignatures:output_type -> wackypub.agent.v1.StripSignaturesResponse
-	27, // 54: wackypub.agent.v1.AgentService.CompactSession:output_type -> wackypub.agent.v1.CompactSessionResponse
-	29, // 55: wackypub.agent.v1.AgentService.CreateScratchpad:output_type -> wackypub.agent.v1.CreateScratchpadResponse
-	32, // 56: wackypub.agent.v1.AgentService.GetScratchpad:output_type -> wackypub.agent.v1.GetScratchpadResponse
-	34, // 57: wackypub.agent.v1.AgentService.ListScratchpads:output_type -> wackypub.agent.v1.ListScratchpadsResponse
-	36, // 58: wackypub.agent.v1.AgentService.SearchScratchpad:output_type -> wackypub.agent.v1.SearchScratchpadResponse
-	39, // 59: wackypub.agent.v1.AgentService.DiffScratchpadEntries:output_type -> wackypub.agent.v1.DiffScratchpadEntriesResponse
-	41, // 60: wackypub.agent.v1.AgentService.DeleteScratchpad:output_type -> wackypub.agent.v1.DeleteScratchpadResponse
-	44, // 61: wackypub.agent.v1.AgentService.GenerateTurnStream:output_type -> wackypub.agent.v1.GenerateTurnStreamResponse
-	46, // 62: wackypub.agent.v1.AgentService.GenerateTurn:output_type -> wackypub.agent.v1.GenerateTurnResponse
-	48, // 63: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:output_type -> wackypub.agent.v1.AddAndGenerateTurnStreamResponse
-	50, // 64: wackypub.agent.v1.AgentService.AddAndGenerateTurn:output_type -> wackypub.agent.v1.AddAndGenerateTurnResponse
-	54, // 65: wackypub.agent.v1.AgentService.Trace:output_type -> wackypub.agent.v1.TraceResponse
-	43, // [43:66] is the sub-list for method output_type
-	20, // [20:43] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	43, // 16: wackypub.agent.v1.AsideQuestionResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
+	57, // 17: wackypub.agent.v1.A2AMetadata.metadata:type_name -> wackypub.agent.v1.A2AMetadata.MetadataEntry
+	53, // 18: wackypub.agent.v1.TraceStep.a2a_metadata:type_name -> wackypub.agent.v1.A2AMetadata
+	6,  // 19: wackypub.agent.v1.TraceStep.turn_contents:type_name -> wackypub.agent.v1.SessionTurn
+	54, // 20: wackypub.agent.v1.TraceResponse.steps:type_name -> wackypub.agent.v1.TraceStep
+	0,  // 21: wackypub.agent.v1.AgentService.ListAgents:input_type -> wackypub.agent.v1.ListAgentsRequest
+	2,  // 22: wackypub.agent.v1.AgentService.InspectAgent:input_type -> wackypub.agent.v1.InspectAgentRequest
+	4,  // 23: wackypub.agent.v1.AgentService.ReadSession:input_type -> wackypub.agent.v1.ReadSessionRequest
+	8,  // 24: wackypub.agent.v1.AgentService.ReadMemory:input_type -> wackypub.agent.v1.ReadMemoryRequest
+	10, // 25: wackypub.agent.v1.AgentService.RenderSystemPrompt:input_type -> wackypub.agent.v1.RenderSystemPromptRequest
+	12, // 26: wackypub.agent.v1.AgentService.InspectSessionContext:input_type -> wackypub.agent.v1.InspectSessionContextRequest
+	14, // 27: wackypub.agent.v1.AgentService.InspectAgentLocks:input_type -> wackypub.agent.v1.InspectAgentLocksRequest
+	17, // 28: wackypub.agent.v1.AgentService.AddUserTurn:input_type -> wackypub.agent.v1.AddUserTurnRequest
+	19, // 29: wackypub.agent.v1.AgentService.AddMedia:input_type -> wackypub.agent.v1.AddMediaRequest
+	21, // 30: wackypub.agent.v1.AgentService.CancelTurn:input_type -> wackypub.agent.v1.CancelTurnRequest
+	23, // 31: wackypub.agent.v1.AgentService.StripSignatures:input_type -> wackypub.agent.v1.StripSignaturesRequest
+	25, // 32: wackypub.agent.v1.AgentService.CompactSession:input_type -> wackypub.agent.v1.CompactSessionRequest
+	28, // 33: wackypub.agent.v1.AgentService.CreateScratchpad:input_type -> wackypub.agent.v1.CreateScratchpadRequest
+	31, // 34: wackypub.agent.v1.AgentService.GetScratchpad:input_type -> wackypub.agent.v1.GetScratchpadRequest
+	33, // 35: wackypub.agent.v1.AgentService.ListScratchpads:input_type -> wackypub.agent.v1.ListScratchpadsRequest
+	35, // 36: wackypub.agent.v1.AgentService.SearchScratchpad:input_type -> wackypub.agent.v1.SearchScratchpadRequest
+	38, // 37: wackypub.agent.v1.AgentService.DiffScratchpadEntries:input_type -> wackypub.agent.v1.DiffScratchpadEntriesRequest
+	40, // 38: wackypub.agent.v1.AgentService.DeleteScratchpad:input_type -> wackypub.agent.v1.DeleteScratchpadRequest
+	42, // 39: wackypub.agent.v1.AgentService.GenerateTurnStream:input_type -> wackypub.agent.v1.GenerateTurnStreamRequest
+	45, // 40: wackypub.agent.v1.AgentService.GenerateTurn:input_type -> wackypub.agent.v1.GenerateTurnRequest
+	47, // 41: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:input_type -> wackypub.agent.v1.AddAndGenerateTurnStreamRequest
+	49, // 42: wackypub.agent.v1.AgentService.AddAndGenerateTurn:input_type -> wackypub.agent.v1.AddAndGenerateTurnRequest
+	51, // 43: wackypub.agent.v1.AgentService.AsideQuestion:input_type -> wackypub.agent.v1.AsideQuestionRequest
+	55, // 44: wackypub.agent.v1.AgentService.Trace:input_type -> wackypub.agent.v1.TraceRequest
+	1,  // 45: wackypub.agent.v1.AgentService.ListAgents:output_type -> wackypub.agent.v1.ListAgentsResponse
+	3,  // 46: wackypub.agent.v1.AgentService.InspectAgent:output_type -> wackypub.agent.v1.InspectAgentResponse
+	5,  // 47: wackypub.agent.v1.AgentService.ReadSession:output_type -> wackypub.agent.v1.ReadSessionResponse
+	9,  // 48: wackypub.agent.v1.AgentService.ReadMemory:output_type -> wackypub.agent.v1.ReadMemoryResponse
+	11, // 49: wackypub.agent.v1.AgentService.RenderSystemPrompt:output_type -> wackypub.agent.v1.RenderSystemPromptResponse
+	13, // 50: wackypub.agent.v1.AgentService.InspectSessionContext:output_type -> wackypub.agent.v1.InspectSessionContextResponse
+	15, // 51: wackypub.agent.v1.AgentService.InspectAgentLocks:output_type -> wackypub.agent.v1.InspectAgentLocksResponse
+	18, // 52: wackypub.agent.v1.AgentService.AddUserTurn:output_type -> wackypub.agent.v1.AddUserTurnResponse
+	20, // 53: wackypub.agent.v1.AgentService.AddMedia:output_type -> wackypub.agent.v1.AddMediaResponse
+	22, // 54: wackypub.agent.v1.AgentService.CancelTurn:output_type -> wackypub.agent.v1.CancelTurnResponse
+	24, // 55: wackypub.agent.v1.AgentService.StripSignatures:output_type -> wackypub.agent.v1.StripSignaturesResponse
+	27, // 56: wackypub.agent.v1.AgentService.CompactSession:output_type -> wackypub.agent.v1.CompactSessionResponse
+	29, // 57: wackypub.agent.v1.AgentService.CreateScratchpad:output_type -> wackypub.agent.v1.CreateScratchpadResponse
+	32, // 58: wackypub.agent.v1.AgentService.GetScratchpad:output_type -> wackypub.agent.v1.GetScratchpadResponse
+	34, // 59: wackypub.agent.v1.AgentService.ListScratchpads:output_type -> wackypub.agent.v1.ListScratchpadsResponse
+	36, // 60: wackypub.agent.v1.AgentService.SearchScratchpad:output_type -> wackypub.agent.v1.SearchScratchpadResponse
+	39, // 61: wackypub.agent.v1.AgentService.DiffScratchpadEntries:output_type -> wackypub.agent.v1.DiffScratchpadEntriesResponse
+	41, // 62: wackypub.agent.v1.AgentService.DeleteScratchpad:output_type -> wackypub.agent.v1.DeleteScratchpadResponse
+	44, // 63: wackypub.agent.v1.AgentService.GenerateTurnStream:output_type -> wackypub.agent.v1.GenerateTurnStreamResponse
+	46, // 64: wackypub.agent.v1.AgentService.GenerateTurn:output_type -> wackypub.agent.v1.GenerateTurnResponse
+	48, // 65: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:output_type -> wackypub.agent.v1.AddAndGenerateTurnStreamResponse
+	50, // 66: wackypub.agent.v1.AgentService.AddAndGenerateTurn:output_type -> wackypub.agent.v1.AddAndGenerateTurnResponse
+	52, // 67: wackypub.agent.v1.AgentService.AsideQuestion:output_type -> wackypub.agent.v1.AsideQuestionResponse
+	56, // 68: wackypub.agent.v1.AgentService.Trace:output_type -> wackypub.agent.v1.TraceResponse
+	45, // [45:69] is the sub-list for method output_type
+	21, // [21:45] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_agent_proto_init() }
@@ -4330,7 +4484,7 @@ func file_agent_proto_init() {
 	}
 	file_agent_proto_msgTypes[31].OneofWrappers = []any{}
 	file_agent_proto_msgTypes[35].OneofWrappers = []any{}
-	file_agent_proto_msgTypes[53].OneofWrappers = []any{
+	file_agent_proto_msgTypes[55].OneofWrappers = []any{
 		(*TraceRequest_CommitSpec)(nil),
 		(*TraceRequest_TraceId)(nil),
 	}
@@ -4340,7 +4494,7 @@ func file_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   56,
+			NumMessages:   58,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

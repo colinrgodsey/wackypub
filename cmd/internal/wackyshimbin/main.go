@@ -134,6 +134,19 @@ func (s *shimImpl) AddAndGenerateTurnStream(req *agentv1.AddAndGenerateTurnStrea
 	return stream.Send(&agentv1.AddAndGenerateTurnStreamResponse{Text: "echo: " + req.GetUserMessage()})
 }
 
+func (s *shimImpl) AsideQuestion(ctx context.Context, req *agentv1.AsideQuestionRequest) (*agentv1.AsideQuestionResponse, error) {
+	return &agentv1.AsideQuestionResponse{
+		Text:        "aside from shim: " + req.GetQuestion(),
+		ToolDenials: 3,
+		Usage: &agentv1.TurnUsage{
+			PromptTokens:     7,
+			CompletionTokens: 8,
+			TotalTokens:      15,
+			Backend:          "wackyshimbin",
+		},
+	}, nil
+}
+
 func (s *shimImpl) Trace(ctx context.Context, req *agentv1.TraceRequest) (*agentv1.TraceResponse, error) {
 	return &agentv1.TraceResponse{
 		TargetAgentId: req.GetAgentId(),

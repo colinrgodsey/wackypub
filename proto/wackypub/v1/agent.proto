@@ -162,6 +162,16 @@ service AgentService {
   // plus any hook warnings on the response.
   rpc AddAndGenerateTurn(AddAndGenerateTurnRequest) returns (AddAndGenerateTurnResponse);
 
+  // AsideQuestion answers a one-shot question against a forked, in-memory copy of the agent's
+  // session (D45 disposable-session shape). The aside model sees the agent's tool declarations
+  // (cache-prefix identity preserved) but tool INVOCATION is denied - a functionCall yields a
+  // completable denial, never an execution. The main agent session is byte-identical after the
+  // call: no session.jsonl append, no MEMORY.md update, no scratchpad writes, no workspace
+  // git/trace events, no post-turn hooks, no compaction self-trigger. No exclusive session lock
+  // is acquired (copy-on-read snapshot), so an aside never blocks a live turn. Usage is returned
+  // as metadata only, never written to session state.
+  rpc AsideQuestion(AsideQuestionRequest) returns (AsideQuestionResponse);
+
   // Trace performs backward causal graph traversal starting from an agent's git commit or a global
   // correlation trace identifier (D36). Callers invoke this method to audit cross-agent workflows,
   // inspect multi-hop turn histories, and reconstruct causal chains. The request uses a oneof to enforce
@@ -875,6 +885,35 @@ message AddAndGenerateTurnResponse {
 
   // usage contains token consumption metrics and backend attribution for the turn (D116).
   TurnUsage usage = 3;
+}
+
+// AsideQuestionRequest specifies parameters for a one-shot aside question.
+message AsideQuestionRequest {
+  // agent_id identifies the agent whose session context the aside draws on. Required.
+  string agent_id = 1;
+
+  // question is the one-shot question to answer against the forked session. Required.
+  string question = 2;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 3;
+}
+
+// AsideQuestionResponse returns the complete aside answer plus metadata. Nothing about the
+// aside is persisted anywhere; the main session is byte-identical after the call.
+message AsideQuestionResponse {
+  // text is the full aside answer joined across generated chunks.
+  string text = 1;
+
+  // warnings are non-fatal diagnostics surfaced during the aside (e.g. fallback notes).
+  repeated string warnings = 2;
+
+  // tool_denials counts how many tool invocations the aside model attempted and were denied.
+  int64 tool_denials = 3;
+
+  // usage contains token consumption billed to the aside turn (metadata only, never persisted).
+  TurnUsage usage = 4;
 }
 
 // A2AMetadata represents minified Agent2Agent context propagated across agent calls (D33).

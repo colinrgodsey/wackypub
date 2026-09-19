@@ -747,7 +747,7 @@ func (s *AgentSDK) addAndGenerateTurnStreamLegacy(ctx context.Context, agentID s
 
 // AsideUsage carries the token counts billed to an aside turn. Returned as metadata only;
 // aside never writes usage into session state (the caller may bill externally).
-type AsideUsage struct {
+type asideUsage struct {
 	PromptTokens     int32
 	CandidatesTokens int32
 	TotalTokens      int32
@@ -755,11 +755,11 @@ type AsideUsage struct {
 
 // AsideTurnResult is the completed aside: the streamed answer's full text, tool denials, and
 // usage metadata. Nothing about the aside is persisted anywhere.
-type AsideTurnResult struct {
+type asideTurnResult struct {
 	Text        string
 	Warnings    []string
 	ToolDenials int64
-	Usage       AsideUsage
+	Usage       asideUsage
 }
 
 // AsideTurnStream answers a one-shot question against a FORKED in-memory copy of the agent's
@@ -772,24 +772,31 @@ type AsideTurnResult struct {
 // snapshot, never the exclusive turn lock, so a live turn is never blocked), no session.jsonl
 // append, no MEMORY.md update, no scratchpad writes, no workspace git/trace events, no
 // post-turn hooks, no compaction self-trigger. Usage is returned as metadata only.
-func (s *AgentSDK) AsideTurnStream(ctx context.Context, agentID, question string, onWarning ...func(string)) iter.Seq2[string, error] {
+func (s *AgentSDK) asideTurnStream(ctx context.Context, agentID, question string, onWarning ...func(string)) iter.Seq2[string, error] {
 	return s.asideTurnStreamWithResult(ctx, agentID, question, nil, onWarning...)
 }
 
 // asideTurnStreamWithResult is AsideTurnStream with an out-param: callers that iterate the
 // stream directly can inspect denials/usage after the loop without a second round trip.
-func (s *AgentSDK) asideTurnStreamWithResult(ctx context.Context, agentID, question string, asideResult *AsideTurnResult, onWarning ...func(string)) iter.Seq2[string, error] {
+func (s *AgentSDK) asideTurnStreamWithResult(ctx context.Context, agentID, question string, asideResult *asideTurnResult, onWarning ...func(string)) iter.Seq2[string, error] {
+	return s.asideTurnStreamWithResultWorkspace(ctx, s.WorkspaceDir, agentID, question, asideResult, onWarning...)
+}
+
+// asideTurnStreamWithResultWorkspace is asideTurnStreamWithResult against an explicit
+// workspace directory (used by the RPC surface to honor request workspace_dir overrides
+// without copying the SDK struct, which carries a mutex).
+func (s *AgentSDK) asideTurnStreamWithResultWorkspace(ctx context.Context, workspaceDir, agentID, question string, asideResult *asideTurnResult, onWarning ...func(string)) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
-		_ = asideInternal(s, ctx, agentID, question, asideResult, onWarning, yield)
+		_ = asideInternal(s, ctx, workspaceDir, agentID, question, asideResult, onWarning, yield)
 	}
 }
 
 // AsideTurn is the non-streaming twin of AsideTurnStream: same fork, same denial, same
 // nothing-persists contract, returning the full text plus warnings/denials/usage metadata.
-func (s *AgentSDK) AsideTurn(ctx context.Context, agentID, question string) (*AsideTurnResult, error) {
+func (s *AgentSDK) asideTurn(ctx context.Context, agentID, question string) (*asideTurnResult, error) {
 	var warnings []string
 	var chunks []string
-	result := &AsideTurnResult{}
+	result := &asideTurnResult{}
 	for chunk, err := range s.asideTurnStreamWithResult(ctx, agentID, question, result, func(w string) { warnings = append(warnings, w) }) {
 		if err != nil {
 			return nil, err
@@ -815,7 +822,7 @@ func (s *AgentSDK) AsideTurn(ctx context.Context, agentID, question string) (*As
 //  5. Build an aside-scoped agent with tool invocation denied and its own usage tracker.
 //  6. Run the runner over the in-memory fork (never FileSessionService), stream text.
 //  7. Nothing written: no AppendSessionTurn, no ReadMemoryFile+write, no scratchpad, no git.
-func asideInternal(s *AgentSDK, ctx context.Context, agentID, question string, asideResult *AsideTurnResult, onWarning []func(string), yield func(string, error) bool) error {
+func asideInternal(s *AgentSDK, ctx context.Context, workspaceDir, agentID, question string, asideResult *asideTurnResult, onWarning []func(string), yield func(string, error) bool) error {
 	if agentID == "" {
 		yield("", fmt.Errorf("agentID cannot be empty"))
 		return fmt.Errorf("agentID cannot be empty")
@@ -831,7 +838,7 @@ func asideInternal(s *AgentSDK, ctx context.Context, agentID, question string, a
 		return err
 	}
 
-	agentDir := s.AgentDir(agentID)
+	agentDir := filepath.Join(workspaceDir, agentID)
 	if !pathExists(agentDir) {
 		yield("", fmt.Errorf("agent directory %s does not exist", agentDir))
 		return fmt.Errorf("agent directory %s does not exist", agentDir)
@@ -839,7 +846,7 @@ func asideInternal(s *AgentSDK, ctx context.Context, agentID, question string, a
 	// NO AcquireSessionLock: aside must never block a live turn (archon lock discipline). The
 	// snapshot below is a copy-on-read of whatever the file currently contains.
 
-	fa, err := LoadFolderAgentWithHookEnv(s.WorkspaceDir, agentID, a2aMeta, nil, s.MaxToolTurns, s.CommandTimeoutSeconds)
+	fa, err := LoadFolderAgentWithHookEnv(workspaceDir, agentID, a2aMeta, nil, s.MaxToolTurns, s.CommandTimeoutSeconds)
 	if err != nil {
 		yield("", fmt.Errorf("failed to load agent %q: %w", agentID, err))
 		return err
@@ -1536,6 +1543,52 @@ func (s *AgentSDK) compactSessionWithOptionsLegacy(ctx context.Context, agentID 
 	}
 
 	return CheckAndCompactSession(ctx, agentDir, overrideRuntimeCfg, adkAgent, force, opts.ConfigOverride)
+}
+
+// AsideQuestion implements agentv1.AgentServiceServer: the D112 protocol surface for the
+// aside-mode one-shot question (see AsideTurnStream for the side-effect contract). It reuses
+// the exact same asideInternal machinery as the SDK method - no duplicated logic - so the
+// no-persistence, no-exclusive-lock, tools-denied guarantees hold identically on this path.
+func (s *AgentSDK) AsideQuestion(ctx context.Context, req *agentv1.AsideQuestionRequest) (*agentv1.AsideQuestionResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+	agentID := req.GetAgentId()
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+	if req.GetQuestion() == "" {
+		return nil, fmt.Errorf("question cannot be empty")
+	}
+
+	wsDir := s.WorkspaceDir
+	if req.GetWorkspaceDir() != "" {
+		wsDir = req.GetWorkspaceDir()
+	}
+
+	var warnings []string
+	var chunks []string
+	result := &asideTurnResult{}
+	for chunk, err := range s.asideTurnStreamWithResultWorkspace(ctx, wsDir, agentID, req.GetQuestion(), result, func(w string) { warnings = append(warnings, w) }) {
+		if err != nil {
+			return nil, err
+		}
+		if chunk != "" {
+			chunks = append(chunks, chunk)
+		}
+	}
+	result.Text = strings.Join(chunks, "\n\n")
+	result.Warnings = warnings
+	return &agentv1.AsideQuestionResponse{
+		Text:        result.Text,
+		Warnings:    result.Warnings,
+		ToolDenials: result.ToolDenials,
+		Usage: &agentv1.TurnUsage{
+			PromptTokens:     int64(result.Usage.PromptTokens),
+			CompletionTokens: int64(result.Usage.CandidatesTokens),
+			TotalTokens:      int64(result.Usage.TotalTokens),
+		},
+	}, nil
 }
 
 // CreateScratchpad implements the behavior defined in proto/wackypub/v1/agent.proto.
