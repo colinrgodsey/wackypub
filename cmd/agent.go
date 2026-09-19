@@ -760,6 +760,80 @@ what's printed, though it is still persisted to session.jsonl).`,
 	},
 }
 
+// wackypub agent aside [agent_id] [message] OR wackypub agent aside <agent_id> <question>
+var agentAsideCmd = &cobra.Command{
+	Use:   "aside [agent_id] [message]",
+	Short: "One-shot question on a forked in-memory session (tools denied, nothing persisted)",
+	Long: `Asks the agent a one-shot question using its accumulated session context WITHOUT any
+side effects: the session is forked in memory (same disposable-session shape as compaction),
+tool invocation is denied (the model sees its tools but cannot run them), and nothing is
+persisted - session.jsonl, MEMORY.md, scratchpad/, workspace git/trace events, and usage all
+stay untouched. The aside takes no exclusive session lock, so it never blocks a live turn.
+
+Arguments:
+  agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
+  message    The aside question. Can also be supplied via the --message flag, or piped in on
+             stdin. Exactly one of these three must be provided.
+
+Prints the streamed aside answer to stdout like a normal prompt. The main session is
+byte-identical afterward.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
+
+		var agentID string
+		var userMsg string
+
+		if len(args) >= 2 {
+			agentID = args[0]
+			userMsg = args[1]
+		} else if len(args) == 1 {
+			agentID = args[0]
+			userMsg = messageFlag
+		} else {
+			userMsg = messageFlag
+		}
+
+		if userMsg == "" {
+			stat, _ := os.Stdin.Stat()
+			if (stat.Mode() & os.ModeCharDevice) == 0 {
+				reader := bufio.NewReader(os.Stdin)
+				bytesInput, err := io.ReadAll(reader)
+				if err == nil {
+					userMsg = string(bytesInput)
+				}
+			}
+		}
+
+		if agentID == "" {
+			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> aside [message]")
+		}
+		if userMsg == "" {
+			return fmt.Errorf("message is required. Provide via argument, --message flag, or stdin pipe")
+		}
+
+		ctx, stop := signalCtx()
+		defer stop()
+		first := true
+		for text, err := range sdk.AsideTurnStream(ctx, agentID, userMsg) {
+			if err != nil {
+				return err
+			}
+			if text != "" {
+				if !first {
+					fmt.Println()
+				}
+				fmt.Println(text)
+				first = false
+			}
+		}
+		return nil
+	},
+}
+
 // wackypub agent <agent_id> repl OR wackypub agent repl <agent_id>
 var agentReplCmd = &cobra.Command{
 	Use:   "repl [agent_id]",
@@ -1315,6 +1389,7 @@ func init() {
 	agentCmd.AddCommand(agentAddMediaCmd)
 	agentCmd.AddCommand(agentGenerateCmd)
 	agentCmd.AddCommand(agentPromptCmd)
+	agentCmd.AddCommand(agentAsideCmd)
 	agentCmd.AddCommand(agentReplCmd)
 	agentCmd.AddCommand(agentCancelCmd)
 	agentCmd.AddCommand(agentStripSignaturesCmd)
