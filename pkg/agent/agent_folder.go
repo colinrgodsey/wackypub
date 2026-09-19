@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -859,14 +860,23 @@ const (
 
 // FolderAgent encapsulates an agent loaded from a folder environment (<ws_dir>/<agent_id>).
 type FolderAgent struct {
-	AgentID                 string
-	AgentDir                string
-	DotEnv                  map[string]string
-	RuntimeConfig           *RuntimeConfig
-	SystemPrompt            string
-	MemoryPrompt            string
-	Model                   model.LLM
-	ADKAgent                agent.Agent
+	AgentID       string
+	AgentDir      string
+	DotEnv        map[string]string
+	RuntimeConfig *RuntimeConfig
+	SystemPrompt  string
+	MemoryPrompt  string
+	Model         model.LLM
+	ADKAgent      agent.Agent
+	// CompactionAgent is the ADK agent used for the compaction turn only (D45 routes
+	// compaction through the real runner for cache-prefix identity). It carries the same
+	// tools/declarations as ADKAgent but with a BeforeToolCallback that denies all tool
+	// INVOCATION: the compaction model sees the agent's capabilities but cannot execute any.
+	// CompactionToolDenials points at the counter the deny callback increments (shared with
+	// the compaction-scoped agent's BeforeToolCallback) so callers can read the denial count
+	// after a compaction run and include it in the post-compact payload.
+	CompactionAgent         agent.Agent
+	CompactionToolDenials   *int64
 	MaxToolTurns            int
 	CommandTimeoutSeconds   int
 	A2AMeta                 *A2AMetadata
@@ -989,6 +999,14 @@ func loadFolderAgentFromRuntime(agentDir, wsDir, agentID string, a2aMeta *A2AMet
 		return nil, fmt.Errorf("failed to build ADK agent for folder agent %s: %w", agentID, err)
 	}
 
+	// Build the compaction-scoped agent with tool invocation denied. Zero request bytes
+	// change (same declarations in the payload); only the impl path is vetoed.
+	var compactionDenials int64
+	compactionAgent, err := BuildADKAgentWithConfigAndTrackerForCompaction(agentID, expandedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, &compactionDenials, toolsList...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build compaction agent for folder agent %s: %w", agentID, err)
+	}
+
 	return &FolderAgent{
 		AgentID:                 agentID,
 		AgentDir:                agentDir,
@@ -998,6 +1016,8 @@ func loadFolderAgentFromRuntime(agentDir, wsDir, agentID string, a2aMeta *A2AMet
 		MemoryPrompt:            memoryContent,
 		Model:                   llmModel,
 		ADKAgent:                ag,
+		CompactionAgent:         compactionAgent,
+		CompactionToolDenials:   &compactionDenials,
 		MaxToolTurns:            maxToolTurns,
 		CommandTimeoutSeconds:   resolvedTimeout,
 		A2AMeta:                 a2aMeta,
@@ -1028,8 +1048,32 @@ func (fa *FolderAgent) refreshSystemPromptAndAgent() error {
 			return err
 		}
 		fa.ADKAgent = ag
+
+		compactionDenials := int64(0)
+		ca, err := BuildADKAgentWithConfigAndTrackerForCompaction(fa.AgentID, fa.SystemPrompt, fa.MaxToolTurns, fa.RuntimeConfig, fa.Model, fa.AgentDir, fa.UsageTracker, &compactionDenials, fa.Tools...)
+		if err != nil {
+			return err
+		}
+		fa.CompactionAgent = ca
+		fa.CompactionToolDenials = &compactionDenials
 	}
 	return nil
+}
+
+// runCompactionWithDeniedTools runs a compaction turn using the compaction-scoped agent
+// (tool invocations denied) and returns the number of tool calls the compaction model
+// attempted. The counter is reset for this run, so the returned value reflects exactly the
+// last compaction pass.
+func (fa *FolderAgent) runCompactionWithDeniedTools(ctx context.Context, force bool, cfgOverride *CompactConfig) (bool, int64, error) {
+	if fa.CompactionToolDenials != nil {
+		atomic.StoreInt64(fa.CompactionToolDenials, 0)
+	}
+	compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, force, cfgOverride)
+	var denials int64
+	if fa.CompactionToolDenials != nil {
+		denials = atomic.LoadInt64(fa.CompactionToolDenials)
+	}
+	return compacted, denials, err
 }
 
 // appendDeferredImages decodes, normalizes, and appends deferred image user turns per D49/D88.
@@ -1126,7 +1170,7 @@ func (fa *FolderAgent) checkPostTurnCompaction(ctx context.Context, wsDir string
 			if fa.UsageTracker != nil {
 				fa.UsageTracker.Reset()
 			}
-			_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, true, nil)
+			_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: post-turn session compaction error: %v\n", err)
 			}
@@ -1176,7 +1220,7 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 			}
 			threshold := int(float64(fa.RuntimeConfig.ContextWindow) * (1.0 - (overheadPct / 100.0)))
 			if EstimateTokens(turns, fa.RuntimeConfig.PreserveThinking) >= threshold {
-				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, true, nil)
+				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: cold-start session compaction error: %v\n", err)
 				} else if compacted {
@@ -1342,7 +1386,7 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 				if fa.UsageTracker != nil {
 					fa.UsageTracker.Reset()
 				}
-				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, true, nil)
+				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
 					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: session compaction error: %v - incomplete status.]", err), nil)
@@ -1389,7 +1433,7 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 				if fa.UsageTracker != nil {
 					fa.UsageTracker.Reset()
 				}
-				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, true, nil)
+				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
 					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: session compaction error: %v - incomplete status.]", err), nil)

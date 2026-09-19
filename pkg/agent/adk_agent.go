@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
@@ -361,6 +362,29 @@ func (t *TurnUsageTracker) Reset() {
 
 // BuildADKAgentWithConfigAndTracker constructs a Google ADK LLMAgent for an agent directory, applying RuntimeConfig settings and tracking turn usage.
 func BuildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, maxToolTurns int, runtimeCfg *RuntimeConfig, llmModel model.LLM, agentDir string, tracker *TurnUsageTracker, tools ...tool.Tool) (agent.Agent, error) {
+	return buildADKAgentWithConfigAndTracker(agentID, renderedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, nil, tools...)
+}
+
+// BuildADKAgentWithConfigAndTrackerForCompaction constructs the same LLMAgent but with a
+// BeforeToolCallback that DENIES every tool invocation during the compaction turn (D45
+// routes compaction through the real runner so the shared request prefix stays cache-identical
+// with a real generation call - the model sees the tool declarations but must not execute
+// any of them). The callback returns a synthetic non-error result, which makes ADK's callTool
+// skip tool.Run entirely (base_flow.go) and hand the model a completable denial. The callback
+// increments *deniedCalls once per invocation so the compaction result can expose the count
+// to the post-compact payload.
+func BuildADKAgentWithConfigAndTrackerForCompaction(agentID string, renderedPrompt string, maxToolTurns int, runtimeCfg *RuntimeConfig, llmModel model.LLM, agentDir string, tracker *TurnUsageTracker, deniedCalls *int64, tools ...tool.Tool) (agent.Agent, error) {
+	return buildADKAgentWithConfigAndTracker(agentID, renderedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, []llmagent.BeforeToolCallback{
+		func(ctx agent.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
+			if deniedCalls != nil {
+				atomic.AddInt64(deniedCalls, 1)
+			}
+			return map[string]any{"result": "denied: tools are unavailable during compaction"}, nil
+		},
+	}, tools...)
+}
+
+func buildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, maxToolTurns int, runtimeCfg *RuntimeConfig, llmModel model.LLM, agentDir string, tracker *TurnUsageTracker, beforeToolCallbacks []llmagent.BeforeToolCallback, tools ...tool.Tool) (agent.Agent, error) {
 	if maxToolTurns <= 0 {
 		maxToolTurns = DefaultMaxToolTurns
 	}
@@ -375,11 +399,12 @@ func BuildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 	}
 
 	cfg := llmagent.Config{
-		Name:        agentID,
-		Description: fmt.Sprintf("Agent %s", agentID),
-		Instruction: renderedPrompt,
-		Model:       llmModel,
-		Tools:       tools,
+		Name:                agentID,
+		Description:         fmt.Sprintf("Agent %s", agentID),
+		Instruction:         renderedPrompt,
+		Model:               llmModel,
+		Tools:               tools,
+		BeforeToolCallbacks: beforeToolCallbacks,
 		AfterModelCallbacks: []llmagent.AfterModelCallback{
 			func(ctx agent.Context, llmResponse *model.LLMResponse, llmResponseError error) (*model.LLMResponse, error) {
 				if tracker != nil {
