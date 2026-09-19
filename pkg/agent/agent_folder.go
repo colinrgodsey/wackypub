@@ -1068,7 +1068,7 @@ func (fa *FolderAgent) runCompactionWithDeniedTools(ctx context.Context, force b
 	if fa.CompactionToolDenials != nil {
 		atomic.StoreInt64(fa.CompactionToolDenials, 0)
 	}
-	compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, force, cfgOverride)
+	compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, force, cfgOverride, fa.CompactionToolDenials)
 	var denials int64
 	if fa.CompactionToolDenials != nil {
 		denials = atomic.LoadInt64(fa.CompactionToolDenials)
@@ -1170,7 +1170,7 @@ func (fa *FolderAgent) checkPostTurnCompaction(ctx context.Context, wsDir string
 			if fa.UsageTracker != nil {
 				fa.UsageTracker.Reset()
 			}
-			_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil)
+			_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: post-turn session compaction error: %v\n", err)
 			}
@@ -1220,7 +1220,7 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 			}
 			threshold := int(float64(fa.RuntimeConfig.ContextWindow) * (1.0 - (overheadPct / 100.0)))
 			if EstimateTokens(turns, fa.RuntimeConfig.PreserveThinking) >= threshold {
-				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil)
+				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: cold-start session compaction error: %v\n", err)
 				} else if compacted {
@@ -1386,7 +1386,7 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 				if fa.UsageTracker != nil {
 					fa.UsageTracker.Reset()
 				}
-				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil)
+				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
 					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: session compaction error: %v - incomplete status.]", err), nil)
@@ -1433,7 +1433,7 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 				if fa.UsageTracker != nil {
 					fa.UsageTracker.Reset()
 				}
-				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil)
+				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
 					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: session compaction error: %v - incomplete status.]", err), nil)

@@ -108,7 +108,7 @@ func TestCompactionPrefixPreservation(t *testing.T) {
 
 	// Check compaction with mock model (http request will fail gracefully, testing flow)
 	ctx := context.Background()
-	_, err := CheckAndCompactSession(ctx, tempDir, runtimeCfg, adkAgent, false, nil)
+	_, err := CheckAndCompactSession(ctx, tempDir, runtimeCfg, adkAgent, false, nil, nil)
 	if err == nil {
 		// Mock HTTP error expected
 	}
@@ -155,7 +155,7 @@ func TestCompactionEndsOnModelTurn(t *testing.T) {
 	adkAgent := mustBuildTestADKAgent(t, tempDir, "system prompt", runtimeCfg, llmModel)
 
 	ctx := context.Background()
-	compacted, err := CheckAndCompactSession(ctx, tempDir, runtimeCfg, adkAgent, false, nil)
+	compacted, err := CheckAndCompactSession(ctx, tempDir, runtimeCfg, adkAgent, false, nil, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession failed: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestCompactionNoticeOptOut(t *testing.T) {
 	runtimeCfg := &RuntimeConfig{ContextWindow: 1}
 	adkAgent := mustBuildTestADKAgent(t, tempDir, "system prompt", runtimeCfg, llmModel)
 
-	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil)
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession failed: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestCompactionWithCustomCompactMD(t *testing.T) {
 	runtimeCfg := &RuntimeConfig{ContextWindow: 1}
 	adkAgent := mustBuildTestADKAgent(t, tempDir, "system prompt", runtimeCfg, llmModel)
 
-	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil)
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession failed: %v", err)
 	}
@@ -420,7 +420,7 @@ func TestCheckAndCompactSession_WirePayloadMatchesRealTurnShape(t *testing.T) {
 	runtimeCfg := &RuntimeConfig{ContextWindow: 1}
 	adkAgent := mustBuildTestADKAgent(t, tempDir, "system prompt with SENTINEL_SYS_PROMPT", runtimeCfg, llmModel, mustBuildEchoTool(t))
 
-	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil)
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession failed: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestTokenWeightedCompactionPercentage(t *testing.T) {
 	runtimeCfg := &RuntimeConfig{ContextWindow: 5000} // total is ~10,000 tokens, exceeds 5000
 	adkAgent := mustBuildTestADKAgent(t, tempDir, "system prompt", runtimeCfg, llmModel)
 
-	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil)
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession failed: %v", err)
 	}
@@ -672,7 +672,7 @@ func TestCheckAndCompactSession_OverheadThreshold(t *testing.T) {
 	compactFile := filepath.Join(tempDir, "COMPACT.md")
 	_ = os.WriteFile(compactFile, []byte("---\ncompact-overhead-pct: 5\n---\nPrompt"), 0644)
 
-	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil)
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -684,7 +684,7 @@ func TestCheckAndCompactSession_OverheadThreshold(t *testing.T) {
 	_ = os.WriteFile(compactFile, []byte("---\ncompact-overhead-pct: 25\n---\nPrompt"), 0644)
 
 	// Check that compaction now triggers (mock model endpoint will error on network, proving it attempted compaction!)
-	_, err = CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil)
+	_, err = CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil, nil)
 	if err == nil {
 		// Mock model points to 9999, so attempting LLM generation will return an error
 		t.Logf("compaction attempted and proceeded")
@@ -909,7 +909,7 @@ func TestCompactionGitTwoCommitsD73(t *testing.T) {
 	mockModel := NewOpenAIModel(runtimeCfg)
 	adkAgent := mustBuildTestADKAgent(t, agentDir, "Prompt Bob", runtimeCfg, mockModel)
 
-	compacted, err := CheckAndCompactSession(context.Background(), agentDir, runtimeCfg, adkAgent, true, nil)
+	compacted, err := CheckAndCompactSession(context.Background(), agentDir, runtimeCfg, adkAgent, true, nil, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession failed: %v", err)
 	}
@@ -1274,7 +1274,7 @@ func TestCheckAndCompactSession_ConfigOverride(t *testing.T) {
 		Prompt:     "Override prompt directive",
 	}
 
-	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, true, override)
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, true, override, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession with override failed: %v", err)
 	}
@@ -1304,7 +1304,7 @@ func TestCheckAndCompactSession_ConfigOverride(t *testing.T) {
 		t.Fatalf("failed to write MEMORY.md: %v", err)
 	}
 
-	compacted, err = CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, true, nil)
+	compacted, err = CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, true, nil, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession with nil override failed: %v", err)
 	}

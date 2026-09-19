@@ -164,7 +164,7 @@ func compactionRunWithToolDenied(t *testing.T, agentDir string, runtimeCfg *Runt
 	if err != nil {
 		t.Fatalf("build compaction agent: %v", err)
 	}
-	compacted, err := CheckAndCompactSession(context.Background(), agentDir, runtimeCfg, ca, true, nil)
+	compacted, err := CheckAndCompactSession(context.Background(), agentDir, runtimeCfg, ca, true, nil, &denials)
 	return compacted, denials, err
 }
 

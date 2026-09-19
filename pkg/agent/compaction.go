@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -393,10 +394,39 @@ func truncateTurnTextToBudget(text string, budgetChars int) string {
 // used to send directly to an *model.LLM (no Tools, system prompt glued into
 // cfgOverride, when non-nil, replaces the agent's COMPACT.md configuration without
 // reading or modifying it on disk (D83). When nil, LoadCompactConfig(agentDir) is used.
-func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *RuntimeConfig, adkAgent agent.Agent, force bool, cfgOverride *CompactConfig) (bool, error) {
+//
+// toolDenials, when non-nil, is the counter a compaction-scoped agent's BeforeToolCallback
+// increments per denied tool call (D50/CompactionToolDenials). CheckAndCompactSession owns
+// its full lifecycle for this run: reset before the compaction runner executes, read once
+// more for the post-compact hook payload. Pass nil for a no-tools compaction agent, where
+// denials are structurally impossible.
+//
+// Hook lifecycle (pre-compact/post-compact/compact-failed): this function is the single
+// choke point every compaction trigger - the natural token-threshold check, an explicit
+// force from a CLI/RPC call, and a mid-turn short-circuit - routes through, so hooking here
+// once covers all of them. pre-compact and compact-failed run synchronously and never alter
+// or abort compaction (hook failures are logged as warnings only); post-compact runs
+// asynchronously so a slow hook script never taxes the next turn.
+func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *RuntimeConfig, adkAgent agent.Agent, force bool, cfgOverride *CompactConfig, toolDenials *int64) (bool, error) {
+	agentID := filepath.Base(agentDir)
+	sessionPath := filepath.Join(agentDir, SessionFileName)
+	trigger := "forced"
+	if !force {
+		trigger = "auto"
+	}
+	fail := func(stage string, err error) (bool, error) {
+		runCompactionHookSync(context.Background(), agentDir, EventCompactFailed, CompactFailedPayload{
+			AgentID:     agentID,
+			SessionPath: sessionPath,
+			Stage:       stage,
+			Error:       err.Error(),
+		})
+		return false, err
+	}
+
 	turns, err := ReadSessionTurns(agentDir)
 	if err != nil {
-		return false, err
+		return fail("read-session", err)
 	}
 
 	if len(turns) == 0 {
@@ -410,7 +440,7 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		var err error
 		compactCfg, err = LoadCompactConfig(agentDir)
 		if err != nil {
-			return false, err
+			return fail("load-config", err)
 		}
 	}
 
@@ -474,12 +504,25 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 	compactTurns := turns[:numToCompact]
 	remainingTurns := turns[numToCompact:]
 
+	// We have now committed to compacting. Reset the denial counter for this run and fire
+	// pre-compact before the compaction runner executes (observe-only - its return value is
+	// discarded, so nothing here can veto or alter what is about to happen).
+	if toolDenials != nil {
+		atomic.StoreInt64(toolDenials, 0)
+	}
+	runCompactionHookSync(ctx, agentDir, EventPreCompact, PreCompactPayload{
+		AgentID:       agentID,
+		SessionPath:   sessionPath,
+		TurnCount:     len(turns),
+		TokenEstimate: totalTokens,
+		Trigger:       trigger,
+	})
+
 	existingMemory, err := ReadMemoryFile(agentDir)
 	if err != nil {
-		return false, err
+		return fail("read-memory", err)
 	}
 
-	agentID := filepath.Base(agentDir)
 	compactSessionID := agentID + "-compact"
 
 	// Seed a fresh, disposable in-memory session with the exact turn shape
@@ -508,7 +551,7 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		SessionID: compactSessionID,
 	})
 	if err != nil {
-		return false, fmt.Errorf("failed to create in-memory compaction session: %w", err)
+		return fail("create-session", fmt.Errorf("failed to create in-memory compaction session: %w", err))
 	}
 	for i, c := range seedContents {
 		evt := session.NewEvent(ctx, fmt.Sprintf("compact_seed_%d", i))
@@ -519,7 +562,7 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 			evt.Author = "user"
 		}
 		if err := sessionSvc.AppendEvent(ctx, createResp.Session, evt); err != nil {
-			return false, fmt.Errorf("failed to seed compaction session: %w", err)
+			return fail("seed-session", fmt.Errorf("failed to seed compaction session: %w", err))
 		}
 	}
 
@@ -529,7 +572,7 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		SessionService: sessionSvc,
 	})
 	if err != nil {
-		return false, fmt.Errorf("failed to create compaction runner: %w", err)
+		return fail("create-runner", fmt.Errorf("failed to create compaction runner: %w", err))
 	}
 
 	directive := genai.NewContentFromText(compactCfg.Prompt, "user")
@@ -537,7 +580,7 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 	var addendum string
 	for event, err := range r.Run(ctx, "user", compactSessionID, directive, agent.RunConfig{}) {
 		if err != nil {
-			return false, fmt.Errorf("LLM compaction generation failed: %w", err)
+			return fail("generation", fmt.Errorf("LLM compaction generation failed: %w", err))
 		}
 		if event != nil {
 			if text := ExtractTextFromEvent(event); text != "" {
@@ -561,7 +604,7 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		}
 
 		if err := WriteMemoryFile(agentDir, newMemory); err != nil {
-			return false, fmt.Errorf("failed to update MEMORY.md: %w", err)
+			return fail("write-memory", fmt.Errorf("failed to update MEMORY.md: %w", err))
 		}
 
 		wsDir := filepath.Dir(agentDir)
@@ -583,12 +626,30 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 	}
 
 	if err := WriteSessionTurns(agentDir, remainingTurns); err != nil {
-		return false, fmt.Errorf("failed to update session.jsonl after compaction: %w", err)
+		return fail("write-session", fmt.Errorf("failed to update session.jsonl after compaction: %w", err))
 	}
 
 	wsDir := filepath.Dir(agentDir)
 	_ = CommitWorkspaceEvent(wsDir, agentID, "compact")
 	_ = InvalidateLastUsage(agentDir)
+
+	compactionModel := ""
+	if runtimeCfg != nil {
+		compactionModel = runtimeCfg.Model
+	}
+	var denials int64
+	if toolDenials != nil {
+		denials = atomic.LoadInt64(toolDenials)
+	}
+	runPostCompactHookAsync(agentDir, PostCompactPayload{
+		AgentID:         agentID,
+		SessionPath:     sessionPath,
+		TurnsArchived:   len(compactTurns),
+		TokensBefore:    totalTokens,
+		TokensAfter:     EstimateTokens(remainingTurns, preserveThinking),
+		CompactionModel: compactionModel,
+		ToolDenials:     denials,
+	})
 
 	return true, nil
 }

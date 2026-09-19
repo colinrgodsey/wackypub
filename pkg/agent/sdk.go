@@ -1218,7 +1218,7 @@ func (s *AgentSDK) CompactSession(ctx context.Context, req *agentv1.CompactSessi
 		if err != nil {
 			return nil, err
 		}
-		compacted, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, force, cfgOverride)
+		compacted, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, force, cfgOverride, fa.CompactionToolDenials)
 		if err != nil {
 			return nil, err
 		}
@@ -1253,7 +1253,7 @@ func (s *AgentSDK) CompactSession(ctx context.Context, req *agentv1.CompactSessi
 			return nil, fmt.Errorf("failed to build disposable ADK agent for compaction of %s: %w", agentID, err)
 		}
 
-		compacted, err = CheckAndCompactSession(ctx, agentDir, overrideRuntimeCfg, adkAgent, force, cfgOverride)
+		compacted, err = CheckAndCompactSession(ctx, agentDir, overrideRuntimeCfg, adkAgent, force, cfgOverride, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -1308,7 +1308,7 @@ func (s *AgentSDK) compactSessionWithOptionsLegacy(ctx context.Context, agentID 
 		if err != nil {
 			return false, err
 		}
-		return CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, force, opts.ConfigOverride)
+		return CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, force, opts.ConfigOverride, fa.CompactionToolDenials)
 	}
 
 	// Runtime override path (D84):
@@ -1347,7 +1347,7 @@ func (s *AgentSDK) compactSessionWithOptionsLegacy(ctx context.Context, agentID 
 		return false, fmt.Errorf("failed to build disposable ADK agent for compaction of %s: %w", agentID, err)
 	}
 
-	return CheckAndCompactSession(ctx, agentDir, overrideRuntimeCfg, adkAgent, force, opts.ConfigOverride)
+	return CheckAndCompactSession(ctx, agentDir, overrideRuntimeCfg, adkAgent, force, opts.ConfigOverride, nil)
 }
 
 // CreateScratchpad implements the behavior defined in proto/wackypub/v1/agent.proto.

@@ -162,7 +162,7 @@ func TestCheckAndCompactSession_SeedCappedOnWire(t *testing.T) {
 	llmModel := NewOpenAIModel(runtimeCfg)
 	adkAgent := mustBuildTestADKAgent(t, tempDir, "system prompt", runtimeCfg, llmModel)
 
-	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil)
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil, nil)
 	if err != nil {
 		t.Fatalf("CheckAndCompactSession failed: %v", err)
 	}
