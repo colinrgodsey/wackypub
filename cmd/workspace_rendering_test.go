@@ -29,6 +29,9 @@ func writeFixtureFile(t *testing.T, path, content string) {
 // nativeOnlyWorkspaceFixture builds a workspace with no REMOTE_MANIFEST anywhere: every
 // agent is a folder agent, one fully set up, one bare, one with a runtime.json that does
 // not parse and a session line that does not either.
+// nativeIDs are inspected in fixture order so the golden is deterministic.
+var nativeIDs = []string{"native-broken", "native-full", "native-minimal", "native-absent"}
+
 func nativeOnlyWorkspaceFixture(t *testing.T) string {
 	t.Helper()
 	ws := t.TempDir()
@@ -59,7 +62,7 @@ func nativeOnlyWorkspaceFixture(t *testing.T) string {
 
 // renderWorkspace runs both modes of the command over ws and returns the combined output
 // with the fixture directory normalised away, since t.TempDir differs every run.
-func renderWorkspace(t *testing.T, ws string) string {
+func renderWorkspace(t *testing.T, ws string, agentIDs []string) string {
 	t.Helper()
 	sdk := adkAgent.NewSDK(ws)
 
@@ -72,7 +75,7 @@ func renderWorkspace(t *testing.T, ws string) string {
 
 	var b strings.Builder
 	b.WriteString(overview)
-	for _, id := range []string{"native-broken", "native-full", "native-minimal", "native-absent"} {
+	for _, id := range agentIDs {
 		inspection, err := captureStdout(t, func() error {
 			return printAgentInspection(sdk, id)
 		})
@@ -105,7 +108,7 @@ func compareWorkspaceGolden(t *testing.T, golden string, got string) {
 
 func TestNativeOnlyWorkspaceRendersUnchanged(t *testing.T) {
 	ws := nativeOnlyWorkspaceFixture(t)
-	compareWorkspaceGolden(t, "workspace_native_only.golden", renderWorkspace(t, ws))
+	compareWorkspaceGolden(t, "workspace_native_only.golden", renderWorkspace(t, ws, nativeIDs))
 }
 
 // bridgedWorkspaceFixture mirrors how REMOTE_MANIFEST is actually written: one bridged
@@ -125,7 +128,7 @@ func bridgedWorkspaceFixture(t *testing.T) string {
 	ghostFolder := filepath.Join(ws, "ghost")
 	writeFixtureFile(t, filepath.Join(ws, adkAgent.RemoteManifestFile),
 		"agy: /usr/local/bin/wackyacp --harness-cmd=/usr/local/bin/wackyagy --agent-folder="+agyFolder+"\n"+
-			"ghost: /usr/local/bin/wackyacp --harness-cmd=/usr/local/bin/claude-agent-acp --agent-folder="+ghostFolder+"\n")
+			"ghost: /opt/bin/acpx-bridge --harness-cmd=/usr/local/bin/claude-agent-acp --agent-folder="+ghostFolder+"\n")
 	return ws
 }
 
@@ -160,26 +163,36 @@ func tableRow(output, agentID string) string {
 	return ""
 }
 
-func TestOverviewShowsBridgedAgentsAndTheirHarnesses(t *testing.T) {
+func TestOverviewShowsTheRemoteBinaryOfBridgedAgents(t *testing.T) {
 	out := overviewOf(t, bridgedWorkspaceFixture(t))
 
 	if !strings.Contains(out, "Agents found: 3") {
 		t.Fatalf("the manifest-only agent is not counted, output:\n%s", out)
 	}
-	if row := tableRow(out, "agy"); !strings.Contains(row, "bridged (wackyagy)") {
-		t.Fatalf("agy row does not name its harness, row = %q", row)
+
+	// The column is the binary at the head of the route, never the harness handed to it:
+	// remote binaries other than wackyacp are expected, and the harness is one of its arguments.
+	if row := tableRow(out, "agy"); !strings.Contains(row, "wackyacp") || strings.Contains(row, "wackyagy") {
+		t.Fatalf("agy row does not name the remote binary, row = %q", row)
 	}
-	if row := tableRow(out, "ghost"); !strings.Contains(row, "bridged (claude-agent-acp)") {
-		t.Fatalf("a route with no folder is not listed as bridged, row = %q", row)
+	if row := tableRow(out, "ghost"); !strings.Contains(row, "acpx-bridge") || strings.Contains(row, "claude-agent-acp") {
+		t.Fatalf("ghost row does not name the remote binary, row = %q", row)
 	}
 	for _, row := range []string{tableRow(out, "agy"), tableRow(out, "ghost")} {
 		if strings.Contains(row, "missing") {
 			t.Fatalf("a bridged agent is still flagged as missing a runtime, row = %q", row)
 		}
 	}
-	if row := tableRow(out, "native-peer"); !strings.Contains(row, "ok") || strings.Contains(row, "bridged") {
+	if row := tableRow(out, "native-peer"); !strings.Contains(row, "ok") || strings.Contains(row, "wackyacp") {
 		t.Fatalf("the native peer changed columns, row = %q", row)
 	}
+}
+
+// TestMixedWorkspaceRendersUnchanged pins the whole rendering of a workspace that mixes
+// natives with bridged agents, including the tabwriter padding such a mix produces.
+func TestMixedWorkspaceRendersUnchanged(t *testing.T) {
+	ws := bridgedWorkspaceFixture(t)
+	compareWorkspaceGolden(t, "workspace_mixed.golden", renderWorkspace(t, ws, []string{"agy", "ghost", "native-peer"}))
 }
 
 func TestInspectionOfBridgedAgentDescribesRouteNotMissingRuntime(t *testing.T) {

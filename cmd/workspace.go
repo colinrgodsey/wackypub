@@ -34,8 +34,9 @@ agent directory doesn't exist yet or is only partially set up; in that case it e
 missing rather than erroring, so this doubles as a guide for setting up a new agent correctly.
 
 Agents listed in REMOTE_MANIFEST appear too, including ones with no directory of their
-own: a bridged agent’s runtime is its route (the harness it runs through) rather than a
-runtime.json, and its session state is the bridge’s acp-session.json.
+own: the runtime column of a bridged agent names the remote binary its route runs, in
+place of the ok / invalid of a runtime.json, and its session state is the bridge’s
+acp-session.json.
 
 This command is read-only: it never creates or modifies any file.`,
 	Args: cobra.MaximumNArgs(1),
@@ -253,9 +254,10 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 		runtimeStatus := "missing"
 		switch {
 		case bridged:
-			// There is no runtime.json for a bridged agent to be missing: the route below
-			// decides how it runs, so the cell names the harness instead of a nonexistent file.
-			runtimeStatus = fmt.Sprintf("bridged (%s)", harnessName(route))
+			// Nothing falls back for a bridged agent, so the column reports what is actually run:
+			// the remote binary at the head of the route. Which harness that binary is handed is
+			// an argument of it, and shows up in the per-agent view instead.
+			runtimeStatus = filepath.Base(route.Command)
 		case insp.GetRuntimeJsonExists() && insp.GetRuntimeJsonValid():
 			runtimeStatus = "ok"
 		case insp.GetRuntimeJsonExists():
