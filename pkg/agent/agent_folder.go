@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -224,7 +223,7 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 			_, mimeType := DetectMediaType(header)
 
 			// Gating: only defer if image support is enabled on runtime config
-			runtimeCfg, _ := LoadRuntimeConfig(agentDir)
+			runtimeCfg := loadRuntimeCfgForGating(agentDir)
 			if runtimeCfg != nil && runtimeCfg.MaxImageDimension > 0 && strings.HasPrefix(mimeType, "image/") {
 				return GetScratchpadResult{
 					Output:       fmt.Sprintf("This scratchpad contains an image (%s) that will be available in your next turn.", mimeType),
@@ -452,7 +451,7 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 			if err != nil {
 				return LoadSkillExtraResult{}, fmt.Errorf("failed to store binary skill file in scratchpad: %w", err)
 			}
-			runtimeCfg, _ := LoadRuntimeConfig(agentDir)
+			runtimeCfg := loadRuntimeCfgForGating(agentDir)
 			if runtimeCfg != nil && runtimeCfg.MaxImageDimension > 0 && strings.HasPrefix(mimeType, "image/") {
 				return LoadSkillExtraResult{
 					Output:       fmt.Sprintf("Image (%s) from skill %q has been queued to scratchpad %s and will be available in your next turn.", mimeType, args.SkillName, entry.ID),
@@ -1060,20 +1059,54 @@ func (fa *FolderAgent) refreshSystemPromptAndAgent() error {
 	return nil
 }
 
-// runCompactionWithDeniedTools runs a compaction turn using the compaction-scoped agent
-// (tool invocations denied) and returns the number of tool calls the compaction model
-// attempted. The counter is reset for this run, so the returned value reflects exactly the
-// last compaction pass.
-func (fa *FolderAgent) runCompactionWithDeniedTools(ctx context.Context, force bool, cfgOverride *CompactConfig) (bool, int64, error) {
-	if fa.CompactionToolDenials != nil {
-		atomic.StoreInt64(fa.CompactionToolDenials, 0)
+// readMemoryForChangeDetection reads MEMORY.md for the prompt-freshness detector. The bool
+// reports whether the read succeeded; on error the caller must keep lastMemory at its last
+// known value - conflating unreadable with empty would make an I/O error look like the
+// operator cleared memory (or two errors in a row look like no change).
+func readMemoryForChangeDetection(agentDir string) (string, bool) {
+	content, err := ReadMemoryFile(agentDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to read MEMORY.md for change detection at %s: %v\n", filepath.Join(agentDir, "MEMORY.md"), err)
+		return "", false
 	}
-	compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, force, cfgOverride, fa.CompactionToolDenials)
-	var denials int64
-	if fa.CompactionToolDenials != nil {
-		denials = atomic.LoadInt64(fa.CompactionToolDenials)
+	return content, true
+}
+
+// loadRuntimeCfgForGating loads runtime.json for image-deferral gating decisions. An
+// absent runtime.json is fine (defaults apply); a parse failure logs the path so a broken
+// config that silently disables image deferral is diagnosable.
+func loadRuntimeCfgForGating(agentDir string) *RuntimeConfig {
+	runtimeCfg, err := LoadRuntimeConfig(agentDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load runtime config at %s for image gating: %v\n", filepath.Join(agentDir, "runtime.json"), err)
+		}
+		return nil
 	}
-	return compacted, denials, err
+	return runtimeCfg
+}
+
+// persistTurn appends a session turn and records the accompanying workspace audit event,
+// returning the first error with context about which step failed. The turn cannot be
+// considered durable unless both writes succeed, so strict call sites (failure records and
+// continuation sentinels) surface the error instead of discarding it.
+func persistTurn(agentDir, wsDir, agentID string, turn *genai.Content, eventLabel string) error {
+	if err := AppendSessionContent(agentDir, turn); err != nil {
+		return fmt.Errorf("appending turn (%s) for agent %s: %w", eventLabel, agentID, err)
+	}
+	if err := CommitWorkspaceEvent(wsDir, agentID, eventLabel); err != nil {
+		return fmt.Errorf("committing workspace event (%s) for agent %s: %w", eventLabel, agentID, err)
+	}
+	return nil
+}
+
+// commitEventBestEffort records a workspace audit event, logging failures instead of
+// discarding them. Used for audit-trail events where a lost entry is tolerable but must
+// still be visible in the log rather than silent.
+func commitEventBestEffort(wsDir, agentID, eventLabel string) {
+	if err := CommitWorkspaceEvent(wsDir, agentID, eventLabel); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to record workspace event %q for agent %s: %v\n", eventLabel, agentID, err)
+	}
 }
 
 // appendDeferredImages decodes, normalizes, and appends deferred image user turns per D49/D88.
@@ -1088,31 +1121,35 @@ func (fa *FolderAgent) appendDeferredImages(wsDir string, deferredScratchpadIDs 
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to find deferred scratchpad %q for agent %q: %v\n", spID, fa.AgentID, err)
 			failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to load deferred image from scratchpad '%s': %v</IMAGE_ERROR>", spID, err), "user")
-			_ = AppendSessionContent(fa.AgentDir, failTurn)
-			_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image error)")
+			if err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, failTurn, "user (deferred image error)"); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to record deferred-image failure turn for agent %s: %v\n", fa.AgentID, err)
+			}
 			continue
 		}
 		if !isBinary {
 			fmt.Fprintf(os.Stderr, "Warning: deferred scratchpad %q for agent %q is not binary data\n", spID, fa.AgentID)
 			failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to load deferred image from scratchpad '%s': entry is not binary image data</IMAGE_ERROR>", spID), "user")
-			_ = AppendSessionContent(fa.AgentDir, failTurn)
-			_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image error)")
+			if err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, failTurn, "user (deferred image error)"); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to record deferred-image failure turn for agent %s: %v\n", fa.AgentID, err)
+			}
 			continue
 		}
 		imgData, err := os.ReadFile(filePath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to read deferred scratchpad file %s for agent %q: %v\n", filePath, fa.AgentID, err)
 			failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to read deferred image from scratchpad '%s': %v</IMAGE_ERROR>", spID, err), "user")
-			_ = AppendSessionContent(fa.AgentDir, failTurn)
-			_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image error)")
+			if err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, failTurn, "user (deferred image error)"); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to record deferred-image failure turn for agent %s: %v\n", fa.AgentID, err)
+			}
 			continue
 		}
 		jpegBytes, mimeType, err := NormalizeAndResizeImage(bytes.NewReader(imgData), fa.RuntimeConfig.MaxImageDimension)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to decode/resize deferred image from scratchpad %q for agent %q: %v\n", spID, fa.AgentID, err)
 			failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to process deferred image from scratchpad '%s': %v</IMAGE_ERROR>", spID, err), "user")
-			_ = AppendSessionContent(fa.AgentDir, failTurn)
-			_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image error)")
+			if err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, failTurn, "user (deferred image error)"); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to record deferred-image failure turn for agent %s: %v\n", fa.AgentID, err)
+			}
 			continue
 		}
 		turn := &genai.Content{
@@ -1127,8 +1164,10 @@ func (fa *FolderAgent) appendDeferredImages(wsDir string, deferredScratchpadIDs 
 				},
 			},
 		}
-		_ = AppendSessionContent(fa.AgentDir, turn)
-		_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image)")
+		if err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, turn, "user (deferred image)"); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to append deferred image turn for agent %s: %v\n", fa.AgentID, err)
+			continue
+		}
 		validCount++
 	}
 	return validCount
@@ -1153,13 +1192,17 @@ func (fa *FolderAgent) checkPostTurnCompaction(ctx context.Context, wsDir string
 			} else {
 				usedTokens = int(fa.UsageTracker.LastPromptTokens)
 			}
-			// D93: Persist real turn usage for context inspection and cold-start compaction
-			_ = WriteLastUsage(fa.AgentDir, &LastUsageRecord{
+			// D93: Persist real turn usage for context inspection and cold-start compaction.
+			// A silent failure here makes the next process fall back to EstimateTokens, which runs
+			// 26-39% low, so the compaction warning fires late with no way to tell it happened.
+			if err := WriteLastUsage(fa.AgentDir, &LastUsageRecord{
 				PromptTokens:     fa.UsageTracker.LastPromptTokens,
 				CandidatesTokens: fa.UsageTracker.LastCandidatesTokens,
 				TotalTokens:      fa.UsageTracker.LastTotalTokens,
 				Timestamp:        time.Now(),
-			})
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to persist usage record for agent %s (compaction estimate will fall back to token estimation): %v\n", fa.AgentID, err)
+			}
 		} else {
 			if curTurns, err := ReadSessionTurns(fa.AgentDir); err == nil {
 				usedTokens = EstimateTokens(curTurns, fa.RuntimeConfig.PreserveThinking)
@@ -1204,7 +1247,7 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 
 		wsDir := filepath.Dir(fa.AgentDir)
 		sessionSvc := NewFileSessionService(wsDir)
-		lastMemory, _ := ReadMemoryFile(fa.AgentDir)
+		lastMemory, _ := readMemoryForChangeDetection(fa.AgentDir)
 
 		// 1. Emergency Cold-Start Pre-Turn Guard: Retain a pre-turn check in GenerateTurnStream
 		// *only* as a defensive valve before call 1 for uncompacted cold-start sessions.
@@ -1224,13 +1267,23 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: cold-start session compaction error: %v\n", err)
 				} else if compacted {
-					if refreshed, err := ReadSessionTurns(fa.AgentDir); err == nil && len(refreshed) > 0 {
+					refreshed, err := ReadSessionTurns(fa.AgentDir)
+					if err != nil {
+						// Compaction already rewrote session.jsonl on disk; continuing with the
+						// pre-compaction transcript would generate against the very history we
+						// just paid to shrink. Abort loudly instead of proceeding silently.
+						yield("", fmt.Errorf("compaction succeeded but reload of session for agent %q failed: %w", fa.AgentID, err))
+						return
+					}
+					if len(refreshed) > 0 {
 						turns = refreshed
 					}
-					curMem, _ := ReadMemoryFile(fa.AgentDir)
-					if curMem != lastMemory {
+					curMem, ok := readMemoryForChangeDetection(fa.AgentDir)
+					if ok && curMem != lastMemory {
 						lastMemory = curMem
-						_ = fa.refreshSystemPromptAndAgent()
+						if err := fa.refreshSystemPromptAndAgent(); err != nil {
+							fmt.Fprintf(os.Stderr, "Warning: failed to refresh system prompt after memory change for agent %s: %v\n", fa.AgentID, err)
+						}
 					}
 				}
 			}
@@ -1272,10 +1325,12 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 			// Prompt & Memory Freshness: If post-turn compaction rewrote MEMORY.md,
 			// the continuation turn re-renders the system prompt before building the runner
 			// so the model sees updated memory immediately.
-			curMem, _ := ReadMemoryFile(fa.AgentDir)
-			if curMem != lastMemory {
+			curMem, ok := readMemoryForChangeDetection(fa.AgentDir)
+			if ok && curMem != lastMemory {
 				lastMemory = curMem
-				_ = fa.refreshSystemPromptAndAgent()
+				if err := fa.refreshSystemPromptAndAgent(); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to refresh system prompt after memory change for agent %s: %v\n", fa.AgentID, err)
+				}
 			}
 
 			// Fresh runner per turn iteration (re-reads clean disk state from FileSessionService)
@@ -1342,7 +1397,7 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 			}
 
 			// Commit workspace event per turn boundary ("assistant")
-			_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "assistant")
+			commitEventBestEffort(wsDir, fa.AgentID, "assistant")
 
 			hasDeferredImages := fa.RuntimeConfig != nil && fa.RuntimeConfig.MaxImageDimension > 0 && len(deferredScratchpadIDs) > 0
 			hasCompactedBail := fa.UsageTracker != nil && fa.UsageTracker.StoppedEarlyForCompaction
@@ -1458,8 +1513,11 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 
 				// The harness appends an imperative sentinel user turn
 				sentinelTurn := genai.NewContentFromText(`<CONTINUATION reason="post-compaction">Session context was compacted. Resume and complete your task from where you left off, referencing any updated persistent memory.</CONTINUATION>`, "user")
-				_ = AppendSessionContent(fa.AgentDir, sentinelTurn)
-				_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user")
+				if err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, sentinelTurn, "user"); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to record continuation sentinel for agent %s: %v\n", fa.AgentID, err)
+					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: failed to record post-compaction sentinel - incomplete status.]"), nil)
+					return
+				}
 
 				lastContinuationReason = ContinuationCompactedBail
 				continuationCount++

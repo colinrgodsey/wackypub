@@ -4,6 +4,17 @@
 // lives in the protobuf service definition at proto/wackypub/v1/agent.proto.
 // That file is canonical; this file provides the concrete in-process Go implementation.
 // Method godocs for service interface methods are pointers, not standalone definitions.
+//
+// TODO(D112): delete the *Legacy methods at D112 Phase 5 cutover so the D104-class orphan
+// does not persist. Tracked by GitKB note/wackypub/d112-phase5-consumer-inventory; the list lives
+// here as the single marker for the whole file: addUserTurnLegacy, addMediaLegacy,
+// cancelTurnLegacy, backendIdentity, generateTurnLegacy, addAndGenerateTurnStreamLegacy,
+// addAndGenerateTurnLegacy, listAgentsLegacy, inspectAgentLegacy, readSessionLegacy,
+// readMemoryLegacy, renderSystemPromptLegacy, stripSignaturesLegacy, compactSessionLegacy,
+// compactSessionWithConfigLegacy, compactSessionWithOptionsLegacy, createScratchpadLegacy,
+// getScratchpadLegacy, listScratchpadsLegacy, searchScratchpadLegacy,
+// diffScratchpadEntriesLegacy, deleteScratchpadLegacy, traceLegacy,
+// inspectSessionContextLegacy, inspectAgentLocksLegacy.
 package agent
 
 import (
@@ -161,8 +172,6 @@ func (s *AgentSDK) AddUserTurn(ctx context.Context, req *agentv1.AddUserTurnRequ
 
 // addUserTurnLegacy appends a user message to <ws_dir>/<agent_id>/session.jsonl using the
 // legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) addUserTurnLegacy(agentID string, message string) (*UserTurnResult, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
@@ -288,8 +297,6 @@ func (s *AgentSDK) AddMedia(ctx context.Context, req *agentv1.AddMediaRequest) (
 
 // addMediaLegacy appends a normalized, resized JPEG image turn read from reader to
 // <ws_dir>/<agent_id>/session.jsonl using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) addMediaLegacy(agentID string, reader io.Reader) (*genai.Content, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
@@ -401,8 +408,6 @@ func (s *AgentSDK) CancelTurn(ctx context.Context, req *agentv1.CancelTurnReques
 }
 
 // cancelTurnLegacy cancels an in-flight turn for the given agent using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) cancelTurnLegacy(agentID string) error {
 	inFlightTurnsMu.Lock()
 	entry, ok := inFlightTurns[agentID]
@@ -419,7 +424,6 @@ func (s *AgentSDK) cancelTurnLegacy(agentID string) error {
 // generateTurnStreamLegacy loads the folder agent and generates the assistant turn yielding text chunks as they arrive.
 // Holds the session lock for the entire duration of the stream.
 //
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 // backendIdentity returns the map key used for the failed-until-reset tracker. Endpoint and
 // model together identify a backend: a fallback may differ from the primary in either, so
 // both are part of the identity.
@@ -648,8 +652,6 @@ func (s *AgentSDK) GenerateTurn(ctx context.Context, req *agentv1.GenerateTurnRe
 
 // generateTurnLegacy loads the folder agent, checks for compaction, generates the next assistant turn,
 // and returns the full assistant text joined across chunks with \n\n.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) generateTurnLegacy(ctx context.Context, agentID string) (string, error) {
 	var chunks []string
 	for chunk, err := range s.generateTurnStreamLegacy(ctx, agentID) {
@@ -669,8 +671,6 @@ func (s *AgentSDK) generateTurnLegacy(ctx context.Context, agentID string) (stri
 // addAndGenerateTurnStreamLegacy atomically appends a user message and yields assistant
 // response chunks as they arrive under a single lock. Hook warnings are surfaced via the
 // optional onWarning callback(s) rather than emitted into the text stream.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) addAndGenerateTurnStreamLegacy(ctx context.Context, agentID string, userMessage string, onWarning ...func(string)) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		if agentID == "" {
@@ -772,10 +772,6 @@ type asideTurnResult struct {
 // snapshot, never the exclusive turn lock, so a live turn is never blocked), no session.jsonl
 // append, no MEMORY.md update, no scratchpad writes, no workspace git/trace events, no
 // post-turn hooks, no compaction self-trigger. Usage is returned as metadata only.
-func (s *AgentSDK) asideTurnStream(ctx context.Context, agentID, question string, onWarning ...func(string)) iter.Seq2[string, error] {
-	return s.asideTurnStreamWithResult(ctx, agentID, question, nil, onWarning...)
-}
-
 // asideTurnStreamWithResult is AsideTurnStream with an out-param: callers that iterate the
 // stream directly can inspect denials/usage after the loop without a second round trip.
 func (s *AgentSDK) asideTurnStreamWithResult(ctx context.Context, agentID, question string, asideResult *asideTurnResult, onWarning ...func(string)) iter.Seq2[string, error] {
@@ -944,8 +940,6 @@ type GenerateTurnResult struct {
 
 // addAndGenerateTurnLegacy atomically appends a user message and generates the assistant
 // response under a single lock. Hook warnings are collected and returned on GenerateTurnResult.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) addAndGenerateTurnLegacy(ctx context.Context, agentID string, userMessage string) (*GenerateTurnResult, error) {
 	var warnings []string
 	var chunks []string
@@ -1023,19 +1017,6 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, req *agentv1.AddAndGe
 	}, nil
 }
 
-// getAgentLegacy loads and returns the FolderAgent object for low-level ADK runner interactions
-// using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) getAgentLegacy(agentID string) (*FolderAgent, error) {
-	a2aMeta, err := ValidateAgentTarget(agentID)
-	if err != nil {
-		return nil, err
-	}
-
-	return LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
-}
-
 // ListAgents implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) ListAgents(ctx context.Context, req *agentv1.ListAgentsRequest) (*agentv1.ListAgentsResponse, error) {
 	wsDir := s.WorkspaceDir
@@ -1053,8 +1034,6 @@ func (s *AgentSDK) ListAgents(ctx context.Context, req *agentv1.ListAgentsReques
 
 // listAgentsLegacy returns the IDs of agent directories found directly under the
 // workspace directory using the legacy unparameterized positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) listAgentsLegacy() ([]string, error) {
 	return ListAgentIDs(s.WorkspaceDir)
 }
@@ -1119,8 +1098,6 @@ func (s *AgentSDK) InspectAgent(ctx context.Context, req *agentv1.InspectAgentRe
 // expected files are present, whether runtime.json parses, and
 // session/memory stats. Safe to call on an agent that doesn't exist yet or
 // is only partially set up - see AgentInspection.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) inspectAgentLegacy(agentID string) (*AgentInspection, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
@@ -1188,8 +1165,6 @@ func (s *AgentSDK) ReadSession(ctx context.Context, req *agentv1.ReadSessionRequ
 }
 
 // readSessionLegacy returns all conversation turns logged in <ws_dir>/<agent_id>/session.jsonl.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) readSessionLegacy(agentID string) ([]*genai.Content, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
@@ -1237,8 +1212,6 @@ func (s *AgentSDK) ReadMemory(ctx context.Context, req *agentv1.ReadMemoryReques
 }
 
 // readMemoryLegacy returns the current contents of <ws_dir>/<agent_id>/MEMORY.md.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) readMemoryLegacy(agentID string) (string, error) {
 	if agentID == "" {
 		return "", fmt.Errorf("agentID cannot be empty")
@@ -1288,8 +1261,6 @@ func (s *AgentSDK) RenderSystemPrompt(ctx context.Context, req *agentv1.RenderSy
 // @<FILE_PATH> macro expansion. Does not construct a model and does not
 // require runtime.json to exist or be valid - useful for validating
 // AGENTS.md/macro output independently of backend configuration.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) renderSystemPromptLegacy(agentID string) (string, error) {
 	if agentID == "" {
 		return "", fmt.Errorf("agentID cannot be empty")
@@ -1341,8 +1312,6 @@ func (s *AgentSDK) StripSignatures(ctx context.Context, req *agentv1.StripSignat
 
 // stripSignaturesLegacy permanently removes provider-specific opaque reasoning/thought signatures
 // using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) stripSignaturesLegacy(agentID string) (int, error) {
 	if agentID == "" {
 		return 0, fmt.Errorf("agentID cannot be empty")
@@ -1461,16 +1430,12 @@ func (s *AgentSDK) CompactSession(ctx context.Context, req *agentv1.CompactSessi
 
 // compactSessionLegacy manually triggers session compaction evaluation for an agent using the
 // legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) compactSessionLegacy(ctx context.Context, agentID string, force bool) (bool, error) {
 	return s.compactSessionWithOptionsLegacy(ctx, agentID, force, CompactSessionOptions{})
 }
 
 // compactSessionWithConfigLegacy manually triggers session compaction evaluation with config override
 // using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) compactSessionWithConfigLegacy(ctx context.Context, agentID string, force bool, cfgOverride *CompactConfig) (bool, error) {
 	return s.compactSessionWithOptionsLegacy(ctx, agentID, force, CompactSessionOptions{
 		ConfigOverride: cfgOverride,
@@ -1479,8 +1444,6 @@ func (s *AgentSDK) compactSessionWithConfigLegacy(ctx context.Context, agentID s
 
 // compactSessionWithOptionsLegacy manually triggers session compaction evaluation with options
 // using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) compactSessionWithOptionsLegacy(ctx context.Context, agentID string, force bool, opts CompactSessionOptions) (bool, error) {
 	if agentID == "" {
 		return false, fmt.Errorf("agentID cannot be empty")
@@ -1643,8 +1606,6 @@ func (s *AgentSDK) CreateScratchpad(ctx context.Context, req *agentv1.CreateScra
 }
 
 // createScratchpadLegacy creates a new persistent scratchpad entry using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) createScratchpadLegacy(agentID string, text string, createdBy string) (*ScratchpadEntry, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
@@ -1708,8 +1669,6 @@ func (s *AgentSDK) GetScratchpad(ctx context.Context, req *agentv1.GetScratchpad
 }
 
 // getScratchpadLegacy retrieves stored text by entry ID using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) getScratchpadLegacy(agentID string, entryID string, skipLines *int, numLines *int) (string, error) {
 	if agentID == "" {
 		return "", fmt.Errorf("agentID cannot be empty")
@@ -1771,8 +1730,6 @@ func (s *AgentSDK) ListScratchpads(ctx context.Context, req *agentv1.ListScratch
 }
 
 // listScratchpadsLegacy returns metadata items for all live scratchpads using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) listScratchpadsLegacy(agentID string) ([]ScratchpadItem, int, int, error) {
 	if agentID == "" {
 		return nil, 0, MaxScratchpadEntries, fmt.Errorf("agentID cannot be empty")
@@ -1844,8 +1801,6 @@ func (s *AgentSDK) SearchScratchpad(ctx context.Context, req *agentv1.SearchScra
 }
 
 // searchScratchpadLegacy searches a specific scratchpad entry using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) searchScratchpadLegacy(agentID string, entryID string, query string, caseSensitive *bool, useRegex bool, maxResults int) (*SearchScratchpadResult, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
@@ -1899,8 +1854,6 @@ func (s *AgentSDK) DiffScratchpadEntries(ctx context.Context, req *agentv1.DiffS
 }
 
 // diffScratchpadEntriesLegacy returns a unified diff between two entries using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) diffScratchpadEntriesLegacy(agentID string, beforeID string, afterID string) (string, error) {
 	if agentID == "" {
 		return "", fmt.Errorf("agentID cannot be empty")
@@ -1946,8 +1899,6 @@ func (s *AgentSDK) DeleteScratchpad(ctx context.Context, req *agentv1.DeleteScra
 }
 
 // deleteScratchpadLegacy removes a scratchpad entry using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) deleteScratchpadLegacy(agentID string, entryID string) error {
 	if agentID == "" {
 		return fmt.Errorf("agentID cannot be empty")
@@ -2024,8 +1975,6 @@ func (s *AgentSDK) Trace(ctx context.Context, req *agentv1.TraceRequest) (*agent
 
 // traceLegacy performs backward causal tracing starting from an agent commit specifier
 // or global trace ID using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) traceLegacy(agentID string, commitSpec string, traceID string, opts TraceOptions) (*TraceResult, error) {
 	if traceID != "" {
 		return TraceByTraceID(s.WorkspaceDir, traceID, opts)
@@ -2140,8 +2089,6 @@ func (s *AgentSDK) InspectSessionContext(ctx context.Context, req *agentv1.Inspe
 }
 
 // inspectSessionContextLegacy calculates the current token usage, limits, and compaction headroom for an agent (D93).
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) inspectSessionContextLegacy(agentID string) (*SessionContextReport, error) {
 	agentDir := s.AgentDir(agentID)
 	runtimeCfg, err := LoadRuntimeConfig(agentDir)
@@ -2249,8 +2196,6 @@ func (s *AgentSDK) InspectAgentLocks(ctx context.Context, req *agentv1.InspectAg
 }
 
 // inspectAgentLocksLegacy returns lock observations for agents in the workspace.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 func (s *AgentSDK) inspectAgentLocksLegacy() ([]AgentLockObservation, error) {
 	return InspectAgentLocks(s.WorkspaceDir)
 }

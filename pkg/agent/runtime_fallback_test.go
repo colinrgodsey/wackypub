@@ -144,27 +144,6 @@ func okBackendServer(t *testing.T, text string) *httptest.Server {
 	}))
 }
 
-// writeFallbackRuntime writes a runtime.json with primary -> fallback pointing at the two
-// servers, and returns the written path.
-func writeFallbackRuntime(t *testing.T, agentDir string, primaryURL, fallbackURL string) {
-	t.Helper()
-	runtimeJSON := fmt.Sprintf(`{
-		"provider": "openai",
-		"endpoint": %q,
-		"model": "primary-model",
-		"apiKey": "test-key",
-		"fallback": {
-			"provider": "openai",
-			"endpoint": %q,
-			"model": "fallback-model",
-			"apiKey": "test-key"
-		}
-	}`, primaryURL, fallbackURL)
-	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(runtimeJSON), 0644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // setupFallbackAgent builds a workspace with one agent whose session ends on a user turn.
 func setupFallbackAgent(t *testing.T, runtimeJSON string) (*AgentSDK, string) {
 	t.Helper()

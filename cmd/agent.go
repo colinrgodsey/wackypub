@@ -24,6 +24,18 @@ var (
 	compactRuntimeFile string
 )
 
+// stdinIsPipe reports whether stdin is connected to a pipe (not a TTY). Callers use it to
+// decide whether to read a message from stdin. On Stat (or TTY-detection) error we default to
+// non-pipe: treating an unreadable stdin as a pipe would make the command hang waiting for
+// input that will never arrive.
+func stdinIsPipe() bool {
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (stat.Mode() & os.ModeCharDevice) == 0
+}
+
 func signalCtx() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
@@ -190,8 +202,7 @@ does not already exist.`,
 
 		// If userMsg is empty, check stdin (piped input)
 		if userMsg == "" {
-			stat, _ := os.Stdin.Stat()
-			if (stat.Mode() & os.ModeCharDevice) == 0 {
+			if stdinIsPipe() {
 				reader := bufio.NewReader(os.Stdin)
 				bytesInput, err := io.ReadAll(reader)
 				if err == nil {
@@ -262,8 +273,7 @@ Transparencies in PNG/GIF inputs are flattened onto a white background before JP
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> add-media < image.jpg")
 		}
 
-		stat, _ := os.Stdin.Stat()
-		if (stat.Mode() & os.ModeCharDevice) != 0 {
+		if !stdinIsPipe() {
 			return fmt.Errorf("no image data provided on stdin. Pipe an image file, e.g.: wackypub agent %s add-media < image.jpg", agentID)
 		}
 
@@ -749,8 +759,7 @@ what's printed, though it is still persisted to session.jsonl).`,
 		}
 
 		if userMsg == "" {
-			stat, _ := os.Stdin.Stat()
-			if (stat.Mode() & os.ModeCharDevice) == 0 {
+			if stdinIsPipe() {
 				reader := bufio.NewReader(os.Stdin)
 				bytesInput, err := io.ReadAll(reader)
 				if err == nil {
@@ -825,8 +834,7 @@ byte-identical afterward.`,
 		}
 
 		if userMsg == "" {
-			stat, _ := os.Stdin.Stat()
-			if (stat.Mode() & os.ModeCharDevice) == 0 {
+			if stdinIsPipe() {
 				reader := bufio.NewReader(os.Stdin)
 				bytesInput, err := io.ReadAll(reader)
 				if err == nil {
@@ -972,8 +980,7 @@ Atomic and collision-safe across processes. Automatically evicts the entry with 
 		}
 
 		if content == "" {
-			stat, _ := os.Stdin.Stat()
-			if (stat.Mode() & os.ModeCharDevice) == 0 {
+			if stdinIsPipe() {
 				reader := bufio.NewReader(os.Stdin)
 				bytesInput, err := io.ReadAll(reader)
 				if err == nil {
@@ -1459,7 +1466,10 @@ var agentContextCmd = &cobra.Command{
 			return err
 		}
 		if agentContextJSONFlag {
-			data, _ := json.MarshalIndent(report, "", "  ")
+			data, err := json.MarshalIndent(report, "", "  ")
+			if err != nil {
+				return fmt.Errorf("serializing agent context report: %w", err)
+			}
 			fmt.Println(string(data))
 			return nil
 		}

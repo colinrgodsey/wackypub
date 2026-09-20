@@ -411,7 +411,7 @@ func TestTrace_ReportsSearchPlainOpenFailure(t *testing.T) {
 		t.Fatalf("restore bob config: %v", err)
 	}
 
-	res, err = TraceByTraceID(wsDir, "trace-xyz", TraceOptions{})
+	_, err = TraceByTraceID(wsDir, "trace-xyz", TraceOptions{})
 	if err != nil {
 		t.Fatalf("TraceByTraceID failed after repair: %v", err)
 	}

@@ -41,22 +41,6 @@ func newStdioConn(cmd *exec.Cmd, stdin io.WriteCloser, stdout io.ReadCloser) *st
 	return c
 }
 
-// newServerStdioConn creates a server-side net.Conn wrapping the current process's stdio.
-// In the server direction, stdin is the read side and stdout is the write side.
-func newServerStdioConn(stdin io.ReadCloser, stdout io.WriteCloser) *stdioConn {
-	c := &stdioConn{
-		stdin:  stdout,
-		stdout: stdin,
-	}
-	if f, ok := stdout.(*os.File); ok {
-		c.stdinFile = f
-	}
-	if f, ok := stdin.(*os.File); ok {
-		c.stdoutFile = f
-	}
-	return c
-}
-
 func (c *stdioConn) Read(b []byte) (int, error) {
 	if c.stdout == nil {
 		return 0, io.EOF
