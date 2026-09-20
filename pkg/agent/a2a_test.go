@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 func TestParseA2AMetadata_FallbackAndParsing(t *testing.T) {
@@ -225,36 +228,36 @@ func TestD59_StatelessA2APropagationAndReadOnlyExemption(t *testing.T) {
 	sdk := NewSDK(wsDir)
 
 	// 1. Read-only methods must NOT fail on deadlock cycle even when target agent is in active call chain
-	turns, err := sdk.readSessionLegacy("bob")
+	readSessResp, err := sdk.ReadSession(context.Background(), &agentv1.ReadSessionRequest{AgentId: "bob"})
 	if err != nil {
 		t.Fatalf("ReadSession failed: %v", err)
 	}
-	if len(turns) != 1 {
-		t.Fatalf("expected 1 turn from ReadSession, got %d", len(turns))
+	if len(readSessResp.GetTurns()) != 1 {
+		t.Fatalf("expected 1 turn from ReadSession, got %d", len(readSessResp.GetTurns()))
 	}
 
-	mem, err := sdk.readMemoryLegacy("bob")
+	readMemResp, err := sdk.ReadMemory(context.Background(), &agentv1.ReadMemoryRequest{AgentId: "bob"})
 	if err != nil {
 		t.Fatalf("ReadMemory failed: %v", err)
 	}
-	if !strings.Contains(mem, "Bob's memory") {
-		t.Errorf("unexpected ReadMemory output: %q", mem)
+	if !strings.Contains(readMemResp.GetMemoryMd(), "Bob's memory") {
+		t.Errorf("unexpected ReadMemory output: %q", readMemResp.GetMemoryMd())
 	}
 
-	prompt, err := sdk.renderSystemPromptLegacy("bob")
+	renderResp, err := sdk.RenderSystemPrompt(context.Background(), &agentv1.RenderSystemPromptRequest{AgentId: "bob"})
 	if err != nil {
 		t.Fatalf("RenderSystemPrompt failed: %v", err)
 	}
-	if !strings.Contains(prompt, "You are Bob") {
-		t.Errorf("unexpected RenderSystemPrompt output: %q", prompt)
+	if !strings.Contains(renderResp.GetRenderedPrompt(), "You are Bob") {
+		t.Errorf("unexpected RenderSystemPrompt output: %q", renderResp.GetRenderedPrompt())
 	}
 
-	items, count, _, err := sdk.listScratchpadsLegacy("bob")
+	listScratchResp, err := sdk.ListScratchpads(context.Background(), &agentv1.ListScratchpadsRequest{AgentId: "bob"})
 	if err != nil {
 		t.Fatalf("ListScratchpads failed: %v", err)
 	}
-	if count != 0 || len(items) != 0 {
-		t.Errorf("expected 0 scratchpads, got %d", count)
+	if listScratchResp.GetTotalEntries() != 0 || len(listScratchResp.GetEntries()) != 0 {
+		t.Errorf("expected 0 scratchpads, got %d", listScratchResp.GetTotalEntries())
 	}
 
 	// 2. ValidateAgentTarget must return updated A2AMetadata WITHOUT mutating host process environment
@@ -317,31 +320,31 @@ func TestD60_ReadOnlyCrossAgentAuthorizationGating(t *testing.T) {
 	}
 
 	// 1. All read-only content operations for Alice must FAIL due to missing allowlist in Bob's dir
-	if _, err := sdk.readSessionLegacy("alice"); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
+	if _, err := sdk.ReadSession(context.Background(), &agentv1.ReadSessionRequest{AgentId: "alice"}); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
 		t.Fatalf("expected ReadSession to fail with missing allowlist, got: %v", err)
 	}
-	if _, err := sdk.readMemoryLegacy("alice"); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
+	if _, err := sdk.ReadMemory(context.Background(), &agentv1.ReadMemoryRequest{AgentId: "alice"}); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
 		t.Fatalf("expected ReadMemory to fail with missing allowlist, got: %v", err)
 	}
-	if _, err := sdk.renderSystemPromptLegacy("alice"); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
+	if _, err := sdk.RenderSystemPrompt(context.Background(), &agentv1.RenderSystemPromptRequest{AgentId: "alice"}); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
 		t.Fatalf("expected RenderSystemPrompt to fail with missing allowlist, got: %v", err)
 	}
-	if _, _, _, err := sdk.listScratchpadsLegacy("alice"); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
+	if _, err := sdk.ListScratchpads(context.Background(), &agentv1.ListScratchpadsRequest{AgentId: "alice"}); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
 		t.Fatalf("expected ListScratchpads to fail with missing allowlist, got: %v", err)
 	}
-	if _, err := sdk.getScratchpadLegacy("alice", "1234", nil, nil); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
+	if _, err := sdk.GetScratchpad(context.Background(), &agentv1.GetScratchpadRequest{AgentId: "alice", EntryId: "1234"}); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
 		t.Fatalf("expected GetScratchpad to fail with missing allowlist, got: %v", err)
 	}
-	if _, err := sdk.searchScratchpadLegacy("alice", "1234", "secret", nil, false, 10); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
+	if _, err := sdk.SearchScratchpad(context.Background(), &agentv1.SearchScratchpadRequest{AgentId: "alice", EntryId: "1234", Query: "secret", MaxResults: 10}); err == nil || !strings.Contains(err.Error(), "has no WACKYPUB_ALLOWED_AGENTS allowlist") {
 		t.Fatalf("expected SearchScratchpad to fail with missing allowlist, got: %v", err)
 	}
 
 	// 2. InspectAgent MUST SUCCEED (diagnostic exemption per D16)
-	info, err := sdk.inspectAgentLegacy("alice")
+	info, err := sdk.InspectAgent(context.Background(), &agentv1.InspectAgentRequest{AgentId: "alice"})
 	if err != nil {
 		t.Fatalf("InspectAgent should be exempt from authorization, got err: %v", err)
 	}
-	if info.AgentID != "alice" {
+	if info.GetAgentId() != "alice" {
 		t.Errorf("unexpected inspect info: %+v", info)
 	}
 
@@ -351,16 +354,16 @@ func TestD60_ReadOnlyCrossAgentAuthorizationGating(t *testing.T) {
 	}
 
 	// Now all read operations must SUCCEED
-	turns, err := sdk.readSessionLegacy("alice")
-	if err != nil || len(turns) != 1 {
-		t.Fatalf("ReadSession failed after authorization: err=%v, turns=%d", err, len(turns))
+	readAliceTurns, err := sdk.ReadSession(context.Background(), &agentv1.ReadSessionRequest{AgentId: "alice"})
+	if err != nil || len(readAliceTurns.GetTurns()) != 1 {
+		t.Fatalf("ReadSession failed after authorization: err=%v, turns=%d", err, len(readAliceTurns.GetTurns()))
 	}
-	mem, err := sdk.readMemoryLegacy("alice")
-	if err != nil || !strings.Contains(mem, "Alice private memory") {
-		t.Fatalf("ReadMemory failed after authorization: err=%v, mem=%q", err, mem)
+	readAliceMem, err := sdk.ReadMemory(context.Background(), &agentv1.ReadMemoryRequest{AgentId: "alice"})
+	if err != nil || !strings.Contains(readAliceMem.GetMemoryMd(), "Alice private memory") {
+		t.Fatalf("ReadMemory failed after authorization: err=%v, mem=%q", err, readAliceMem.GetMemoryMd())
 	}
-	prompt, err := sdk.renderSystemPromptLegacy("alice")
-	if err != nil || !strings.Contains(prompt, "You are Alice") {
-		t.Fatalf("RenderSystemPrompt failed after authorization: err=%v, prompt=%q", err, prompt)
+	readAlicePrompt, err := sdk.RenderSystemPrompt(context.Background(), &agentv1.RenderSystemPromptRequest{AgentId: "alice"})
+	if err != nil || !strings.Contains(readAlicePrompt.GetRenderedPrompt(), "You are Alice") {
+		t.Fatalf("RenderSystemPrompt failed after authorization: err=%v, prompt=%q", err, readAlicePrompt.GetRenderedPrompt())
 	}
 }

@@ -4,13 +4,18 @@
 // lives in the protobuf service definition at proto/wackypub/v1/agent.proto.
 // That file is canonical; this file provides the concrete in-process Go implementation.
 // Method godocs for service interface methods are pointers, not standalone definitions.
+//
+// NOTE(D112): the former *Legacy methods are gone - the dead ones deleted (zero
+// production callers) and the live generation/streaming implementations renamed
+// (generateTurnStreamImpl, generateTurnImpl, addAndGenerateTurnStreamImpl,
+// addAndGenerateTurnImpl). History and inventory:
+// git-kb note/wackypub/d112-phase5-consumer-inventory.
 package agent
 
 import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"iter"
 	"os"
 	"path/filepath"
@@ -159,50 +164,6 @@ func (s *AgentSDK) AddUserTurn(ctx context.Context, req *agentv1.AddUserTurnRequ
 	}, nil
 }
 
-// addUserTurnLegacy appends a user message to <ws_dir>/<agent_id>/session.jsonl using the
-// legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) addUserTurnLegacy(agentID string, message string) (*UserTurnResult, error) {
-	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
-	}
-	if message == "" {
-		return nil, fmt.Errorf("message cannot be empty")
-	}
-
-	if _, err := ValidateAgentTarget(agentID); err != nil {
-		return nil, err
-	}
-
-	agentDir := s.AgentDir(agentID)
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create agent directory %s: %w", agentDir, err)
-	}
-
-	lock, err := AcquireSessionLock(agentDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
-	}
-	defer lock.Release()
-
-	finalMsg, hookEnv, warnings, _ := RunUserMessageHooks(agentDir, message)
-
-	content := genai.NewContentFromText(finalMsg, "user")
-	if err := AppendSessionContent(agentDir, content); err != nil {
-		return nil, err
-	}
-
-	s.setLastHookEnv(agentID, hookEnv)
-
-	_ = CommitWorkspaceEvent(s.WorkspaceDir, agentID, "user")
-	return &UserTurnResult{
-		Content:  content,
-		Text:     finalMsg,
-		Warnings: warnings,
-	}, nil
-}
-
 // AddMedia implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) AddMedia(ctx context.Context, req *agentv1.AddMediaRequest) (*agentv1.AddMediaResponse, error) {
 	if req == nil {
@@ -286,66 +247,6 @@ func (s *AgentSDK) AddMedia(ctx context.Context, req *agentv1.AddMediaRequest) (
 	}, nil
 }
 
-// addMediaLegacy appends a normalized, resized JPEG image turn read from reader to
-// <ws_dir>/<agent_id>/session.jsonl using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) addMediaLegacy(agentID string, reader io.Reader) (*genai.Content, error) {
-	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
-	}
-	if reader == nil {
-		return nil, fmt.Errorf("image reader cannot be nil")
-	}
-
-	if _, err := ValidateAgentTarget(agentID); err != nil {
-		return nil, err
-	}
-
-	agentDir := s.AgentDir(agentID)
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create agent directory %s: %w", agentDir, err)
-	}
-
-	lock, err := AcquireSessionLock(agentDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
-	}
-	defer lock.Release()
-
-	runtimeCfg, err := LoadRuntimeConfig(agentDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load runtime config for agent %q: %w", agentID, err)
-	}
-	if runtimeCfg.MaxImageDimension <= 0 {
-		return nil, fmt.Errorf("image attachments disabled by runtime config for agent %q (maxImageDimension is not set or <= 0)", agentID)
-	}
-
-	jpegBytes, mimeType, err := NormalizeAndResizeImage(reader, runtimeCfg.MaxImageDimension)
-	if err != nil {
-		return nil, fmt.Errorf("failed to process image attachment for agent %q: %w", agentID, err)
-	}
-
-	content := &genai.Content{
-		Role: "user",
-		Parts: []*genai.Part{
-			{
-				InlineData: &genai.Blob{
-					MIMEType: mimeType,
-					Data:     jpegBytes,
-				},
-			},
-		},
-	}
-
-	if err := AppendSessionContent(agentDir, content); err != nil {
-		return nil, fmt.Errorf("failed to append image turn: %w", err)
-	}
-
-	_ = CommitWorkspaceEvent(s.WorkspaceDir, agentID, "user (media)")
-	return content, nil
-}
-
 // inFlightTurnEntry tracks an active turn cancellation handle (D85).
 type inFlightTurnEntry struct {
 	cancel context.CancelFunc
@@ -400,26 +301,6 @@ func (s *AgentSDK) CancelTurn(ctx context.Context, req *agentv1.CancelTurnReques
 	return &agentv1.CancelTurnResponse{}, nil
 }
 
-// cancelTurnLegacy cancels an in-flight turn for the given agent using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) cancelTurnLegacy(agentID string) error {
-	inFlightTurnsMu.Lock()
-	entry, ok := inFlightTurns[agentID]
-	inFlightTurnsMu.Unlock()
-
-	if !ok || entry == nil {
-		return fmt.Errorf("no in-flight turn for agent %q", agentID)
-	}
-
-	entry.cancel()
-	return nil
-}
-
-// generateTurnStreamLegacy loads the folder agent and generates the assistant turn yielding text chunks as they arrive.
-// Holds the session lock for the entire duration of the stream.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
 // backendIdentity returns the map key used for the failed-until-reset tracker. Endpoint and
 // model together identify a backend: a fallback may differ from the primary in either, so
 // both are part of the identity.
@@ -568,7 +449,9 @@ func (s *AgentSDK) runTurnWithRuntimeFallback(
 	yield("", fmt.Errorf("no runtime backend available for agent %q: all backends were skipped as failed-until-reset", agentID))
 }
 
-func (s *AgentSDK) generateTurnStreamLegacy(ctx context.Context, agentID string) iter.Seq2[string, error] {
+// generateTurnStreamImpl loads the folder agent and generates the assistant turn yielding text chunks as they arrive.
+// Holds the session lock for the entire duration of the stream.
+func (s *AgentSDK) generateTurnStreamImpl(ctx context.Context, agentID string) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		if agentID == "" {
 			yield("", fmt.Errorf("agentID cannot be empty"))
@@ -618,7 +501,7 @@ func (s *AgentSDK) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, st
 	if req != nil {
 		agentID = req.GetAgentId()
 	}
-	for chunk, err := range s.generateTurnStreamLegacy(stream.Context(), agentID) {
+	for chunk, err := range s.generateTurnStreamImpl(stream.Context(), agentID) {
 		if err != nil {
 			return err
 		}
@@ -639,20 +522,18 @@ func (s *AgentSDK) GenerateTurn(ctx context.Context, req *agentv1.GenerateTurnRe
 	if req != nil {
 		agentID = req.GetAgentId()
 	}
-	text, err := s.generateTurnLegacy(ctx, agentID)
+	text, err := s.generateTurnImpl(ctx, agentID)
 	if err != nil {
 		return nil, err
 	}
 	return &agentv1.GenerateTurnResponse{Text: text}, nil
 }
 
-// generateTurnLegacy loads the folder agent, checks for compaction, generates the next assistant turn,
+// generateTurnImpl loads the folder agent, checks for compaction, generates the next assistant turn,
 // and returns the full assistant text joined across chunks with \n\n.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) generateTurnLegacy(ctx context.Context, agentID string) (string, error) {
+func (s *AgentSDK) generateTurnImpl(ctx context.Context, agentID string) (string, error) {
 	var chunks []string
-	for chunk, err := range s.generateTurnStreamLegacy(ctx, agentID) {
+	for chunk, err := range s.generateTurnStreamImpl(ctx, agentID) {
 		if err != nil {
 			return "", err
 		}
@@ -666,12 +547,10 @@ func (s *AgentSDK) generateTurnLegacy(ctx context.Context, agentID string) (stri
 	return strings.Join(chunks, "\n\n"), nil
 }
 
-// addAndGenerateTurnStreamLegacy atomically appends a user message and yields assistant
+// addAndGenerateTurnStreamImpl atomically appends a user message and yields assistant
 // response chunks as they arrive under a single lock. Hook warnings are surfaced via the
 // optional onWarning callback(s) rather than emitted into the text stream.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) addAndGenerateTurnStreamLegacy(ctx context.Context, agentID string, userMessage string, onWarning ...func(string)) iter.Seq2[string, error] {
+func (s *AgentSDK) addAndGenerateTurnStreamImpl(ctx context.Context, agentID string, userMessage string, onWarning ...func(string)) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		if agentID == "" {
 			yield("", fmt.Errorf("agentID cannot be empty"))
@@ -772,10 +651,6 @@ type asideTurnResult struct {
 // snapshot, never the exclusive turn lock, so a live turn is never blocked), no session.jsonl
 // append, no MEMORY.md update, no scratchpad writes, no workspace git/trace events, no
 // post-turn hooks, no compaction self-trigger. Usage is returned as metadata only.
-func (s *AgentSDK) asideTurnStream(ctx context.Context, agentID, question string, onWarning ...func(string)) iter.Seq2[string, error] {
-	return s.asideTurnStreamWithResult(ctx, agentID, question, nil, onWarning...)
-}
-
 // asideTurnStreamWithResult is AsideTurnStream with an out-param: callers that iterate the
 // stream directly can inspect denials/usage after the loop without a second round trip.
 func (s *AgentSDK) asideTurnStreamWithResult(ctx context.Context, agentID, question string, asideResult *asideTurnResult, onWarning ...func(string)) iter.Seq2[string, error] {
@@ -942,14 +817,12 @@ type GenerateTurnResult struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
-// addAndGenerateTurnLegacy atomically appends a user message and generates the assistant
+// addAndGenerateTurnImpl atomically appends a user message and generates the assistant
 // response under a single lock. Hook warnings are collected and returned on GenerateTurnResult.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) addAndGenerateTurnLegacy(ctx context.Context, agentID string, userMessage string) (*GenerateTurnResult, error) {
+func (s *AgentSDK) addAndGenerateTurnImpl(ctx context.Context, agentID string, userMessage string) (*GenerateTurnResult, error) {
 	var warnings []string
 	var chunks []string
-	for chunk, err := range s.addAndGenerateTurnStreamLegacy(ctx, agentID, userMessage, func(w string) {
+	for chunk, err := range s.addAndGenerateTurnStreamImpl(ctx, agentID, userMessage, func(w string) {
 		warnings = append(warnings, w)
 	}) {
 		if err != nil {
@@ -982,7 +855,7 @@ func (s *AgentSDK) AddAndGenerateTurnStream(req *agentv1.AddAndGenerateTurnStrea
 	if req != nil {
 		userMsg = req.GetUserMessage()
 	}
-	for chunk, err := range s.addAndGenerateTurnStreamLegacy(stream.Context(), agentID, userMsg, func(w string) {
+	for chunk, err := range s.addAndGenerateTurnStreamImpl(stream.Context(), agentID, userMsg, func(w string) {
 		if w == "" {
 			return
 		}
@@ -1013,7 +886,7 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, req *agentv1.AddAndGe
 	if req != nil {
 		userMsg = req.GetUserMessage()
 	}
-	result, err := s.addAndGenerateTurnLegacy(ctx, agentID, userMsg)
+	result, err := s.addAndGenerateTurnImpl(ctx, agentID, userMsg)
 	if err != nil {
 		return nil, err
 	}
@@ -1021,19 +894,6 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, req *agentv1.AddAndGe
 		Text:     result.Text,
 		Warnings: result.Warnings,
 	}, nil
-}
-
-// getAgentLegacy loads and returns the FolderAgent object for low-level ADK runner interactions
-// using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) getAgentLegacy(agentID string) (*FolderAgent, error) {
-	a2aMeta, err := ValidateAgentTarget(agentID)
-	if err != nil {
-		return nil, err
-	}
-
-	return LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
 }
 
 // ListAgents implements the behavior defined in proto/wackypub/v1/agent.proto.
@@ -1049,14 +909,6 @@ func (s *AgentSDK) ListAgents(ctx context.Context, req *agentv1.ListAgentsReques
 	return &agentv1.ListAgentsResponse{
 		AgentIds: ids,
 	}, nil
-}
-
-// listAgentsLegacy returns the IDs of agent directories found directly under the
-// workspace directory using the legacy unparameterized positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) listAgentsLegacy() ([]string, error) {
-	return ListAgentIDs(s.WorkspaceDir)
 }
 
 // InspectAgent implements the behavior defined in proto/wackypub/v1/agent.proto.
@@ -1115,25 +967,6 @@ func (s *AgentSDK) InspectAgent(ctx context.Context, req *agentv1.InspectAgentRe
 	return resp, nil
 }
 
-// inspectAgentLegacy reports the on-disk state of <ws_dir>/<agent_id>: which
-// expected files are present, whether runtime.json parses, and
-// session/memory stats. Safe to call on an agent that doesn't exist yet or
-// is only partially set up - see AgentInspection.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) inspectAgentLegacy(agentID string) (*AgentInspection, error) {
-	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
-	}
-
-	agentDir := s.AgentDir(agentID)
-	if _, err := os.Stat(agentDir); os.IsNotExist(err) {
-		return &AgentInspection{AgentID: agentID, AgentDir: agentDir}, nil
-	}
-
-	return InspectAgentDir(s.WorkspaceDir, agentID)
-}
-
 // ReadSession implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) ReadSession(ctx context.Context, req *agentv1.ReadSessionRequest) (*agentv1.ReadSessionResponse, error) {
 	wsDir := s.WorkspaceDir
@@ -1187,26 +1020,6 @@ func (s *AgentSDK) ReadSession(ctx context.Context, req *agentv1.ReadSessionRequ
 	}, nil
 }
 
-// readSessionLegacy returns all conversation turns logged in <ws_dir>/<agent_id>/session.jsonl.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) readSessionLegacy(agentID string) ([]*genai.Content, error) {
-	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
-	}
-
-	if err := AuthorizeAgentTarget(agentID); err != nil {
-		return nil, err
-	}
-
-	// No session lock: ReadSessionTurns already tolerates a torn read
-	// gracefully (skipped lines surface via SessionCorruptLines elsewhere),
-	// and the blocking acquire here is exactly what can deadlock against an
-	// agent's own already-held lock during live generation.
-	agentDir := s.AgentDir(agentID)
-	return ReadSessionTurns(agentDir)
-}
-
 // ReadMemory implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) ReadMemory(ctx context.Context, req *agentv1.ReadMemoryRequest) (*agentv1.ReadMemoryResponse, error) {
 	wsDir := s.WorkspaceDir
@@ -1236,25 +1049,6 @@ func (s *AgentSDK) ReadMemory(ctx context.Context, req *agentv1.ReadMemoryReques
 	}, nil
 }
 
-// readMemoryLegacy returns the current contents of <ws_dir>/<agent_id>/MEMORY.md.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) readMemoryLegacy(agentID string) (string, error) {
-	if agentID == "" {
-		return "", fmt.Errorf("agentID cannot be empty")
-	}
-
-	if err := AuthorizeAgentTarget(agentID); err != nil {
-		return "", err
-	}
-
-	// No session lock needed: MEMORY.md isn't session.jsonl, and this read
-	// doesn't need protecting against the same writers that file's lock
-	// serializes.
-	agentDir := s.AgentDir(agentID)
-	return ReadMemoryFile(agentDir)
-}
-
 // RenderSystemPrompt implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) RenderSystemPrompt(ctx context.Context, req *agentv1.RenderSystemPromptRequest) (*agentv1.RenderSystemPromptResponse, error) {
 	wsDir := s.WorkspaceDir
@@ -1281,28 +1075,6 @@ func (s *AgentSDK) RenderSystemPrompt(ctx context.Context, req *agentv1.RenderSy
 	return &agentv1.RenderSystemPromptResponse{
 		RenderedPrompt: prompt,
 	}, nil
-}
-
-// renderSystemPromptLegacy returns the fully rendered system prompt for an agent -
-// AGENTS.md (or the generic fallback if it doesn't exist) after
-// @<FILE_PATH> macro expansion. Does not construct a model and does not
-// require runtime.json to exist or be valid - useful for validating
-// AGENTS.md/macro output independently of backend configuration.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) renderSystemPromptLegacy(agentID string) (string, error) {
-	if agentID == "" {
-		return "", fmt.Errorf("agentID cannot be empty")
-	}
-
-	if err := AuthorizeAgentTarget(agentID); err != nil {
-		return "", err
-	}
-
-	// No session lock needed: RenderAgentSystemPrompt reads AGENTS.md and
-	// skills/, never session.jsonl - acquiring the lock here only added an
-	// unnecessary blocking dependency on whatever else might be holding it.
-	return RenderAgentSystemPrompt(s.WorkspaceDir, agentID)
 }
 
 // StripSignatures implements the behavior defined in proto/wackypub/v1/agent.proto.
@@ -1337,29 +1109,6 @@ func (s *AgentSDK) StripSignatures(ctx context.Context, req *agentv1.StripSignat
 	return &agentv1.StripSignaturesResponse{
 		ModifiedTurns: int32(count),
 	}, nil
-}
-
-// stripSignaturesLegacy permanently removes provider-specific opaque reasoning/thought signatures
-// using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) stripSignaturesLegacy(agentID string) (int, error) {
-	if agentID == "" {
-		return 0, fmt.Errorf("agentID cannot be empty")
-	}
-
-	if _, err := ValidateAgentTarget(agentID); err != nil {
-		return 0, err
-	}
-
-	agentDir := s.AgentDir(agentID)
-	lock, err := AcquireSessionLock(agentDir)
-	if err != nil {
-		return 0, fmt.Errorf("failed to acquire session lock: %w", err)
-	}
-	defer lock.Release()
-
-	return StripSessionSignatures(agentDir)
 }
 
 // CompactSessionOptions specifies optional configuration and runtime overrides for compaction (D83, D84).
@@ -1459,92 +1208,6 @@ func (s *AgentSDK) CompactSession(ctx context.Context, req *agentv1.CompactSessi
 	}, nil
 }
 
-// compactSessionLegacy manually triggers session compaction evaluation for an agent using the
-// legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) compactSessionLegacy(ctx context.Context, agentID string, force bool) (bool, error) {
-	return s.compactSessionWithOptionsLegacy(ctx, agentID, force, CompactSessionOptions{})
-}
-
-// compactSessionWithConfigLegacy manually triggers session compaction evaluation with config override
-// using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) compactSessionWithConfigLegacy(ctx context.Context, agentID string, force bool, cfgOverride *CompactConfig) (bool, error) {
-	return s.compactSessionWithOptionsLegacy(ctx, agentID, force, CompactSessionOptions{
-		ConfigOverride: cfgOverride,
-	})
-}
-
-// compactSessionWithOptionsLegacy manually triggers session compaction evaluation with options
-// using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) compactSessionWithOptionsLegacy(ctx context.Context, agentID string, force bool, opts CompactSessionOptions) (bool, error) {
-	if agentID == "" {
-		return false, fmt.Errorf("agentID cannot be empty")
-	}
-
-	a2aMeta, err := ValidateAgentTarget(agentID)
-	if err != nil {
-		return false, err
-	}
-
-	agentDir := s.AgentDir(agentID)
-	lock, err := AcquireSessionLock(agentDir)
-	if err != nil {
-		return false, fmt.Errorf("failed to acquire session lock: %w", err)
-	}
-	defer lock.Release()
-
-	if opts.RuntimePath == "" {
-		fa, err := LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
-		if err != nil {
-			return false, err
-		}
-		return CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, force, opts.ConfigOverride, fa.CompactionToolDenials)
-	}
-
-	// Runtime override path (D84):
-	if !pathExists(agentDir) {
-		return false, fmt.Errorf("agent directory %s does not exist", agentDir)
-	}
-
-	// 0. Load .env for agent (so env vars referenced in override runtime are available)
-	_, _ = LoadAgentDotEnv(agentDir)
-
-	// 1. Load override runtime config
-	overrideRuntimeCfg, err := LoadRuntimeConfigFile(opts.RuntimePath)
-	if err != nil {
-		return false, err
-	}
-
-	// 2. Render normal AGENTS.md system prompt
-	expandedPrompt, err := RenderAgentSystemPrompt(s.WorkspaceDir, agentID)
-	if err != nil {
-		return false, fmt.Errorf("failed to render system prompt for agent %s: %w", agentID, err)
-	}
-
-	// 3. Initialize model adapter from override runtime
-	overrideLLMModel, err := NewModelForRuntime(ctx, overrideRuntimeCfg, agentID)
-	if err != nil {
-		return false, err
-	}
-
-	// 4. Build disposable ADK agent with NO tools (compaction never invokes tools, D45)
-	maxToolTurns := s.MaxToolTurns
-	if maxToolTurns <= 0 {
-		maxToolTurns = DefaultMaxToolTurns
-	}
-	adkAgent, err := BuildADKAgentWithConfig(agentID, expandedPrompt, maxToolTurns, overrideRuntimeCfg, overrideLLMModel)
-	if err != nil {
-		return false, fmt.Errorf("failed to build disposable ADK agent for compaction of %s: %w", agentID, err)
-	}
-
-	return CheckAndCompactSession(ctx, agentDir, overrideRuntimeCfg, adkAgent, force, opts.ConfigOverride, nil)
-}
-
 // AsideQuestion implements agentv1.AgentServiceServer: the D112 protocol surface for the
 // aside-mode one-shot question (see AsideTurnStream for the side-effect contract). It reuses
 // the exact same asideInternal machinery as the SDK method - no duplicated logic - so the
@@ -1642,28 +1305,6 @@ func (s *AgentSDK) CreateScratchpad(ctx context.Context, req *agentv1.CreateScra
 	}, nil
 }
 
-// createScratchpadLegacy creates a new persistent scratchpad entry using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) createScratchpadLegacy(agentID string, text string, createdBy string) (*ScratchpadEntry, error) {
-	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
-	}
-	if text == "" {
-		return nil, fmt.Errorf("scratchpad content cannot be empty")
-	}
-
-	if _, err := ValidateAgentTarget(agentID); err != nil {
-		return nil, err
-	}
-
-	agentDir := s.AgentDir(agentID)
-	if createdBy == "" {
-		createdBy = "cli"
-	}
-	return CreateScratchpad(agentDir, text, createdBy)
-}
-
 // GetScratchpad implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) GetScratchpad(ctx context.Context, req *agentv1.GetScratchpadRequest) (*agentv1.GetScratchpadResponse, error) {
 	if req == nil {
@@ -1705,25 +1346,6 @@ func (s *AgentSDK) GetScratchpad(ctx context.Context, req *agentv1.GetScratchpad
 	return &agentv1.GetScratchpadResponse{
 		Text: text,
 	}, nil
-}
-
-// getScratchpadLegacy retrieves stored text by entry ID using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) getScratchpadLegacy(agentID string, entryID string, skipLines *int, numLines *int) (string, error) {
-	if agentID == "" {
-		return "", fmt.Errorf("agentID cannot be empty")
-	}
-	if entryID == "" {
-		return "", fmt.Errorf("entryID cannot be empty")
-	}
-
-	if err := AuthorizeAgentTarget(agentID); err != nil {
-		return "", err
-	}
-
-	agentDir := s.AgentDir(agentID)
-	return GetScratchpad(agentDir, entryID, skipLines, numLines)
 }
 
 // ListScratchpads implements the behavior defined in proto/wackypub/v1/agent.proto.
@@ -1768,22 +1390,6 @@ func (s *AgentSDK) ListScratchpads(ctx context.Context, req *agentv1.ListScratch
 		TotalEntries: int32(count),
 		MaxCapacity:  int32(capVal),
 	}, nil
-}
-
-// listScratchpadsLegacy returns metadata items for all live scratchpads using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) listScratchpadsLegacy(agentID string) ([]ScratchpadItem, int, int, error) {
-	if agentID == "" {
-		return nil, 0, MaxScratchpadEntries, fmt.Errorf("agentID cannot be empty")
-	}
-
-	if err := AuthorizeAgentTarget(agentID); err != nil {
-		return nil, 0, MaxScratchpadEntries, err
-	}
-
-	agentDir := s.AgentDir(agentID)
-	return ListScratchpads(agentDir)
 }
 
 // SearchScratchpad implements the behavior defined in proto/wackypub/v1/agent.proto.
@@ -1843,28 +1449,6 @@ func (s *AgentSDK) SearchScratchpad(ctx context.Context, req *agentv1.SearchScra
 	}, nil
 }
 
-// searchScratchpadLegacy searches a specific scratchpad entry using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) searchScratchpadLegacy(agentID string, entryID string, query string, caseSensitive *bool, useRegex bool, maxResults int) (*SearchScratchpadResult, error) {
-	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
-	}
-	if entryID == "" {
-		return nil, fmt.Errorf("entryID cannot be empty")
-	}
-	if query == "" {
-		return nil, fmt.Errorf("query cannot be empty")
-	}
-
-	if err := AuthorizeAgentTarget(agentID); err != nil {
-		return nil, err
-	}
-
-	agentDir := s.AgentDir(agentID)
-	return SearchScratchpad(agentDir, entryID, query, caseSensitive, useRegex, maxResults)
-}
-
 // DiffScratchpadEntries implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) DiffScratchpadEntries(ctx context.Context, req *agentv1.DiffScratchpadEntriesRequest) (*agentv1.DiffScratchpadEntriesResponse, error) {
 	if req == nil {
@@ -1898,24 +1482,6 @@ func (s *AgentSDK) DiffScratchpadEntries(ctx context.Context, req *agentv1.DiffS
 	}, nil
 }
 
-// diffScratchpadEntriesLegacy returns a unified diff between two entries using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) diffScratchpadEntriesLegacy(agentID string, beforeID string, afterID string) (string, error) {
-	if agentID == "" {
-		return "", fmt.Errorf("agentID cannot be empty")
-	}
-	if beforeID == "" || afterID == "" {
-		return "", fmt.Errorf("beforeID and afterID cannot be empty")
-	}
-
-	if err := AuthorizeAgentTarget(agentID); err != nil {
-		return "", err
-	}
-
-	return DiffScratchpadEntries(s.WorkspaceDir, agentID, beforeID, afterID)
-}
-
 // DeleteScratchpad implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) DeleteScratchpad(ctx context.Context, req *agentv1.DeleteScratchpadRequest) (*agentv1.DeleteScratchpadResponse, error) {
 	if req == nil {
@@ -1943,25 +1509,6 @@ func (s *AgentSDK) DeleteScratchpad(ctx context.Context, req *agentv1.DeleteScra
 		return nil, err
 	}
 	return &agentv1.DeleteScratchpadResponse{}, nil
-}
-
-// deleteScratchpadLegacy removes a scratchpad entry using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) deleteScratchpadLegacy(agentID string, entryID string) error {
-	if agentID == "" {
-		return fmt.Errorf("agentID cannot be empty")
-	}
-	if entryID == "" {
-		return fmt.Errorf("entryID cannot be empty")
-	}
-
-	if _, err := ValidateAgentTarget(agentID); err != nil {
-		return err
-	}
-
-	agentDir := s.AgentDir(agentID)
-	return DeleteScratchpad(agentDir, entryID)
 }
 
 // Trace implements the behavior defined in proto/wackypub/v1/agent.proto.
@@ -2020,20 +1567,6 @@ func (s *AgentSDK) Trace(ctx context.Context, req *agentv1.TraceRequest) (*agent
 	}
 
 	return TraceResultToProto(res), nil
-}
-
-// traceLegacy performs backward causal tracing starting from an agent commit specifier
-// or global trace ID using the legacy positional signature.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) traceLegacy(agentID string, commitSpec string, traceID string, opts TraceOptions) (*TraceResult, error) {
-	if traceID != "" {
-		return TraceByTraceID(s.WorkspaceDir, traceID, opts)
-	}
-	if agentID != "" && commitSpec != "" {
-		return TraceAgentCommit(s.WorkspaceDir, agentID, commitSpec, opts)
-	}
-	return nil, fmt.Errorf("must specify either agentID and commitSpec, or traceID")
 }
 
 type SessionContextReport struct {
@@ -2139,80 +1672,6 @@ func (s *AgentSDK) InspectSessionContext(ctx context.Context, req *agentv1.Inspe
 	return resp, nil
 }
 
-// inspectSessionContextLegacy calculates the current token usage, limits, and compaction headroom for an agent (D93).
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) inspectSessionContextLegacy(agentID string) (*SessionContextReport, error) {
-	agentDir := s.AgentDir(agentID)
-	runtimeCfg, err := LoadRuntimeConfig(agentDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load runtime config for %s: %w", agentID, err)
-	}
-
-	compactCfg, err := LoadCompactConfig(agentDir)
-	overheadPct := DefaultCompactionOverheadPct
-	if err == nil && compactCfg != nil {
-		if compactCfg.CompactOverheadPct >= 0 && compactCfg.CompactOverheadPct < 100 {
-			overheadPct = compactCfg.CompactOverheadPct
-		}
-	}
-
-	contextWindow := runtimeCfg.ContextWindow
-	threshold := int(float64(contextWindow) * (1.0 - (overheadPct / 100.0)))
-
-	turns, _ := ReadSessionTurns(agentDir)
-	turnCount := len(turns)
-	sessionTokens := 0
-	if turnCount > 0 {
-		sessionTokens = EstimateTokens(turns, runtimeCfg.PreserveThinking)
-	}
-
-	promptTokens := 0
-	if prompt, err := RenderAgentSystemPrompt(s.WorkspaceDir, agentID); err == nil && prompt != "" {
-		promptTokens = len(prompt) / 4
-	}
-
-	memTokens := 0
-	if memPath := filepath.Join(agentDir, "MEMORY.md"); pathExists(memPath) {
-		if data, err := os.ReadFile(memPath); err == nil {
-			memTokens = len(data) / 4
-		}
-	}
-
-	estimatedTotal := sessionTokens + promptTokens
-
-	report := &SessionContextReport{
-		AgentID:               agentID,
-		Model:                 runtimeCfg.Model,
-		ContextWindow:         contextWindow,
-		CompactionThreshold:   threshold,
-		CompactionOverheadPct: overheadPct,
-		EstimatedTotalTokens:  estimatedTotal,
-		SessionTurnsTokens:    sessionTokens,
-		PromptTokensEstimate:  promptTokens,
-		MemoryTokensEstimate:  memTokens,
-		TurnCount:             turnCount,
-	}
-
-	if threshold > 0 {
-		report.PercentToThreshold = (float64(estimatedTotal) / float64(threshold)) * 100.0
-	}
-	if contextWindow > 0 {
-		report.PercentToWindow = (float64(estimatedTotal) / float64(contextWindow)) * 100.0
-	}
-
-	if lastUsage, err := ReadLastUsage(agentDir); err == nil && lastUsage != nil {
-		report.Compacted = lastUsage.Compacted
-		if !lastUsage.Compacted {
-			report.LastPromptTokens = lastUsage.PromptTokens
-			report.LastCandidatesTokens = lastUsage.CandidatesTokens
-			report.LastTotalTokens = lastUsage.TotalTokens
-		}
-	}
-
-	return report, nil
-}
-
 // InspectAgentLocks implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) InspectAgentLocks(ctx context.Context, req *agentv1.InspectAgentLocksRequest) (*agentv1.InspectAgentLocksResponse, error) {
 	wsDir := s.WorkspaceDir
@@ -2246,11 +1705,4 @@ func (s *AgentSDK) InspectAgentLocks(ctx context.Context, req *agentv1.InspectAg
 	return &agentv1.InspectAgentLocksResponse{
 		Observations: res,
 	}, nil
-}
-
-// inspectAgentLocksLegacy returns lock observations for agents in the workspace.
-//
-// TODO(D112): delete at D112 Phase 5 cutover so the D104-class orphan does not persist.
-func (s *AgentSDK) inspectAgentLocksLegacy() ([]AgentLockObservation, error) {
-	return InspectAgentLocks(s.WorkspaceDir)
 }

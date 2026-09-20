@@ -144,27 +144,6 @@ func okBackendServer(t *testing.T, text string) *httptest.Server {
 	}))
 }
 
-// writeFallbackRuntime writes a runtime.json with primary -> fallback pointing at the two
-// servers, and returns the written path.
-func writeFallbackRuntime(t *testing.T, agentDir string, primaryURL, fallbackURL string) {
-	t.Helper()
-	runtimeJSON := fmt.Sprintf(`{
-		"provider": "openai",
-		"endpoint": %q,
-		"model": "primary-model",
-		"apiKey": "test-key",
-		"fallback": {
-			"provider": "openai",
-			"endpoint": %q,
-			"model": "fallback-model",
-			"apiKey": "test-key"
-		}
-	}`, primaryURL, fallbackURL)
-	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(runtimeJSON), 0644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // setupFallbackAgent builds a workspace with one agent whose session ends on a user turn.
 func setupFallbackAgent(t *testing.T, runtimeJSON string) (*AgentSDK, string) {
 	t.Helper()
@@ -210,7 +189,7 @@ func TestRuntimeFallback_FailoverOnTransportAndWarning(t *testing.T) {
 	ctx := context.Background()
 
 	var chunks []string
-	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(ctx, "fbagent", "question", onWarning) {
+	for chunk, err := range sdk.addAndGenerateTurnStreamImpl(ctx, "fbagent", "question", onWarning) {
 		if err != nil {
 			t.Fatalf("stream error: %v", err)
 		}
@@ -258,7 +237,7 @@ func TestRuntimeFallback_FailForwardPerTurn(t *testing.T) {
 
 	// Turn 1: primary 503s -> fallback engages.
 	var chunk1 []string
-	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(ctx, "fbagent", "q1") {
+	for chunk, err := range sdk.addAndGenerateTurnStreamImpl(ctx, "fbagent", "q1") {
 		if err != nil {
 			t.Fatalf("turn 1 error: %v", err)
 		}
@@ -274,7 +253,7 @@ func TestRuntimeFallback_FailForwardPerTurn(t *testing.T) {
 
 	// Turn 2: primary healthy -> primary-first again (never sticky).
 	var chunk2 []string
-	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(ctx, "fbagent", "q2") {
+	for chunk, err := range sdk.addAndGenerateTurnStreamImpl(ctx, "fbagent", "q2") {
 		if err != nil {
 			t.Fatalf("turn 2 error: %v", err)
 		}
@@ -294,7 +273,7 @@ func TestRuntimeFallback_NoFallbackRegression(t *testing.T) {
 	ctx := context.Background()
 	var chunks []string
 	var gotErr error
-	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(ctx, "fbagent", "question") {
+	for chunk, err := range sdk.addAndGenerateTurnStreamImpl(ctx, "fbagent", "question") {
 		if err != nil {
 			gotErr = err
 			break
@@ -325,7 +304,7 @@ func TestRuntimeFallback_NonQualifyingFailureDoesNotFallback(t *testing.T) {
 	ctx := context.Background()
 	var warnings []string
 	var gotErr error
-	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(ctx, "fbagent", "question", func(w string) { warnings = append(warnings, w) }) {
+	for chunk, err := range sdk.addAndGenerateTurnStreamImpl(ctx, "fbagent", "question", func(w string) { warnings = append(warnings, w) }) {
 		if err != nil {
 			gotErr = err
 			break
@@ -351,7 +330,7 @@ func TestRuntimeFallback_GeneratePathFailsForwardToo(t *testing.T) {
 
 	ctx := context.Background()
 	var chunks []string
-	for chunk, err := range sdk.generateTurnStreamLegacy(ctx, "fbagent") {
+	for chunk, err := range sdk.generateTurnStreamImpl(ctx, "fbagent") {
 		if err != nil {
 			t.Fatalf("generate stream error: %v", err)
 		}

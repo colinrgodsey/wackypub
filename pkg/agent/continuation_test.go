@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"google.golang.org/genai"
+
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 // TestD88_MidTurnBailTriggersCompactionAndContinuation verifies that a mid-turn bail
@@ -778,14 +780,17 @@ func TestD88_ContextCancellationStopsContinuation(t *testing.T) {
 	}
 
 	sdk := NewSDK(wsDir)
-	if _, err := sdk.addUserTurnLegacy(agentID, "Start cancelable task"); err != nil {
+	if _, err := sdk.AddUserTurn(context.Background(), &agentv1.AddUserTurnRequest{
+		AgentId: agentID,
+		Message: "Start cancelable task",
+	}); err != nil {
 		t.Fatalf("AddUserTurn failed: %v", err)
 	}
 
 	streamDone := make(chan error, 1)
 	go func() {
 		var streamErr error
-		for _, err := range sdk.generateTurnStreamLegacy(context.Background(), agentID) {
+		for _, err := range sdk.generateTurnStreamImpl(context.Background(), agentID) {
 			if err != nil {
 				streamErr = err
 				break
@@ -801,7 +806,7 @@ func TestD88_ContextCancellationStopsContinuation(t *testing.T) {
 	}
 
 	// Cancel the turn during continuation turn execution
-	if err := sdk.cancelTurnLegacy(agentID); err != nil {
+	if _, err := sdk.CancelTurn(context.Background(), &agentv1.CancelTurnRequest{AgentId: agentID}); err != nil {
 		t.Fatalf("CancelTurn failed: %v", err)
 	}
 

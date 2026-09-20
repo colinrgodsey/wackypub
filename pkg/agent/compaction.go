@@ -608,7 +608,7 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		}
 
 		wsDir := filepath.Dir(agentDir)
-		_ = CommitWorkspaceEvent(wsDir, agentID, "compact (memory)")
+		commitEventBestEffort(wsDir, agentID, "compact (memory)")
 	}
 
 	// Flag the discontinuity to whatever generates the next real turn (D46):
@@ -630,8 +630,12 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 	}
 
 	wsDir := filepath.Dir(agentDir)
-	_ = CommitWorkspaceEvent(wsDir, agentID, "compact")
-	_ = InvalidateLastUsage(agentDir)
+	commitEventBestEffort(wsDir, agentID, "compact")
+	if err := InvalidateLastUsage(agentDir); err != nil {
+		// A stale LastUsageRecord after compaction would mislead the next turn's usage-based
+		// compaction decision (it describes the pre-compaction session), so log it loudly.
+		fmt.Fprintf(os.Stderr, "Warning: failed to invalidate usage record after compaction for agent %s: %v\n", agentID, err)
+	}
 
 	compactionModel := ""
 	if runtimeCfg != nil {

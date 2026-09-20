@@ -328,21 +328,6 @@ func EstimateTokens(turns []*genai.Content, includeThinking bool) int {
 	return totalTokens
 }
 
-// contentTextAll extracts the concatenated text from all of a genai.Content's
-// parts, including Thought-marked ones.
-func contentTextAll(c *genai.Content) string {
-	if c == nil {
-		return ""
-	}
-	var text string
-	for _, p := range c.Parts {
-		if p != nil && p.Text != "" {
-			text += p.Text
-		}
-	}
-	return text
-}
-
 // CleanSessionTurns sanitizes a sequence of conversation turns for model requests by:
 // 1. Removing dangling FunctionResponse parts (responses without a matching FunctionCall in the preceding model turn).
 // 2. Pruning empty turns (turns with zero parts remaining after filtering).

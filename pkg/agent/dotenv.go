@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -115,7 +116,11 @@ func LoadAgentDotEnv(agentDir string) (map[string]string, error) {
 			}
 			for k, v := range rootEnv {
 				result[k] = v
-				_ = os.Setenv(k, v)
+				if err := os.Setenv(k, v); err != nil {
+					// Setenv fails only on an empty or invalid key - a malformed .env line would
+					// otherwise be dropped in silence, making a broken env file mysterious.
+					fmt.Fprintf(os.Stderr, "Warning: failed to set env var %q (key = %q): %v\n", k, v, err)
+				}
 			}
 		}
 
@@ -125,7 +130,11 @@ func LoadAgentDotEnv(agentDir string) (map[string]string, error) {
 		}
 		for k, v := range agentEnv {
 			result[k] = v
-			_ = os.Setenv(k, v)
+			if err := os.Setenv(k, v); err != nil {
+				// Setenv fails only on an empty or invalid key - a malformed .env line would
+				// otherwise be dropped in silence, making a broken env file mysterious.
+				fmt.Fprintf(os.Stderr, "Warning: failed to set env var %q (key = %q): %v\n", k, v, err)
+			}
 		}
 	}
 

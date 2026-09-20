@@ -209,7 +209,7 @@ func RenderAutoloadedSkills(agentDir string) (string, error) {
 // to make it safe for embedding in a double-quoted XML attribute value.
 func sanitizeXMLAttr(s string) string {
 	// Collapse whitespace/newlines to single spaces
-	re := regexp.MustCompile("\\s+")
+	re := regexp.MustCompile(`\s+`)
 	cleaned := re.ReplaceAllString(strings.TrimSpace(s), " ")
 	// Strip characters that would break XML attribute syntax
 	cleaned = strings.ReplaceAll(cleaned, "\"", "")

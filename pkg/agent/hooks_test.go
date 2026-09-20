@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 // Helper to create an executable script in agent's hooks/on-user-message directory.
@@ -324,7 +326,7 @@ printf '{"text":"What is your secret quest?","env":{"TODAY":"2026-09-03"}}\n'
 `)
 
 	sdk := NewSDK(wsDir)
-	resp, err := sdk.addAndGenerateTurnLegacy(context.Background(), agentID, "What is your name?")
+	resp, err := sdk.addAndGenerateTurnImpl(context.Background(), agentID, "What is your name?")
 	if err != nil {
 		t.Fatalf("AddAndGenerateTurn failed: %v", err)
 	}
@@ -341,7 +343,7 @@ printf '{"text":"What is your secret quest?","env":{"TODAY":"2026-09-03"}}\n'
 	}
 
 	// Verify session.jsonl stored the altered text
-	turns, err := sdk.readSessionLegacy(agentID)
+	turns, err := ReadSessionTurns(agentDir)
 	if err != nil {
 		t.Fatalf("ReadSession failed: %v", err)
 	}
@@ -432,11 +434,14 @@ printf '{"text":"Altered Quest","env":{"SPLIT_ENV":"active"}}\n'
 `)
 
 	sdk := NewSDK(wsDir)
-	if _, err := sdk.addUserTurnLegacy(agentID, "Original Quest"); err != nil {
+	if _, err := sdk.AddUserTurn(context.Background(), &agentv1.AddUserTurnRequest{
+		AgentId: agentID,
+		Message: "Original Quest",
+	}); err != nil {
 		t.Fatalf("AddUserTurn failed: %v", err)
 	}
 
-	resp, err := sdk.generateTurnLegacy(context.Background(), agentID)
+	resp, err := sdk.generateTurnImpl(context.Background(), agentID)
 	if err != nil {
 		t.Fatalf("GenerateTurn failed: %v", err)
 	}
@@ -530,14 +535,17 @@ printf '{"text":"intercepted-by-hook","env":{"INTERCEPTED":"true"}}\n'
 
 	// Subtest 1: Human-style inbound message via AddUserTurn
 	t.Run("human-style AddUserTurn", func(t *testing.T) {
-		res, err := sdk.addUserTurnLegacy("bob", "human message")
+		res, err := sdk.AddUserTurn(context.Background(), &agentv1.AddUserTurnRequest{
+			AgentId: "bob",
+			Message: "human message",
+		})
 		if err != nil {
 			t.Fatalf("AddUserTurn failed: %v", err)
 		}
-		if res.Text != "intercepted-by-hook" {
-			t.Errorf("expected result text 'intercepted-by-hook', got %q", res.Text)
+		if res.GetText() != "intercepted-by-hook" {
+			t.Errorf("expected result text 'intercepted-by-hook', got %q", res.GetText())
 		}
-		turns, err := sdk.readSessionLegacy("bob")
+		turns, err := ReadSessionTurns(filepath.Join(wsDir, "bob"))
 		if err != nil {
 			t.Fatalf("ReadSession failed: %v", err)
 		}
@@ -556,14 +564,17 @@ printf '{"text":"intercepted-by-hook","env":{"INTERCEPTED":"true"}}\n'
 		a2aPayload := `{"caller_id":"alice","call_chain":["alice"],"trace_id":"trace-a2a-test"}`
 		os.Setenv(Agent2AgentEnvVar, a2aPayload)
 
-		res, err := sdk.addUserTurnLegacy("bob", "peer agent message from alice")
+		res, err := sdk.AddUserTurn(context.Background(), &agentv1.AddUserTurnRequest{
+			AgentId: "bob",
+			Message: "peer agent message from alice",
+		})
 		if err != nil {
 			t.Fatalf("AddUserTurn for A2A failed: %v", err)
 		}
-		if res.Text != "intercepted-by-hook" {
-			t.Errorf("expected result text 'intercepted-by-hook', got %q", res.Text)
+		if res.GetText() != "intercepted-by-hook" {
+			t.Errorf("expected result text 'intercepted-by-hook', got %q", res.GetText())
 		}
-		turns, err := sdk.readSessionLegacy("bob")
+		turns, err := ReadSessionTurns(filepath.Join(wsDir, "bob"))
 		if err != nil {
 			t.Fatalf("ReadSession failed: %v", err)
 		}
@@ -642,18 +653,21 @@ exit 1
 	sdk := NewSDK(wsDir)
 
 	// Subtest 1: Human turn via AddUserTurn
-	res, err := sdk.addUserTurnLegacy(agentID, "hello")
+	res, err := sdk.AddUserTurn(context.Background(), &agentv1.AddUserTurnRequest{
+		AgentId: agentID,
+		Message: "hello",
+	})
 	if err != nil {
 		t.Fatalf("AddUserTurn failed: %v", err)
 	}
-	if len(res.Warnings) == 0 {
+	if len(res.GetWarnings()) == 0 {
 		t.Fatalf("expected warnings on UserTurnResult, got none")
 	}
-	if !strings.Contains(res.Warnings[0], "exited with error") {
-		t.Errorf("expected exit error in warning, got %q", res.Warnings[0])
+	if !strings.Contains(res.GetWarnings()[0], "exited with error") {
+		t.Errorf("expected exit error in warning, got %q", res.GetWarnings()[0])
 	}
-	if res.Text != "hello" {
-		t.Errorf("expected text unchanged 'hello', got %q", res.Text)
+	if res.GetText() != "hello" {
+		t.Errorf("expected text unchanged 'hello', got %q", res.GetText())
 	}
 
 	// Subtest 2: A2A-style turn via AddUserTurn
@@ -661,15 +675,18 @@ exit 1
 	defer os.Setenv(Agent2AgentEnvVar, origA2A)
 	os.Setenv(Agent2AgentEnvVar, `{"caller_id":"peer","call_chain":["peer"],"trace_id":"tr-1"}`)
 
-	resA2A, err := sdk.addUserTurnLegacy(agentID, "peer turn")
+	resA2A, err := sdk.AddUserTurn(context.Background(), &agentv1.AddUserTurnRequest{
+		AgentId: agentID,
+		Message: "peer turn",
+	})
 	if err != nil {
 		t.Fatalf("AddUserTurn for A2A failed: %v", err)
 	}
-	if len(resA2A.Warnings) == 0 {
+	if len(resA2A.GetWarnings()) == 0 {
 		t.Fatalf("expected warnings on A2A UserTurnResult, got none")
 	}
-	if !strings.Contains(resA2A.Warnings[0], "exited with error") {
-		t.Errorf("expected exit error in warning, got %q", resA2A.Warnings[0])
+	if !strings.Contains(resA2A.GetWarnings()[0], "exited with error") {
+		t.Errorf("expected exit error in warning, got %q", resA2A.GetWarnings()[0])
 	}
 }
 
@@ -732,7 +749,7 @@ echo "corrupt json output"
 	// Test 1: AddAndGenerateTurnStream yields ONLY model chunks; warnings arrive via onWarning callback
 	var capturedWarnings []string
 	var chunks []string
-	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(context.Background(), agentID, "test prompt", func(w string) {
+	for chunk, err := range sdk.addAndGenerateTurnStreamImpl(context.Background(), agentID, "test prompt", func(w string) {
 		capturedWarnings = append(capturedWarnings, w)
 	}) {
 		if err != nil {
@@ -762,7 +779,7 @@ echo "corrupt json output"
 	}
 
 	// Test 2: AddAndGenerateTurn captures warnings on GenerateTurnResult without polluting response text
-	res, err := sdk.addAndGenerateTurnLegacy(context.Background(), agentID, "another turn")
+	res, err := sdk.addAndGenerateTurnImpl(context.Background(), agentID, "another turn")
 	if err != nil {
 		t.Fatalf("AddAndGenerateTurn failed: %v", err)
 	}

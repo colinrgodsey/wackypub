@@ -27,8 +27,9 @@ func TestInProcessStreamClient_RepeatedRecvAfterEOF(t *testing.T) {
 		t.Fatalf("expected 'chunk 1', got chunk=%v err=%v", chunk, err)
 	}
 
-	// 2. Read EOF
-	chunk, err = client.Recv()
+	// 2. Read EOF (chunk value is discarded; only err matters here - the assignment at the
+	// next Recv would overwrite it before any read)
+	_, err = client.Recv()
 	if err != io.EOF {
 		t.Fatalf("expected io.EOF on end of stream, got: %v", err)
 	}

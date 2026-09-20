@@ -411,12 +411,8 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 	if insp.GetSessionCorruptLines() > 0 {
 		issues = append(issues, fmt.Sprintf("session.jsonl has %d line(s) that don't parse as JSON turns - they're silently skipped on every read, which can cause the agent to lose context. See .agents/AGENTS.md's session.jsonl corruption gotcha.", insp.GetSessionCorruptLines()))
 	}
-	for _, shadowMsg := range insp.GetShadowedTools() {
-		issues = append(issues, shadowMsg)
-	}
-	for _, shadowMsg := range insp.GetShadowedSkills() {
-		issues = append(issues, shadowMsg)
-	}
+	issues = append(issues, insp.GetShadowedTools()...)
+	issues = append(issues, insp.GetShadowedSkills()...)
 
 	if len(issues) > 0 {
 		fmt.Println("\nIssues:")
@@ -544,6 +540,8 @@ func init() {
 	workspaceCmd.AddCommand(snapshotCmd)
 	workspaceCmd.AddCommand(tagCmd)
 	pushCmd.Flags().BoolVar(&confirmPush, "i-understand", false, "")
+	// Hidden, not removed: the flag is only reachable via the warning text at push time
+	// (see the --i-understand acknowledgement error above), so it must not surface in help.
 	_ = pushCmd.Flags().MarkHidden("i-understand")
 	workspaceCmd.AddCommand(pushCmd)
 	RootCmd.AddCommand(workspaceCmd)
