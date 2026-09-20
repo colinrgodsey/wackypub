@@ -3,10 +3,28 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 	"google.golang.org/grpc"
 )
+
+// bridgeTurnLocks serializes bridge dispatches per agent within this process: two
+// concurrent prompts/generates to the SAME agent must not spawn two bridge processes at
+// once (the failure mode in bugs/wackypub/bridge-concurrent-prompt-lock - the second
+// bridge collapses on a stdio conn the first already owns). The lock is NOT the session
+// flock: it is in-process only, so it cannot deadlock against a separate CLI process, and
+// it is keyed by the exact agent_id the call targets.
+var bridgeTurnLocks sync.Map // agentID -> *bridgeTurnLock
+
+type bridgeTurnLock struct {
+	mu sync.Mutex
+}
+
+func bridgeLockFor(agentID string) *bridgeTurnLock {
+	v, _ := bridgeTurnLocks.LoadOrStore(agentID, &bridgeTurnLock{})
+	return v.(*bridgeTurnLock)
+}
 
 // AgentClient is what cmd/agent.go depends on instead of *AgentSDK directly.
 // It mirrors agentv1.AgentServiceClient's shape (the grpc-generated CLIENT
@@ -38,7 +56,28 @@ func ResolveAgentClient(ctx context.Context, sdk *AgentSDK, agentID string) (cli
 	if !bridged {
 		return &localAgentClient{sdk: sdk}, func() error { return nil }, nil
 	}
-	return dialBridge(ctx, sdk.WorkspaceDir, agentID, route)
+
+	// Serialize per agent: take the in-process bridge lock BEFORE spawning the subprocess so
+	// a second dispatch to the same agent waits for the first bridge's whole lifetime (conn
+	// + stream) instead of racing it. This is the layer that was missing in
+	// bugs/wackypub/bridge-concurrent-prompt-lock: two bridge processes on one agent session
+	// collapsed the stdio connection.
+	brLock := bridgeLockFor(agentID)
+	brLock.mu.Lock()
+
+	client, bridgeCleanup, err := dialBridge(ctx, sdk.WorkspaceDir, agentID, route)
+	if err != nil {
+		brLock.mu.Unlock()
+		return nil, nil, err
+	}
+	// Capture bridgeCleanup in a LOCAL so the returned closure does not self-reference the
+	// named return value `cleanup` (Go assigns named returns before the body runs, which
+	// would make this closure call itself forever).
+	return client, func() error {
+		err := bridgeCleanup()
+		brLock.mu.Unlock()
+		return err
+	}, nil
 }
 
 // localAgentClient adapts *AgentSDK to satisfy agentv1.AgentServiceClient (D116 §4).

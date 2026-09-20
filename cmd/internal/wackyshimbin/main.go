@@ -135,6 +135,10 @@ func (s *shimImpl) AddAndGenerateTurnStream(req *agentv1.AddAndGenerateTurnStrea
 }
 
 func (s *shimImpl) AsideQuestion(ctx context.Context, req *agentv1.AsideQuestionRequest) (*agentv1.AsideQuestionResponse, error) {
+	if s.behavior == "aside-slow" {
+		// Hold the bridge a beat so a concurrent dispatch would overlap this process.
+		time.Sleep(150 * time.Millisecond)
+	}
 	return &agentv1.AsideQuestionResponse{
 		Text:        "aside from shim: " + req.GetQuestion(),
 		ToolDenials: 3,
@@ -155,10 +159,27 @@ func (s *shimImpl) Trace(ctx context.Context, req *agentv1.TraceRequest) (*agent
 
 func main() {
 	behavior := flag.String("behavior", "echo", "Behavior configuration for test assertions")
+	guardLock := flag.String("guard-lock", "", "If set, flock this path for the process lifetime; exit 1 if already held (simulates bridge collapse on concurrent spawn)")
 	flag.Parse()
 
 	if *behavior == "never-starts" {
 		os.Exit(1)
+	}
+
+	// Concurrent-spawn guard: the failure mode in bugs/wackypub/bridge-concurrent-prompt-lock
+	// is two bridge processes racing one agent session. When guard-lock is set, a second
+	// process must fail fast - it simulates the stdio conn collapse the real bridge hits.
+	if *guardLock != "" {
+		guardFile, err := os.OpenFile(*guardLock, os.O_CREATE|os.O_RDWR, 0600)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "guard lock open: %v\n", err)
+			os.Exit(1)
+		}
+		if err := syscall.Flock(int(guardFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			fmt.Fprintf(os.Stderr, "bridge already in flight: %v\n", err)
+			os.Exit(1)
+		}
+		defer syscall.Flock(int(guardFile.Fd()), syscall.LOCK_UN)
 	}
 
 	if strings.HasPrefix(*behavior, "slow-exit=") {
