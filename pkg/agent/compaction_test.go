@@ -22,6 +22,8 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
+
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 // TestMain seeds DefaultCompactMD from the real examples/compaction/COMPACT-append.md
@@ -1377,17 +1379,19 @@ func TestCompactSessionWithConfig_Passthrough(t *testing.T) {
 
 	sdk := NewSDK(wsDir)
 
-	override := &CompactConfig{
-		CompactPct: 50,
-		AppendOnly: true,
-		Prompt:     "SDK override prompt",
-	}
-
-	compacted, err := sdk.compactSessionWithConfigLegacy(context.Background(), agentID, true, override)
+	resp, err := sdk.CompactSession(context.Background(), &agentv1.CompactSessionRequest{
+		AgentId: agentID,
+		Force:   true,
+		ConfigOverride: &agentv1.CompactConfigOverride{
+			CompactPct: 0.5,
+			AppendOnly: true,
+			Prompt:     "SDK override prompt",
+		},
+	})
 	if err != nil {
-		t.Fatalf("CompactSessionWithConfig failed: %v", err)
+		t.Fatalf("CompactSession failed: %v", err)
 	}
-	if !compacted {
+	if !resp.GetCompacted() {
 		t.Fatal("expected compaction to succeed")
 	}
 	if capturedPrompt != "SDK override prompt" {
@@ -1502,14 +1506,15 @@ func TestCompactSessionWithOptions_RuntimeOverride(t *testing.T) {
 
 	sdk := NewSDK(wsDir)
 
-	opts := CompactSessionOptions{
+	resp, err := sdk.CompactSession(context.Background(), &agentv1.CompactSessionRequest{
+		AgentId:     agentID,
+		Force:       true,
 		RuntimePath: overrideRtFile,
-	}
-	compacted, err := sdk.compactSessionWithOptionsLegacy(context.Background(), agentID, true, opts)
+	})
 	if err != nil {
-		t.Fatalf("CompactSessionWithOptions failed: %v", err)
+		t.Fatalf("CompactSession failed: %v", err)
 	}
-	if !compacted {
+	if !resp.GetCompacted() {
 		t.Fatal("expected compaction to succeed")
 	}
 

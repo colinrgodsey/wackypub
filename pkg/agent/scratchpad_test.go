@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"google.golang.org/genai"
+
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 func TestScratchpadCreationAndRetrieval(t *testing.T) {
@@ -249,42 +251,61 @@ func TestSDK_ScratchpadOperations(t *testing.T) {
 
 	// 1. CreateScratchpad via SDK
 	text := "Line 1: Hello SDK\nLine 2: Search target\nLine 3: Goodbye SDK\n"
-	entry, err := sdk.createScratchpadLegacy(agentID, text, "cli_test")
+	createResp, err := sdk.CreateScratchpad(context.Background(), &agentv1.CreateScratchpadRequest{
+		AgentId:   agentID,
+		Text:      text,
+		CreatedBy: "cli_test",
+	})
 	if err != nil {
 		t.Fatalf("sdk.CreateScratchpad failed: %v", err)
 	}
-	if entry.CreatedBy != "cli_test" {
-		t.Errorf("expected CreatedBy 'cli_test', got %q", entry.CreatedBy)
+	entry := createResp.GetEntry()
+	if entry.GetCreatedBy() != "cli_test" {
+		t.Errorf("expected CreatedBy 'cli_test', got %q", entry.GetCreatedBy())
 	}
 
 	// 2. GetScratchpad via SDK
-	readBack, err := sdk.getScratchpadLegacy(agentID, entry.ID, nil, nil)
+	getResp, err := sdk.GetScratchpad(context.Background(), &agentv1.GetScratchpadRequest{
+		AgentId: agentID,
+		EntryId: entry.GetEntryId(),
+	})
 	if err != nil {
 		t.Fatalf("sdk.GetScratchpad failed: %v", err)
 	}
+	readBack := getResp.GetText()
 	if readBack != text {
 		t.Errorf("got %q, expected %q", readBack, text)
 	}
 
 	// 3. ListScratchpads via SDK
-	items, count, capVal, err := sdk.listScratchpadsLegacy(agentID)
+	listResp, err := sdk.ListScratchpads(context.Background(), &agentv1.ListScratchpadsRequest{
+		AgentId: agentID,
+	})
 	if err != nil {
 		t.Fatalf("sdk.ListScratchpads failed: %v", err)
 	}
+	items := listResp.GetEntries()
+	count := listResp.GetTotalEntries()
+	capVal := listResp.GetMaxCapacity()
 	if count != 1 || capVal != MaxScratchpadEntries || len(items) != 1 {
 		t.Errorf("unexpected list output: count %d, cap %d, len %d", count, capVal, len(items))
 	}
 
 	// 4. SearchScratchpad via SDK
-	searchRes, err := sdk.searchScratchpadLegacy(agentID, entry.ID, "target", nil, false, 10)
+	searchRes, err := sdk.SearchScratchpad(context.Background(), &agentv1.SearchScratchpadRequest{
+		AgentId:    agentID,
+		EntryId:    entry.GetEntryId(),
+		Query:      "target",
+		MaxResults: 10,
+	})
 	if err != nil {
 		t.Fatalf("sdk.SearchScratchpad failed: %v", err)
 	}
-	if searchRes.TotalMatches != 1 {
-		t.Errorf("expected 1 match, got %d", searchRes.TotalMatches)
+	if searchRes.GetTotalMatches() != 1 {
+		t.Errorf("expected 1 match, got %d", searchRes.GetTotalMatches())
 	}
-	if len(searchRes.Matches) > 0 && searchRes.Matches[0].Line != 2 {
-		t.Errorf("expected line 2, got %d", searchRes.Matches[0].Line)
+	if len(searchRes.GetMatches()) > 0 && searchRes.GetMatches()[0].GetLine() != 2 {
+		t.Errorf("expected line 2, got %d", searchRes.GetMatches()[0].GetLine())
 	}
 }
 
@@ -1225,13 +1246,25 @@ func TestSDKDiffScratchpadEntriesRejectsEmptyArguments(t *testing.T) {
 	wsDir, agentID := newDiffTestWorkspace(t)
 	sdk := NewSDK(wsDir)
 
-	if _, err := sdk.diffScratchpadEntriesLegacy("", "aaaa", "bbbb"); err == nil {
+	if _, err := sdk.DiffScratchpadEntries(context.Background(), &agentv1.DiffScratchpadEntriesRequest{
+		AgentId:       "",
+		BeforeEntryId: "aaaa",
+		AfterEntryId:  "bbbb",
+	}); err == nil {
 		t.Error("expected empty agentID to be refused before any authorization check")
 	}
-	if _, err := sdk.diffScratchpadEntriesLegacy(agentID, "", "bbbb"); err == nil {
+	if _, err := sdk.DiffScratchpadEntries(context.Background(), &agentv1.DiffScratchpadEntriesRequest{
+		AgentId:       agentID,
+		BeforeEntryId: "",
+		AfterEntryId:  "bbbb",
+	}); err == nil {
 		t.Error("expected empty beforeID to be refused")
 	}
-	if _, err := sdk.diffScratchpadEntriesLegacy(agentID, "aaaa", ""); err == nil {
+	if _, err := sdk.DiffScratchpadEntries(context.Background(), &agentv1.DiffScratchpadEntriesRequest{
+		AgentId:       agentID,
+		BeforeEntryId: "aaaa",
+		AfterEntryId:  "",
+	}); err == nil {
 		t.Error("expected empty afterID to be refused")
 	}
 }

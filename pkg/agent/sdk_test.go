@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 func TestSDKAddUserTurnAndReadSession(t *testing.T) {
@@ -35,20 +37,23 @@ func TestSDKAddUserTurnAndReadSession(t *testing.T) {
 	}
 	defer os.Chdir(origCwd)
 
-	if _, err := sdk.addUserTurnLegacy(agentID, "What is your quest?"); err != nil {
+	if _, err := sdk.AddUserTurn(context.Background(), &agentv1.AddUserTurnRequest{
+		AgentId: agentID,
+		Message: "What is your quest?",
+	}); err != nil {
 		t.Fatalf("failed to add user turn via SDK: %v", err)
 	}
 
-	turns, err := sdk.readSessionLegacy(agentID)
+	resp, err := sdk.ReadSession(context.Background(), &agentv1.ReadSessionRequest{AgentId: agentID})
 	if err != nil {
 		t.Fatalf("failed to read session via SDK: %v", err)
 	}
-
+	turns := resp.GetTurns()
 	if len(turns) != 1 {
 		t.Fatalf("expected 1 turn, got %d", len(turns))
 	}
 
-	if turns[0].Role != "user" || ContentText(turns[0]) != "What is your quest?" {
+	if turns[0].GetRole() != "user" || len(turns[0].GetParts()) == 0 || turns[0].GetParts()[0].GetText() != "What is your quest?" {
 		t.Errorf("turn contents mismatch: %+v", turns[0])
 	}
 }
@@ -74,24 +79,24 @@ func TestSDKReadMemory(t *testing.T) {
 	}
 	defer os.Chdir(origCwd)
 
-	memory, err := sdk.readMemoryLegacy(agentID)
+	resp, err := sdk.ReadMemory(context.Background(), &agentv1.ReadMemoryRequest{AgentId: agentID})
 	if err != nil {
 		t.Fatalf("unexpected error reading non-existent memory: %v", err)
 	}
-	if memory != "" {
-		t.Errorf("expected empty memory, got %s", memory)
+	if resp.GetMemoryMd() != "" {
+		t.Errorf("expected empty memory, got %s", resp.GetMemoryMd())
 	}
 
 	if err := WriteMemoryFile(agentDir, "Fact: Wizard knows fireball."); err != nil {
 		t.Fatalf("failed writing memory: %v", err)
 	}
 
-	memory, err = sdk.readMemoryLegacy(agentID)
+	resp, err = sdk.ReadMemory(context.Background(), &agentv1.ReadMemoryRequest{AgentId: agentID})
 	if err != nil {
 		t.Fatalf("failed reading memory via SDK: %v", err)
 	}
-	if memory != "Fact: Wizard knows fireball." {
-		t.Errorf("memory content mismatch: %s", memory)
+	if resp.GetMemoryMd() != "Fact: Wizard knows fireball." {
+		t.Errorf("memory content mismatch: %s", resp.GetMemoryMd())
 	}
 }
 
@@ -142,7 +147,7 @@ func TestStreamingAndMultiPartTextPreservation(t *testing.T) {
 
 	// 1. Test AddAndGenerateTurnStream yields both chunks in real time
 	var chunks []string
-	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(ctx, agentID, "What is the answer?") {
+	for chunk, err := range sdk.addAndGenerateTurnStreamImpl(ctx, agentID, "What is the answer?") {
 		if err != nil {
 			t.Fatalf("AddAndGenerateTurnStream failed: %v", err)
 		}
@@ -163,7 +168,7 @@ func TestStreamingAndMultiPartTextPreservation(t *testing.T) {
 
 	// 2. Test AddAndGenerateTurn collects and joins both chunks with \n\n without dropping narration (D69 fix)
 	callCount = 0 // Reset server calls for next turn
-	fullResp, err := sdk.addAndGenerateTurnLegacy(ctx, agentID, "Ask again")
+	fullResp, err := sdk.addAndGenerateTurnImpl(ctx, agentID, "Ask again")
 	if err != nil {
 		t.Fatalf("AddAndGenerateTurn failed: %v", err)
 	}
@@ -217,7 +222,7 @@ func TestStreamingEarlyBreakReleasesLock(t *testing.T) {
 	ctx := context.Background()
 
 	// Break early after first chunk
-	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(ctx, agentID, "Hello") {
+	for chunk, err := range sdk.addAndGenerateTurnStreamImpl(ctx, agentID, "Hello") {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -228,7 +233,7 @@ func TestStreamingEarlyBreakReleasesLock(t *testing.T) {
 
 	// Verify session lock was released cleanly: a subsequent call must acquire lock without blocking/failing
 	callCount = 1 // Next call returns Chunk 2
-	resp, err := sdk.addAndGenerateTurnLegacy(ctx, agentID, "Follow up")
+	resp, err := sdk.addAndGenerateTurnImpl(ctx, agentID, "Follow up")
 	if err != nil {
 		t.Fatalf("subsequent call failed (lock held?): %v", err)
 	}
@@ -242,7 +247,7 @@ func TestSDK_CancelTurn(t *testing.T) {
 	sdk := NewSDK(tempDir)
 
 	// 1. CancelTurn with nothing in flight returns an error naming the agent
-	if err := sdk.cancelTurnLegacy("nonexistent"); err == nil || !strings.Contains(err.Error(), "no in-flight turn for agent \"nonexistent\"") {
+	if _, err := sdk.CancelTurn(context.Background(), &agentv1.CancelTurnRequest{AgentId: "nonexistent"}); err == nil || !strings.Contains(err.Error(), "no in-flight turn for agent \"nonexistent\"") {
 		t.Fatalf("expected no in-flight turn error, got: %v", err)
 	}
 
@@ -283,7 +288,7 @@ func TestSDK_CancelTurn(t *testing.T) {
 	streamDone := make(chan error, 1)
 	go func() {
 		var streamErr error
-		for _, err := range sdk.addAndGenerateTurnStreamLegacy(context.Background(), agentID, "Hello") {
+		for _, err := range sdk.addAndGenerateTurnStreamImpl(context.Background(), agentID, "Hello") {
 			if err != nil {
 				streamErr = err
 				break
@@ -300,7 +305,7 @@ func TestSDK_CancelTurn(t *testing.T) {
 	}
 
 	// Cancel the in-flight turn
-	if err := sdk.cancelTurnLegacy(agentID); err != nil {
+	if _, err := sdk.CancelTurn(context.Background(), &agentv1.CancelTurnRequest{AgentId: agentID}); err != nil {
 		t.Fatalf("CancelTurn failed: %v", err)
 	}
 
@@ -315,7 +320,7 @@ func TestSDK_CancelTurn(t *testing.T) {
 	}
 
 	// After stream completion, CancelTurn must again report no in-flight turn
-	if err := sdk.cancelTurnLegacy(agentID); err == nil || !strings.Contains(err.Error(), "no in-flight turn") {
+	if _, err := sdk.CancelTurn(context.Background(), &agentv1.CancelTurnRequest{AgentId: agentID}); err == nil || !strings.Contains(err.Error(), "no in-flight turn") {
 		t.Fatalf("expected no in-flight turn after completion, got: %v", err)
 	}
 }
@@ -330,7 +335,7 @@ func TestSDK_CancelTurn_ConcurrentSafety(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			agent := fmt.Sprintf("agent_%d", id%5)
-			_ = sdk.cancelTurnLegacy(agent)
+			_, _ = sdk.CancelTurn(context.Background(), &agentv1.CancelTurnRequest{AgentId: agent})
 		}(i)
 	}
 	wg.Wait()
@@ -360,30 +365,30 @@ func TestD93_InspectSessionContext(t *testing.T) {
 	}
 
 	// 1. Initial report without session
-	rep, err := sdk.inspectSessionContextLegacy("testbot")
+	rep, err := sdk.InspectSessionContext(context.Background(), &agentv1.InspectSessionContextRequest{AgentId: "testbot"})
 	if err != nil {
 		t.Fatalf("InspectSessionContext failed: %v", err)
 	}
-	if rep.AgentID != "testbot" || rep.Model != "deepseek-chat" {
+	if rep.GetAgentId() != "testbot" || rep.GetModel() != "deepseek-chat" {
 		t.Errorf("unexpected report meta: %+v", rep)
 	}
-	if rep.ContextWindow != 100000 || rep.CompactionThreshold != 80000 {
-		t.Errorf("unexpected window/threshold: %d / %d", rep.ContextWindow, rep.CompactionThreshold)
+	if rep.GetContextWindow() != 100000 || rep.GetCompactionThreshold() != 80000 {
+		t.Errorf("unexpected window/threshold: %d / %d", rep.GetContextWindow(), rep.GetCompactionThreshold())
 	}
-	if rep.PromptTokensEstimate == 0 || rep.MemoryTokensEstimate == 0 {
-		t.Errorf("expected nonzero prompt/memory tokens: prompt=%d mem=%d", rep.PromptTokensEstimate, rep.MemoryTokensEstimate)
+	if rep.GetPromptTokensEstimate() == 0 || rep.GetMemoryTokensEstimate() == 0 {
+		t.Errorf("expected nonzero prompt/memory tokens: prompt=%d mem=%d", rep.GetPromptTokensEstimate(), rep.GetMemoryTokensEstimate())
 	}
 
 	// 2. Add turns
 	_ = AppendSessionTurn(agentDir, "user", "Hello world from user")
 	_ = AppendSessionTurn(agentDir, "model", "Hello back from model")
 
-	rep2, err := sdk.inspectSessionContextLegacy("testbot")
+	rep2, err := sdk.InspectSessionContext(context.Background(), &agentv1.InspectSessionContextRequest{AgentId: "testbot"})
 	if err != nil {
 		t.Fatalf("InspectSessionContext failed: %v", err)
 	}
-	if rep2.TurnCount != 2 || rep2.SessionTurnsTokens == 0 {
-		t.Errorf("expected turns counted: turns=%d tokens=%d", rep2.TurnCount, rep2.SessionTurnsTokens)
+	if rep2.GetTurnCount() != 2 || rep2.GetSessionTurnsTokens() == 0 {
+		t.Errorf("expected turns counted: turns=%d tokens=%d", rep2.GetTurnCount(), rep2.GetSessionTurnsTokens())
 	}
 
 	// 3. Write .last_usage.json sidecar
@@ -397,11 +402,11 @@ func TestD93_InspectSessionContext(t *testing.T) {
 		t.Fatalf("WriteLastUsage failed: %v", err)
 	}
 
-	rep3, err := sdk.inspectSessionContextLegacy("testbot")
+	rep3, err := sdk.InspectSessionContext(context.Background(), &agentv1.InspectSessionContextRequest{AgentId: "testbot"})
 	if err != nil {
 		t.Fatalf("InspectSessionContext failed: %v", err)
 	}
-	if rep3.LastTotalTokens != 1750 || rep3.LastPromptTokens != 1500 {
+	if rep3.GetLastTotalTokens() != 1750 || rep3.GetLastPromptTokens() != 1500 {
 		t.Errorf("expected last usage reflected: %+v", rep3)
 	}
 
@@ -409,11 +414,11 @@ func TestD93_InspectSessionContext(t *testing.T) {
 	if err := InvalidateLastUsage(agentDir); err != nil {
 		t.Fatalf("InvalidateLastUsage failed: %v", err)
 	}
-	rep4, err := sdk.inspectSessionContextLegacy("testbot")
+	rep4, err := sdk.InspectSessionContext(context.Background(), &agentv1.InspectSessionContextRequest{AgentId: "testbot"})
 	if err != nil {
 		t.Fatalf("InspectSessionContext failed: %v", err)
 	}
-	if !rep4.Compacted || rep4.LastTotalTokens != 0 {
+	if !rep4.GetCompacted() || rep4.GetLastTotalTokens() != 0 {
 		t.Errorf("expected compacted invalidation reflected: %+v", rep4)
 	}
 }

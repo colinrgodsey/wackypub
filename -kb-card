@@ -1,0 +1,4 @@
+
+## REFINED ROOT CAUSE (Colin review on PR #45, 2026-09-18)
+
+PR #45's display-layer fix was wrong granularity and was REJECTED/closed. Native agents stream whole TEXT PARTS through the iterator - per-part display and the \n\n event joins are CORRECT. The real bug is wackyacp: handleIncomingNotification (client.go:294) relays EVERY ACP agent_message_chunk delta as its own D112 chunk, but per the ACP protocol consecutive agent_message_chunk updates append to the SAME logical message content block. Fix: wackyacp coalesces consecutive agent_message_chunk text into a buffer and flushes one D112 chunk per logical part (on any non-chunk session/update arriving: tool_call, tool_call_update, usage_update - or on turn end). wackypub side unchanged.
