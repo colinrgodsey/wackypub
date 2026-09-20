@@ -2,6 +2,10 @@ module github.com/colinrgodsey/wackypub
 
 go 1.25.7
 
+// HTTPOptions.MaxRetries (openai-go retry budget) per runtime.json maxRetries.
+// Replace is dropped once upstream merges MaxRetries and gets a tag; the vendored
+// copy pins the exact achetronic revision wackypub builds against today.
+
 require (
 	github.com/achetronic/adk-utils-go v0.23.1-0.20260810132742-1f0a646bcdfd
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be
@@ -17,6 +21,8 @@ require (
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+replace github.com/achetronic/adk-utils-go => github.com/DranboFieldston/adk-utils-go v1.1.1-0.20260910015947-f5db46c6ef9e
 
 require (
 	cloud.google.com/go v0.123.0 // indirect
