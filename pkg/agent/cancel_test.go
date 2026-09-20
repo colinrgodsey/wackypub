@@ -305,7 +305,7 @@ func TestCancelAgentTurn_InProcessTurn(t *testing.T) {
 	sdk := NewSDK(wsDir)
 	streamDone := make(chan error, 1)
 	go func() {
-		for _, err := range sdk.addAndGenerateTurnStreamLegacy(context.Background(), "inprocagent", "Hello") {
+		for _, err := range sdk.addAndGenerateTurnStreamImpl(context.Background(), "inprocagent", "Hello") {
 			if err != nil {
 				streamDone <- err
 				return

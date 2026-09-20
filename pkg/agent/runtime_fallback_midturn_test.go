@@ -39,7 +39,7 @@ func TestRuntimeFallback_ZeroTextMidTurnFailover(t *testing.T) {
 	var chunks []string
 	var warnings []string
 	var gotErr error
-	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(ctx, "fbagent", "question", func(w string) { warnings = append(warnings, w) }) {
+	for chunk, err := range sdk.addAndGenerateTurnStreamImpl(ctx, "fbagent", "question", func(w string) { warnings = append(warnings, w) }) {
 		if err != nil {
 			gotErr = err
 			break
@@ -108,7 +108,7 @@ func TestRuntimeFallback_TextThenQuota429_AnnotatesReset(t *testing.T) {
 	var partial []string
 	var warnings []string
 	var gotErr error
-	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(ctx, "fbagent", "question", func(w string) { warnings = append(warnings, w) }) {
+	for chunk, err := range sdk.addAndGenerateTurnStreamImpl(ctx, "fbagent", "question", func(w string) { warnings = append(warnings, w) }) {
 		if err != nil {
 			gotErr = err
 			break
@@ -172,7 +172,7 @@ func TestRuntimeFallback_SkipPrimaryUntilReset(t *testing.T) {
 	// Turn 1: primary 429s with reset metadata -> same-turn fallback + records failed-until.
 	var chunks1 []string
 	var warnings1 []string
-	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(ctx, "fbagent", "q1", func(w string) { warnings1 = append(warnings1, w) }) {
+	for chunk, err := range sdk.addAndGenerateTurnStreamImpl(ctx, "fbagent", "q1", func(w string) { warnings1 = append(warnings1, w) }) {
 		if err != nil {
 			t.Fatalf("turn 1 error: %v", err)
 		}
@@ -191,7 +191,7 @@ func TestRuntimeFallback_SkipPrimaryUntilReset(t *testing.T) {
 
 	var chunks2 []string
 	var warnings2 []string
-	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(ctx, "fbagent", "q2", func(w string) { warnings2 = append(warnings2, w) }) {
+	for chunk, err := range sdk.addAndGenerateTurnStreamImpl(ctx, "fbagent", "q2", func(w string) { warnings2 = append(warnings2, w) }) {
 		if err != nil {
 			t.Fatalf("turn 2 error: %v", err)
 		}

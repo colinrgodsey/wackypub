@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +13,8 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
+
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 func TestAddMedia_GatingAndExecution(t *testing.T) {
@@ -48,7 +49,10 @@ func TestAddMedia_GatingAndExecution(t *testing.T) {
 	}
 
 	testImgData := createTestImage(800, 600, false)
-	_, err = sdk.addMediaLegacy(agentID, bytes.NewReader(testImgData))
+	_, err = sdk.AddMedia(context.Background(), &agentv1.AddMediaRequest{
+		AgentId:   agentID,
+		MediaData: testImgData,
+	})
 	if err == nil {
 		t.Fatal("expected error when maxImageDimension is absent/disabled, got nil")
 	}
@@ -59,22 +63,23 @@ func TestAddMedia_GatingAndExecution(t *testing.T) {
 		t.Fatalf("failed to write runtime.json: %v", err)
 	}
 
-	var content *genai.Content
-	content, err = sdk.addMediaLegacy(agentID, bytes.NewReader(testImgData))
+	mediaResp, err := sdk.AddMedia(context.Background(), &agentv1.AddMediaRequest{
+		AgentId:   agentID,
+		MediaData: testImgData,
+	})
 	if err != nil {
 		t.Fatalf("AddMedia failed: %v", err)
 	}
 
-	if content.Role != "user" || len(content.Parts) != 1 || content.Parts[0].InlineData == nil {
-		t.Fatalf("unexpected Content structure: %+v", content)
+	if mediaResp.GetTurn().GetRole() != "user" || len(mediaResp.GetTurn().GetParts()) != 1 || len(mediaResp.GetTurn().GetParts()[0].GetInlineData()) == 0 {
+		t.Fatalf("unexpected Turn structure: %+v", mediaResp.GetTurn())
 	}
 
-	blob := content.Parts[0].InlineData
-	if blob.MIMEType != "image/jpeg" {
-		t.Errorf("expected MIMEType image/jpeg, got %s", blob.MIMEType)
+	if mediaResp.GetMimeType() != "image/jpeg" {
+		t.Errorf("expected MIMEType image/jpeg, got %s", mediaResp.GetMimeType())
 	}
 
-	turns, err := sdk.readSessionLegacy(agentID)
+	turns, err := ReadSessionTurns(agentDir)
 	if err != nil {
 		t.Fatalf("ReadSession failed: %v", err)
 	}

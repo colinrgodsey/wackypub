@@ -55,7 +55,7 @@ func TestRuntimeFallback_MidStreamFailureNeverMasks(t *testing.T) {
 
 	var partial []string
 	var gotErr error
-	for chunk, err := range sdk.addAndGenerateTurnStreamLegacy(ctx, "fbagent", "question") {
+	for chunk, err := range sdk.addAndGenerateTurnStreamImpl(ctx, "fbagent", "question") {
 		if err != nil {
 			gotErr = err
 			break
@@ -139,7 +139,7 @@ func TestRuntimeFallback_MidTurnErrorOnSecondCall_FailsForward(t *testing.T) {
 
 	var partial []string
 	var gotErr error
-	for chunk, err := range sdk.generateTurnStreamLegacy(ctx, "fbagent") {
+	for chunk, err := range sdk.generateTurnStreamImpl(ctx, "fbagent") {
 		if err != nil {
 			gotErr = err
 			break
