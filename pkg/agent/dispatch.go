@@ -3,28 +3,10 @@ package agent
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 	"google.golang.org/grpc"
 )
-
-// bridgeTurnLocks serializes bridge dispatches per agent within this process: two
-// concurrent prompts/generates to the SAME agent must not spawn two bridge processes at
-// once (the failure mode in bugs/wackypub/bridge-concurrent-prompt-lock - the second
-// bridge collapses on a stdio conn the first already owns). The lock is NOT the session
-// flock: it is in-process only, so it cannot deadlock against a separate CLI process, and
-// it is keyed by the exact agent_id the call targets.
-var bridgeTurnLocks sync.Map // agentID -> *bridgeTurnLock
-
-type bridgeTurnLock struct {
-	mu sync.Mutex
-}
-
-func bridgeLockFor(agentID string) *bridgeTurnLock {
-	v, _ := bridgeTurnLocks.LoadOrStore(agentID, &bridgeTurnLock{})
-	return v.(*bridgeTurnLock)
-}
 
 // AgentClient is what cmd/agent.go depends on instead of *AgentSDK directly.
 // It mirrors agentv1.AgentServiceClient's shape (the grpc-generated CLIENT
@@ -57,25 +39,43 @@ func ResolveAgentClient(ctx context.Context, sdk *AgentSDK, agentID string) (cli
 		return &localAgentClient{sdk: sdk}, func() error { return nil }, nil
 	}
 
-	// Serialize per agent: take the in-process bridge lock BEFORE spawning the subprocess so
-	// a second dispatch to the same agent waits for the first bridge's whole lifetime (conn
-	// + stream) instead of racing it. This is the layer that was missing in
-	// bugs/wackypub/bridge-concurrent-prompt-lock: two bridge processes on one agent session
-	// collapsed the stdio connection.
-	brLock := bridgeLockFor(agentID)
-	brLock.mu.Lock()
+	// Cross-process turn gate: wackypub is CLI-per-process, so an in-process mutex cannot
+	// serialize two separate `wackypub agent prompt` invocations - which is exactly the
+	// failure mode in bugs/wackypub/bridge-concurrent-prompt-lock (two bridge processes
+	// racing one agent session, the second collapsing on a stdio conn the first owns).
+	// Take the same session flock the SDK turn paths take, BEFORE spawning the subprocess,
+	// and hold it for the bridge lifetime. This unifies the invariant: one turn per agent
+	// at a time, whether local SDK path (which AcquireSessionLock's internally) or bridged
+	// dispatch. AcquireSessionLock uses a blocking flock, so a second dispatch WAITS for the
+	// first to finish rather than failing busy - deliberate: the local path blocks on the
+	// same lock (addAndGenerateTurnStreamImpl), and a CLI caller whose turn collides with a
+	// genuinely in-flight one a second later should wait, not error.
+	//
+	// The gate applies to ALL bridged dispatch, aside included: aside is one-shot and
+	// forked on the LOCAL path (its copy-on-read deliberately takes no lock), but a bridged
+	// aside still spawns a bridge process, and the wackyacp busy slot (layer 2) is
+	// per-process - two bridge processes are two busy slots, so only this flock protects
+	// the bridged boundary from a concurrent turn.
+	agentDir := sdk.AgentDir(agentID)
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("acquiring session lock for bridged dispatch of %q: %w", agentID, err)
+	}
 
 	client, bridgeCleanup, err := dialBridge(ctx, sdk.WorkspaceDir, agentID, route)
 	if err != nil {
-		brLock.mu.Unlock()
+		lock.Release()
 		return nil, nil, err
 	}
-	// Capture bridgeCleanup in a LOCAL so the returned closure does not self-reference the
-	// named return value `cleanup` (Go assigns named returns before the body runs, which
-	// would make this closure call itself forever).
+	// The flock is held for the bridge lifetime: released in the cleanup closure callers
+	// MUST defer, NOT at this function's return (a defer here would release the instant
+	// the bridge is spawned, defeating the gate). Capture bridgeCleanup in a LOCAL so the
+	// returned closure does not self-reference the named return value `cleanup` (Go assigns
+	// named returns before the body runs, which would make this closure call itself
+	// forever).
 	return client, func() error {
 		err := bridgeCleanup()
-		brLock.mu.Unlock()
+		lock.Release()
 		return err
 	}, nil
 }

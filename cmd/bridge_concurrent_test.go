@@ -15,10 +15,25 @@ import (
 // TestRemoteDispatch_ConcurrentSameAgentSerializes reproduces
 // bugs/wackypub/bridge-concurrent-prompt-lock at the dispatch layer: two concurrent
 // RPCs to the SAME bridged agent must serialize (one bridge process at a time), never
-// racing two bridge processes against one agent session. The shim is started with
-// --guard-lock so a second concurrent bridge process exits 1 - without the dispatch-
-// side serialization this surfaces as a died-bridge/unclosed-stream failure on one of
-// the two calls.
+// racing two bridge processes against one agent session.
+//
+// The gate is the cross-process session flock (AcquireSessionLock) taken in
+// ResolveAgentClient before dialBridge and held for the bridge lifetime - wackypub is
+// CLI-per-process, so an in-process mutex cannot serialize two separate invocations, and
+// tonight's failures were exactly separate processes. The flock is blocking, so the
+// chosen semantics for a blocked second dispatch is WAIT-then-succeed (the same behavior
+// the local SDK turn path has on this lock), not a busy error.
+//
+// This exercises the bridged ASIDE path (asideQuestionProto goes through
+// ResolveAgentClient): a bridged aside must take the same gate as a bridged turn, because
+// it still spawns a bridge process and the wackyacp busy slot (layer 2) is per-process -
+// two bridge processes are two busy slots. The LOCAL aside path deliberately takes no
+// lock (copy-on-read; see TestAside_DoesNotContendWithLiveTurnLock) - that invariant is
+// unchanged.
+//
+// The shim is started with --guard-lock so a second concurrent bridge process exits 1:
+// without the dispatch-side serialization this surfaces as a died-bridge/unclosed-stream
+// failure on one of the two calls (verified RED on origin/main).
 func TestRemoteDispatch_ConcurrentSameAgentSerializes(t *testing.T) {
 	wsDir := t.TempDir()
 	shim := getShim(t)
