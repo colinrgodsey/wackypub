@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"os"
 	"os/exec"
@@ -15,12 +16,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/jsonschema-go/jsonschema"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/tool"
-	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 )
 
@@ -29,134 +28,10 @@ const (
 	EnvCommandTimeoutSeconds     = "WACKYPUB_COMMAND_TIMEOUT_SECONDS"
 )
 
-type CreateScratchpadArgs struct {
-	Text string `json:"text" jsonschema_description:"Text content to store in a persistent scratchpad entry"`
-}
-
-type CreateScratchpadResult struct {
-	ID       string   `json:"id"`
-	Size     int      `json:"size"`
-	Warning  string   `json:"warning,omitempty"`
-	Warnings []string `json:"warnings,omitempty"`
-}
-
-type GetScratchpadArgs struct {
-	ID        string `json:"id" jsonschema_description:"4-character ID of the scratchpad entry to read"`
-	SkipLines *int   `json:"skip_lines,omitempty" jsonschema_description:"Optional number of lines to skip from the beginning"`
-	NumLines  *int   `json:"num_lines,omitempty" jsonschema_description:"Optional maximum number of lines to retrieve"`
-}
-
-type GetScratchpadResult struct {
-	Output       string `json:"output"`
-	Deferred     bool   `json:"deferred,omitempty"`
-	ScratchpadID string `json:"scratchpad_id,omitempty"`
-}
-
-type ListScratchpadsArgs struct{}
-
-type ListScratchpadsResult struct {
-	Entries []ScratchpadItem `json:"entries"`
-	Count   int              `json:"count"`
-	Cap     int              `json:"cap"`
-}
-
-type SearchScratchpadArgs struct {
-	ID            string `json:"id" jsonschema_description:"Required scratchpad entry ID to search"`
-	Query         string `json:"query" jsonschema_description:"Search query string"`
-	CaseSensitive *bool  `json:"case_sensitive,omitempty" jsonschema_description:"Whether search is case-sensitive (default: true)"`
-	Regex         bool   `json:"regex,omitempty" jsonschema_description:"Opt-in to treat query as a regular expression (default: false)"`
-	MaxResults    int    `json:"max_results,omitempty" jsonschema_description:"Maximum number of matching lines to return (default: 50)"`
-}
-
-type DeleteScratchpadArgs struct {
-	ID string `json:"id" jsonschema_description:"4-character ID of the scratchpad entry to delete"`
-}
-
-type DeleteScratchpadResult struct {
-	Status string `json:"status"`
-}
-
-// DiffScratchpadArgs names the two entries to compare. Both have to exist: there is no mode
-// where a missing side counts as empty, because that turns a typo into a whole-file patch.
-type DiffScratchpadArgs struct {
-	BeforeID string `json:"before_id" jsonschema_description:"4-character ID of the entry holding the earlier state"`
-	AfterID  string `json:"after_id" jsonschema_description:"4-character ID of the entry holding the later state"`
-}
-
-type DiffScratchpadResult struct {
-	// Diff is the unified patch, empty when the entries are identical.
-	Diff string `json:"diff"`
-	// Identical lets "did anything change" be read off the result instead of tested for an
-	// empty string, which is easy to confuse with an entry that is itself empty.
-	Identical bool `json:"identical"`
-}
-
-// diffScratchpadToolResult maps a rendered diff onto the tool result. It exists as a function so
-// that the promise the result makes, identical exactly when there is no patch, is testable
-// without driving a whole model turn to reach the tool handler.
-func diffScratchpadToolResult(diff string) DiffScratchpadResult {
-	return DiffScratchpadResult{Diff: diff, Identical: diff == ""}
-}
-
 type ExecToolArgs struct {
 	Args  []string          `json:"args,omitempty" jsonschema_description:"List of CLI command line arguments passed positionally to the tool (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
 	Env   map[string]string `json:"env,omitempty" jsonschema_description:"Key-value object map of environment variables to set for the tool invocation (not macro-expanded)"`
 	Stdin string            `json:"stdin,omitempty" jsonschema_description:"Optional stdin template string to pipe into the command (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
-}
-
-type RunCommandArgs struct {
-	Command string            `json:"command" jsonschema_description:"Name of the command executable to run from the discovered tools list"`
-	Args    []string          `json:"args" jsonschema_description:"List of CLI command line arguments passed positionally to the tool (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
-	Env     map[string]string `json:"env,omitempty" jsonschema_description:"Key-value object map of environment variables to set for the tool invocation (not macro-expanded)"`
-	Stdin   string            `json:"stdin,omitempty" jsonschema_description:"Optional stdin template string to pipe into the command (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
-}
-
-type RunCommandResult struct {
-	Output   string   `json:"output"`
-	Warning  string   `json:"warning,omitempty"`
-	Warnings []string `json:"warnings,omitempty"`
-}
-
-type LoadSkillArgs struct {
-	Name string `json:"name" jsonschema_description:"Name of the skill to load into conversation context"`
-}
-
-type LoadSkillResult struct {
-	Output string `json:"output"`
-}
-
-type LoadSkillExtraArgs struct {
-	SkillName    string `json:"skill_name" jsonschema_description:"Name of the skill whose extra file to read"`
-	RelativePath string `json:"relative_path" jsonschema_description:"Relative path to the file inside the skill folder (e.g. reference/schema.md, images/sample.png)"`
-}
-
-type LoadSkillExtraResult struct {
-	Output       string `json:"output,omitempty"`
-	Deferred     bool   `json:"deferred,omitempty"`
-	ScratchpadID string `json:"scratchpad_id,omitempty"`
-}
-
-type ListSkillExtraArgs struct {
-	SkillName string `json:"skill_name" jsonschema_description:"Name of the skill whose extra files to list"`
-}
-
-type ListSkillExtraResult struct {
-	Files []string `json:"files"`
-	Count int      `json:"count"`
-}
-
-type RunSkillScriptArgs struct {
-	SkillName    string            `json:"skill_name" jsonschema_description:"Name of the skill containing the script"`
-	RelativePath string            `json:"relative_path" jsonschema_description:"Relative path to the executable script inside the skill folder (e.g. scripts/build.sh)"`
-	Args         []string          `json:"args,omitempty" jsonschema_description:"List of CLI command line arguments passed positionally to the script (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
-	Env          map[string]string `json:"env,omitempty" jsonschema_description:"Key-value object map of environment variables to set for the script invocation (not macro-expanded)"`
-	Stdin        string            `json:"stdin,omitempty" jsonschema_description:"Optional stdin template string to pipe into the script (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
-}
-
-type RunSkillScriptResult struct {
-	Output   string   `json:"output"`
-	Warning  string   `json:"warning,omitempty"`
-	Warnings []string `json:"warnings,omitempty"`
 }
 
 // BuildFolderAgentTools constructs ADK functiontool instances for built-in tools (create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, diff_scratchpad)
@@ -184,395 +59,24 @@ func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, command
 		}
 	}
 
-	// 1. create_scratchpad
-	createTool, err := functiontool.New(functiontool.Config{
-		Name:        "create_scratchpad",
-		Description: "Store a text payload in a persistent, session-level scratchpad entry. Returns a freshly generated 4-character ID.",
-	}, func(ctx agent.Context, args CreateScratchpadArgs) (CreateScratchpadResult, error) {
-		entry, err := CreateScratchpad(agentDir, args.Text, "create_scratchpad")
-		if err != nil {
-			return CreateScratchpadResult{}, fmt.Errorf("failed to create scratchpad entry: %w", err)
-		}
-		return CreateScratchpadResult{
-			ID:       entry.ID,
-			Size:     entry.Size,
-			Warning:  entry.Warning,
-			Warnings: entry.Warnings,
-		}, nil
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create create_scratchpad tool: %w", err)
+	if err := registerScratchpadTools(agentDir, addTool); err != nil {
+		return nil, nil, err
 	}
-	addTool(createTool)
-
-	// 2. get_scratchpad
-	getTool, err := functiontool.New(functiontool.Config{
-		Name:        "get_scratchpad",
-		Description: "Retrieve stored text from a scratchpad entry by ID, optionally paginated by line range. If the entry contains an image and image support is enabled, it is queued for your next turn.",
-	}, func(ctx agent.Context, args GetScratchpadArgs) (GetScratchpadResult, error) {
-		filePath, _, isBinary, err := findScratchpadFile(agentDir, args.ID)
-		if err != nil {
-			return GetScratchpadResult{}, err
-		}
-
-		if isBinary {
-			header, err := ReadMediaHeader(filePath)
-			if err != nil {
-				return GetScratchpadResult{}, err
-			}
-			_, mimeType := DetectMediaType(header)
-
-			// Gating: only defer if image support is enabled on runtime config
-			runtimeCfg := loadRuntimeCfgForGating(agentDir)
-			if runtimeCfg != nil && runtimeCfg.MaxImageDimension > 0 && strings.HasPrefix(mimeType, "image/") {
-				return GetScratchpadResult{
-					Output:       fmt.Sprintf("This scratchpad contains an image (%s) that will be available in your next turn.", mimeType),
-					Deferred:     true,
-					ScratchpadID: args.ID,
-				}, nil
-			}
-
-			return GetScratchpadResult{}, fmt.Errorf("scratchpad entry %q is binary data (%s) and cannot be read as text", args.ID, mimeType)
-		}
-
-		out, err := GetScratchpad(agentDir, args.ID, args.SkipLines, args.NumLines)
-		if err != nil {
-			return GetScratchpadResult{}, err
-		}
-		return GetScratchpadResult{Output: out}, nil
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create get_scratchpad tool: %w", err)
+	if err := registerCommandTools(agentDir, a2aMeta, timeoutSeconds, addTool); err != nil {
+		return nil, nil, err
 	}
-	addTool(getTool)
-
-	// 3. list_scratchpads
-	listTool, err := functiontool.New(functiontool.Config{
-		Name:        "list_scratchpads",
-		Description: "List metadata for all currently-live scratchpad entries (ID, size, lines, created_by, is_binary, mime_type), ordered oldest-first, and current capacity usage.",
-	}, func(ctx agent.Context, args ListScratchpadsArgs) (ListScratchpadsResult, error) {
-		items, count, capVal, err := ListScratchpads(agentDir)
-		if err != nil {
-			return ListScratchpadsResult{}, fmt.Errorf("failed to list scratchpads: %w", err)
-		}
-		return ListScratchpadsResult{
-			Entries: items,
-			Count:   count,
-			Cap:     capVal,
-		}, nil
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create list_scratchpads tool: %w", err)
+	if err := registerSkillTools(agentDir, a2aMeta, timeoutSeconds, addTool); err != nil {
+		return nil, nil, err
 	}
-	addTool(listTool)
-
-	// 4. search_scratchpad
-	searchTool, err := functiontool.New(functiontool.Config{
-		Name:        "search_scratchpad",
-		Description: "Search a specific text scratchpad entry by ID for matching lines. Returns 1-indexed line numbers and precomputed skip_lines for get_scratchpad pagination.",
-	}, func(ctx agent.Context, args SearchScratchpadArgs) (*SearchScratchpadResult, error) {
-		return SearchScratchpad(agentDir, args.ID, args.Query, args.CaseSensitive, args.Regex, args.MaxResults)
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create search_scratchpad tool: %w", err)
-	}
-	addTool(searchTool)
-
-	// 5. delete_scratchpad
-	deleteTool, err := functiontool.New(functiontool.Config{
-		Name:        "delete_scratchpad",
-		Description: "Delete a scratchpad entry by ID. Recommended for releasing large binary entries (images, audio) once they are no longer needed.",
-	}, func(ctx agent.Context, args DeleteScratchpadArgs) (DeleteScratchpadResult, error) {
-		err := DeleteScratchpad(agentDir, args.ID)
-		if err != nil {
-			return DeleteScratchpadResult{}, err
-		}
-		return DeleteScratchpadResult{Status: "deleted"}, nil
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create delete_scratchpad tool: %w", err)
-	}
-	addTool(deleteTool)
-
-	// 6. diff_scratchpad: comparing two entries is the commonest reason an agent holds a pair,
-	// and until now the only way to do it was shelling out to diff, which needs a shell.
-	diffTool, err := functiontool.New(functiontool.Config{
-		Name:        "diff_scratchpad",
-		Description: "Render a unified diff between two text scratchpad entries, so an edit can be verified without re-reading either version back into context. Snapshot the thing you are about to change, change it, snapshot again, then pass the two entry IDs here. Identical entries return an empty diff with identical=true, so checking whether anything moved is a field lookup rather than a string test. Use it to review the blast radius of a refactor or another agent's candidate version. Text entries only, both sides obey the single-read size cap, and this previews without applying.",
-	}, func(ctx agent.Context, args DiffScratchpadArgs) (DiffScratchpadResult, error) {
-		out, err := diffScratchpadEntriesInDir(agentDir, filepath.Base(agentDir), args.BeforeID, args.AfterID)
-		if err != nil {
-			return DiffScratchpadResult{}, err
-		}
-		return diffScratchpadToolResult(out), nil
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create diff_scratchpad tool: %w", err)
-	}
-	addTool(diffTool)
-
-	// 7. Generic run_command tool covering all discovered executables under <agent_dir>/tools/
-	discoveredMap, discoveredNames, _, err := DiscoverAgentToolsMap(agentDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to discover agent tools: %w", err)
-	}
-
-	var cmdListStr string
-	if len(discoveredNames) > 0 {
-		cmdListStr = strings.Join(discoveredNames, ", ")
-	} else {
-		cmdListStr = "none"
-	}
-
-	runCmdDesc := fmt.Sprintf(
-		"Execute a command binary from tools/. Available commands: %s.\n\n"+
-			"Usage Guidance:\n"+
-			"- The working directory is always the agent's own directory - there's no way to cd elsewhere, since commands don't chain.\n"+
-			"- args entries are passed as literal argv elements, not shell-parsed - no quoting or escaping needed for spaces/special characters.\n"+
-			"- The agent's scratchpad may already contain the data it needs - check before running a command to regenerate something already available.\n"+
-			"- Running a command with no arguments or --help is a legitimate way to learn what it is, how to use it, and what arguments it takes.\n"+
-			"- args entries and the stdin field both support inline <SCRATCHPAD_DATA id=\"X\" skip_lines=\"N\" num_lines=\"M\" json_escape=\"true\" /> macros (skip_lines/num_lines/json_escape optional) - this substitutes the referenced scratchpad entry's content directly, without you ever having to read or repaste it yourself. When json_escape=\"true\" is set, content is substituted as JSON-escaped text (quotes, newlines, and backslashes escaped per RFC 8259) without adding surrounding quotes. Large stdout/stderr from this same tool is automatically captured into a fresh scratchpad entry and returned as <SCRATCHPAD_DATA id=\"X\" size=\"BYTES\" lines=\"LINES\" />, so it can be piped straight into another command's args/stdin this way.",
-		cmdListStr,
-	)
-
-	// Explicitly construct InputSchema to enforce required fields and plain array type for 'args' (D56)
-	runCmdInputSchema := &jsonschema.Schema{
-		Type: "object",
-		Properties: map[string]*jsonschema.Schema{
-			"command": {
-				Type:        "string",
-				Description: "Name of the command executable to run from the discovered tools list",
-			},
-			"args": {
-				Type:        "array",
-				Description: "List of CLI command line arguments passed positionally to the tool (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)",
-				Items: &jsonschema.Schema{
-					Type: "string",
-				},
-			},
-			"env": {
-				Type:        "object",
-				Description: "Key-value object map of environment variables to set for the tool invocation (not macro-expanded)",
-				AdditionalProperties: &jsonschema.Schema{
-					Type: "string",
-				},
-			},
-			"stdin": {
-				Type:        "string",
-				Description: "Optional stdin template string to pipe into the command (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)",
-			},
-		},
-		Required:      []string{"command", "args"},
-		PropertyOrder: []string{"command", "args", "env", "stdin"},
-	}
-
-	runCmdTool, err := functiontool.New(functiontool.Config{
-		Name:        "run_command",
-		Description: runCmdDesc,
-		InputSchema: runCmdInputSchema,
-	}, func(ctx agent.Context, args RunCommandArgs) (RunCommandResult, error) {
-		return executeRunCommand(ctx, agentDir, discoveredMap, a2aMeta, timeoutSeconds, args)
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create run_command tool: %w", err)
-	}
-	addTool(runCmdTool)
-
-	// 8. load_skill tool for on-demand skills
-	skillsMap, onDemandSkills, _, err := DiscoverAgentSkills(agentDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to discover agent skills: %w", err)
-	}
-
-	var skillLines []string
-	for _, sk := range onDemandSkills {
-		skillLines = append(skillLines, fmt.Sprintf("- %s: %s", sk.Name, sk.Description))
-	}
-
-	var skillListStr string
-	if len(skillLines) > 0 {
-		skillListStr = strings.Join(skillLines, "\n")
-	} else {
-		skillListStr = "none"
-	}
-
-	loadSkillDesc := fmt.Sprintf(
-		"Loads an authoritative skill. Output rules and execution workflows are strictly binding.\n\n"+
-			"Available skills:\n%s",
-		skillListStr,
-	)
-
-	loadSkillTool, err := functiontool.New(functiontool.Config{
-		Name:        "load_skill",
-		Description: loadSkillDesc,
-	}, func(ctx agent.Context, args LoadSkillArgs) (LoadSkillResult, error) {
-		sk, ok := skillsMap[args.Name]
-		if !ok || sk.AlwaysLoad {
-			return LoadSkillResult{}, fmt.Errorf("unknown skill %q. See the tool description for the list of available skills", args.Name)
-		}
-		return LoadSkillResult{Output: FormatLoadedSkill(args.Name, sk.Body)}, nil
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create load_skill tool: %w", err)
-	}
-	addTool(loadSkillTool)
-
-	// 9. load_skill_extra tool for reading reference files / images inside a skill
-	loadSkillExtraDesc := "Read a reference document, example file, or image from within a skill's folder by relative path. Text content is returned directly; binary files are stored in a scratchpad entry."
-	loadSkillExtraTool, err := functiontool.New(functiontool.Config{
-		Name:        "load_skill_extra",
-		Description: loadSkillExtraDesc,
-	}, func(ctx agent.Context, args LoadSkillExtraArgs) (LoadSkillExtraResult, error) {
-		sk, ok := skillsMap[args.SkillName]
-		if !ok {
-			return LoadSkillExtraResult{}, fmt.Errorf("unknown skill %q", args.SkillName)
-		}
-		skillDir := filepath.Dir(sk.Path)
-		targetPath, err := ResolveSkillRelativePath(skillDir, args.RelativePath)
-		if err != nil {
-			return LoadSkillExtraResult{}, err
-		}
-		info, err := os.Stat(targetPath)
-		if err != nil {
-			return LoadSkillExtraResult{}, fmt.Errorf("failed to stat file %q: %w", args.RelativePath, err)
-		}
-		if info.IsDir() {
-			return LoadSkillExtraResult{}, fmt.Errorf("%q is a directory, not a file. Use list_skill_extra to see available files", args.RelativePath)
-		}
-		data, err := os.ReadFile(targetPath)
-		if err != nil {
-			return LoadSkillExtraResult{}, fmt.Errorf("failed to read file %q: %w", args.RelativePath, err)
-		}
-		isBin, mimeType := DetectMediaType(data)
-		if isBin {
-			sanitizedPath := strings.ReplaceAll(filepath.Clean(filepath.ToSlash(args.RelativePath)), "/", "_")
-			label := fmt.Sprintf("skill_%s_%s", args.SkillName, sanitizedPath)
-			entry, err := CreateBinaryScratchpad(agentDir, data, label, mimeType)
-			if err != nil {
-				return LoadSkillExtraResult{}, fmt.Errorf("failed to store binary skill file in scratchpad: %w", err)
-			}
-			runtimeCfg := loadRuntimeCfgForGating(agentDir)
-			if runtimeCfg != nil && runtimeCfg.MaxImageDimension > 0 && strings.HasPrefix(mimeType, "image/") {
-				return LoadSkillExtraResult{
-					Output:       fmt.Sprintf("Image (%s) from skill %q has been queued to scratchpad %s and will be available in your next turn.", mimeType, args.SkillName, entry.ID),
-					Deferred:     true,
-					ScratchpadID: entry.ID,
-				}, nil
-			}
-			return LoadSkillExtraResult{
-				Output:       fmt.Sprintf("Binary file (%s, %d bytes) stored in scratchpad entry %s.", mimeType, len(data), entry.ID),
-				ScratchpadID: entry.ID,
-			}, nil
-		}
-		return LoadSkillExtraResult{Output: string(data)}, nil
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create load_skill_extra tool: %w", err)
-	}
-	addTool(loadSkillExtraTool)
-
-	// 10. list_skill_extra tool for recursively listing files in a skill folder
-	listSkillExtraDesc := "Recursively list all extra reference files and bundled scripts inside a skill's folder, excluding SKILL.md itself."
-	listSkillExtraTool, err := functiontool.New(functiontool.Config{
-		Name:        "list_skill_extra",
-		Description: listSkillExtraDesc,
-	}, func(ctx agent.Context, args ListSkillExtraArgs) (ListSkillExtraResult, error) {
-		sk, ok := skillsMap[args.SkillName]
-		if !ok {
-			return ListSkillExtraResult{}, fmt.Errorf("unknown skill %q", args.SkillName)
-		}
-		skillDir := filepath.Dir(sk.Path)
-		files, err := ListSkillExtraFiles(skillDir)
-		if err != nil {
-			return ListSkillExtraResult{}, err
-		}
-		return ListSkillExtraResult{
-			Files: files,
-			Count: len(files),
-		}, nil
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create list_skill_extra tool: %w", err)
-	}
-	addTool(listSkillExtraTool)
-
-	// 11. run_skill_script tool for executing bundled executable scripts in a skill folder
-	runSkillScriptDesc := "Execute a bundled executable script from inside a skill's folder by relative path. Reuses run_command execution semantics, macro expansion, and scratchpad redirection."
-	runSkillScriptTool, err := functiontool.New(functiontool.Config{
-		Name:        "run_skill_script",
-		Description: runSkillScriptDesc,
-	}, func(ctx agent.Context, args RunSkillScriptArgs) (RunSkillScriptResult, error) {
-		return runSkillScriptToolHandler(ctx, agentDir, skillsMap, a2aMeta, timeoutSeconds, args)
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create run_skill_script tool: %w", err)
-	}
-	addTool(runSkillScriptTool)
 
 	return toolMap, decls, nil
 }
 
-func executeRunCommand(ctx context.Context, agentDir string, discoveredMap map[string]string, a2aMeta *A2AMetadata, timeoutSeconds int, args RunCommandArgs) (RunCommandResult, error) {
-	toolPath, ok := discoveredMap[args.Command]
-	if !ok {
-		return RunCommandResult{}, fmt.Errorf("unknown command %q. See the tool description for the list of available commands", args.Command)
-	}
-
-	execArgs := ExecToolArgs{
-		Args:  args.Args,
-		Env:   args.Env,
-		Stdin: args.Stdin,
-	}
-	out, warnings, err := executeTool(ctx, agentDir, args.Command, toolPath, execArgs, a2aMeta, timeoutSeconds)
-	var warnStr string
-	if len(warnings) > 0 {
-		warnStr = strings.Join(warnings, "\n")
-	}
-	return RunCommandResult{Output: out, Warning: warnStr, Warnings: warnings}, err
-}
-
-func runSkillScriptToolHandler(ctx context.Context, agentDir string, skillsMap map[string]*Skill, a2aMeta *A2AMetadata, timeoutSeconds int, args RunSkillScriptArgs) (RunSkillScriptResult, error) {
-	sk, ok := skillsMap[args.SkillName]
-	if !ok {
-		return RunSkillScriptResult{}, fmt.Errorf("unknown skill %q", args.SkillName)
-	}
-	skillDir := filepath.Dir(sk.Path)
-	targetPath, err := ResolveSkillRelativePath(skillDir, args.RelativePath)
-	if err != nil {
-		return RunSkillScriptResult{}, err
-	}
-	info, err := os.Stat(targetPath)
-	if err != nil {
-		return RunSkillScriptResult{}, fmt.Errorf("failed to stat script %q: %w", args.RelativePath, err)
-	}
-	if info.IsDir() {
-		return RunSkillScriptResult{}, fmt.Errorf("%q is a directory, not an executable script", args.RelativePath)
-	}
-	if info.Mode()&0111 == 0 {
-		return RunSkillScriptResult{}, fmt.Errorf("script %q is not marked executable (mode %s)", args.RelativePath, info.Mode())
-	}
-	execArgs := ExecToolArgs{
-		Args:  args.Args,
-		Env:   args.Env,
-		Stdin: args.Stdin,
-	}
-	out, warnings, err := executeTool(ctx, agentDir, filepath.Base(targetPath), targetPath, execArgs, a2aMeta, timeoutSeconds)
-	var warnStr string
-	if len(warnings) > 0 {
-		warnStr = strings.Join(warnings, "\n")
-	}
-	return RunSkillScriptResult{Output: out, Warning: warnStr, Warnings: warnings}, err
-}
-
-func executeTool(ctx context.Context, agentDir string, toolName string, toolPath string, args ExecToolArgs, a2aMeta *A2AMetadata, timeoutSeconds ...int) (string, []string, error) {
-	timeout := DefaultCommandTimeoutSeconds
-	if len(timeoutSeconds) > 0 {
-		timeout = timeoutSeconds[0]
-	}
-
+// prepareToolArgs validates scratchpad references, expands macros, and checks arg size limits.
+func prepareToolArgs(agentDir string, rawArgs []string) ([]string, []string, error) {
 	var warnings []string
-	cmdArgs := make([]string, len(args.Args))
-	for i, rawArg := range args.Args {
+	cmdArgs := make([]string, len(rawArgs))
+	for i, rawArg := range rawArgs {
 		// Check for binary scratchpad references in args (D48: args reject .dat entries outright)
 		if strings.Contains(rawArg, "<SCRATCHPAD_DATA") {
 			matches := scratchpadMacroRegex.FindAllString(rawArg, -1)
@@ -585,7 +89,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 					id := idMatch[1]
 					_, _, isBinary, err := findScratchpadFile(agentDir, id)
 					if err == nil && isBinary {
-						return "", nil, fmt.Errorf("cannot pass binary scratchpad entry %q in command args", id)
+						return nil, nil, fmt.Errorf("cannot pass binary scratchpad entry %q in command args", id)
 					}
 				}
 			}
@@ -593,7 +97,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 
 		expanded, w, err := ExpandScratchpadMacros(agentDir, rawArg)
 		if err != nil {
-			return "", nil, err
+			return nil, nil, err
 		}
 		for _, warn := range w {
 			found := false
@@ -608,11 +112,15 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 			}
 		}
 		if len(expanded) > MaxExpandedArgBytes {
-			return "", nil, fmt.Errorf("expanded argument exceeds 500000 bytes (was %d) - use stdin/stdout scratchpad redirection instead", len(expanded))
+			return nil, nil, fmt.Errorf("expanded argument exceeds 500000 bytes (was %d) - use stdin/stdout scratchpad redirection instead", len(expanded))
 		}
 		cmdArgs[i] = expanded
 	}
+	return cmdArgs, warnings, nil
+}
 
+// resolveExecutableToolPath evaluates symlinks and resolves relative tool paths.
+func resolveExecutableToolPath(toolPath string) string {
 	absToolPath, err := filepath.Abs(toolPath)
 	if err != nil {
 		absToolPath = toolPath
@@ -620,13 +128,125 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	if evalPath, err := filepath.EvalSymlinks(absToolPath); err == nil {
 		absToolPath = evalPath
 	}
+	return absToolPath
+}
 
-	var execCtx context.Context = ctx
-	var cancel context.CancelFunc
+// toolTimeoutContext creates a cancellation context for tool execution when timeout > 0.
+func toolTimeoutContext(ctx context.Context, timeout int) (context.Context, context.CancelFunc) {
 	if timeout > 0 {
-		execCtx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
-		defer cancel()
+		return context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	}
+	return ctx, func() {}
+}
+
+// prepareToolStdin parses and sets up stdin for tool execution, handling binary scratchpad redirection or macro expansion.
+func prepareToolStdin(agentDir string, rawStdin string, warnings []string) (io.Reader, *os.File, []string, error) {
+	if rawStdin == "" {
+		return nil, nil, warnings, nil
+	}
+	trimmedStdin := strings.TrimSpace(rawStdin)
+	// Check if stdin contains binary scratchpad references per D48
+	if strings.Contains(trimmedStdin, "<SCRATCHPAD_DATA") {
+		var binaryID string
+		matches := scratchpadMacroRegex.FindAllString(trimmedStdin, -1)
+		for _, m := range matches {
+			if strings.HasPrefix(m, "\\") {
+				continue
+			}
+			idMatch := macroIDRegex.FindStringSubmatch(m)
+			if len(idMatch) >= 2 {
+				id := idMatch[1]
+				_, _, isBinary, err := findScratchpadFile(agentDir, id)
+				if err == nil && isBinary {
+					binaryID = id
+					break
+				}
+			}
+		}
+
+		if binaryID != "" {
+			// Exact match check: stdin must be ONLY this single macro reference
+			isExact := false
+			if len(matches) == 1 && scratchpadMacroRegex.FindString(trimmedStdin) == trimmedStdin {
+				isExact = true
+			}
+
+			if !isExact {
+				return nil, nil, nil, fmt.Errorf("cannot mix binary scratchpad entry %q with text in stdin", binaryID)
+			}
+
+			// Check for pagination/escaping attributes on binary reference per D48
+			if macroSkipLinesRegex.MatchString(trimmedStdin) || macroNumLinesRegex.MatchString(trimmedStdin) || macroJsonEscapeRegex.MatchString(trimmedStdin) {
+				return nil, nil, nil, fmt.Errorf("cannot use pagination or escaping attributes (skip_lines, num_lines, json_escape) with binary scratchpad entry %q", binaryID)
+			}
+
+			filePath, _, _, err := findScratchpadFile(agentDir, binaryID)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			f, err := os.Open(filePath)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("failed to open binary scratchpad entry %q: %w", binaryID, err)
+			}
+			return f, f, warnings, nil
+		}
+	}
+
+	expandedStdin, w, err := ExpandScratchpadMacros(agentDir, rawStdin)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for _, warn := range w {
+		found := false
+		for _, existing := range warnings {
+			if existing == warn {
+				found = true
+				break
+			}
+		}
+		if !found {
+			warnings = append(warnings, warn)
+		}
+	}
+	return strings.NewReader(expandedStdin), nil, warnings, nil
+}
+
+// formatToolError formats the error and warning block for a failed tool execution.
+func formatToolError(err error, execCtx context.Context, toolName string, timeout int, output string, warnings []string, stdoutBytes, stderrBytes []byte) error {
+	var headline string
+	if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+		headline = fmt.Sprintf("tool %s timed out after %d seconds", toolName, timeout)
+	} else {
+		headline = fmt.Sprintf("tool %s failed: %s", toolName, err.Error())
+	}
+
+	errOut := output
+	if len(warnings) > 0 {
+		warningBlock := fmt.Sprintf("<WARNING>\n%s\n</WARNING>", strings.Join(warnings, "\n"))
+		errOut = warningBlock + errOut
+	}
+
+	if len(stdoutBytes) > 0 || len(stderrBytes) > 0 || len(warnings) > 0 {
+		return fmt.Errorf("%s\n%s", headline, errOut)
+	}
+	return fmt.Errorf("%s", headline)
+}
+
+func executeTool(ctx context.Context, agentDir string, toolName string, toolPath string, args ExecToolArgs, a2aMeta *A2AMetadata, timeoutSeconds ...int) (string, []string, error) {
+	timeout := DefaultCommandTimeoutSeconds
+	if len(timeoutSeconds) > 0 {
+		timeout = timeoutSeconds[0]
+	}
+
+	cmdArgs, warnings, err := prepareToolArgs(agentDir, args.Args)
+	if err != nil {
+		return "", nil, err
+	}
+
+	absToolPath := resolveExecutableToolPath(toolPath)
+
+	execCtx, cancel := toolTimeoutContext(ctx, timeout)
+	defer cancel()
 
 	cmd := exec.CommandContext(execCtx, absToolPath, cmdArgs...)
 	cmd.Dir = agentDir
@@ -666,85 +286,13 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	// which is the precedence TestExecuteTool_DotEnvInjectionAndPrecedence pins.
 	cmd.Env = childEnv(baseEnv, harnessEnv, dotEnv, args.Env)
 
-	var stdinFile *os.File
-	if args.Stdin != "" {
-		trimmedStdin := strings.TrimSpace(args.Stdin)
-		// Check if stdin contains binary scratchpad references per D48
-		if strings.Contains(trimmedStdin, "<SCRATCHPAD_DATA") {
-			var binaryID string
-			matches := scratchpadMacroRegex.FindAllString(trimmedStdin, -1)
-			for _, m := range matches {
-				if strings.HasPrefix(m, "\\") {
-					continue
-				}
-				idMatch := macroIDRegex.FindStringSubmatch(m)
-				if len(idMatch) >= 2 {
-					id := idMatch[1]
-					_, _, isBinary, err := findScratchpadFile(agentDir, id)
-					if err == nil && isBinary {
-						binaryID = id
-						break
-					}
-				}
-			}
-
-			if binaryID != "" {
-				// Exact match check: stdin must be ONLY this single macro reference
-				isExact := false
-				if len(matches) == 1 && scratchpadMacroRegex.FindString(trimmedStdin) == trimmedStdin {
-					isExact = true
-				}
-
-				if !isExact {
-					return "", nil, fmt.Errorf("cannot mix binary scratchpad entry %q with text in stdin", binaryID)
-				}
-
-				// Check for pagination/escaping attributes on binary reference per D48
-				if macroSkipLinesRegex.MatchString(trimmedStdin) || macroNumLinesRegex.MatchString(trimmedStdin) || macroJsonEscapeRegex.MatchString(trimmedStdin) {
-					return "", nil, fmt.Errorf("cannot use pagination or escaping attributes (skip_lines, num_lines, json_escape) with binary scratchpad entry %q", binaryID)
-				}
-
-				filePath, _, _, err := findScratchpadFile(agentDir, binaryID)
-				if err != nil {
-					return "", nil, err
-				}
-				f, err := os.Open(filePath)
-				if err != nil {
-					return "", nil, fmt.Errorf("failed to open binary scratchpad entry %q: %w", binaryID, err)
-				}
-				stdinFile = f
-				cmd.Stdin = stdinFile
-			}
-		}
-
-		if stdinFile == nil {
-			expandedStdin, w, err := ExpandScratchpadMacros(agentDir, args.Stdin)
-			if err != nil {
-				return "", nil, err
-			}
-			for _, warn := range w {
-				found := false
-				for _, existing := range warnings {
-					if existing == warn {
-						found = true
-						break
-					}
-				}
-				if !found {
-					warnings = append(warnings, warn)
-				}
-			}
-			cmd.Stdin = strings.NewReader(expandedStdin)
-		}
+	stdinReader, stdinFile, warnings, err := prepareToolStdin(agentDir, args.Stdin, warnings)
+	if err != nil {
+		return "", nil, err
 	}
-	// No explicit stdin: leave cmd.Stdin unset (spawned tool gets /dev/null,
-	// exec.Cmd's own default) rather than echoing the raw call args in as a
-	// side channel - see D53, this used to feed a WACKYPUB_TOOL_ARGS-shaped
-	// JSON blob into every tool's stdin unconditionally whenever Args/Env
-	// were non-empty, with no documented reason and no way for a wrapper
-	// tool like wackyproc to distinguish it from stdin the agent actually
-	// meant to pipe through.
-
+	if stdinReader != nil {
+		cmd.Stdin = stdinReader
+	}
 	if stdinFile != nil {
 		defer stdinFile.Close()
 	}
@@ -776,23 +324,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	}
 
 	if err != nil {
-		var headline string
-		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
-			headline = fmt.Sprintf("tool %s timed out after %d seconds", toolName, timeout)
-		} else {
-			headline = fmt.Sprintf("tool %s failed: %s", toolName, err.Error())
-		}
-
-		errOut := output
-		if len(warnings) > 0 {
-			warningBlock := fmt.Sprintf("<WARNING>\n%s\n</WARNING>", strings.Join(warnings, "\n"))
-			errOut = warningBlock + errOut
-		}
-
-		if len(stdoutBytes) > 0 || len(stderrBytes) > 0 || len(warnings) > 0 {
-			return output, warnings, fmt.Errorf("%s\n%s", headline, errOut)
-		}
-		return output, warnings, fmt.Errorf("%s", headline)
+		return output, warnings, formatToolError(err, execCtx, toolName, timeout, output, warnings, stdoutBytes, stderrBytes)
 	}
 
 	return output, warnings, nil
@@ -1221,6 +753,181 @@ func (fa *FolderAgent) checkPostTurnCompaction(ctx context.Context, wsDir string
 	}
 }
 
+// checkColdStartCompaction performs an emergency cold-start compaction guard before turn 1 for uncompacted sessions.
+func (fa *FolderAgent) checkColdStartCompaction(ctx context.Context, turns []*genai.Content, lastMemory string) ([]*genai.Content, string, error) {
+	if fa.RuntimeConfig == nil || fa.RuntimeConfig.ContextWindow <= 0 {
+		return turns, lastMemory, nil
+	}
+	compactCfg, err := LoadCompactConfig(fa.AgentDir)
+	overheadPct := DefaultCompactionOverheadPct
+	if err == nil && compactCfg != nil {
+		if compactCfg.CompactOverheadPct >= 0 && compactCfg.CompactOverheadPct < 100 {
+			overheadPct = compactCfg.CompactOverheadPct
+		}
+	}
+	threshold := int(float64(fa.RuntimeConfig.ContextWindow) * (1.0 - (overheadPct / 100.0)))
+	if EstimateTokens(turns, fa.RuntimeConfig.PreserveThinking) >= threshold {
+		compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cold-start session compaction error: %v\n", err)
+		} else if compacted {
+			refreshed, err := ReadSessionTurns(fa.AgentDir)
+			if err != nil {
+				// Compaction already rewrote session.jsonl on disk; continuing with the
+				// pre-compaction transcript would generate against the very history we
+				// just paid to shrink. Abort loudly instead of proceeding silently.
+				return nil, lastMemory, fmt.Errorf("compaction succeeded but reload of session for agent %q failed: %w", fa.AgentID, err)
+			}
+			if len(refreshed) > 0 {
+				turns = refreshed
+			}
+			curMem, ok := readMemoryForChangeDetection(fa.AgentDir)
+			if ok && curMem != lastMemory {
+				lastMemory = curMem
+				if err := fa.refreshSystemPromptAndAgent(); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to refresh system prompt after memory change for agent %s: %v\n", fa.AgentID, err)
+				}
+			}
+		}
+	}
+	return turns, lastMemory, nil
+}
+
+func (fa *FolderAgent) compactForContinuation(ctx context.Context, yield func(string, error) bool) bool {
+	beforeTurns, err := ReadSessionTurns(fa.AgentDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
+		yield(fmt.Sprintf("\n\n[Auto-continuation aborted: failed to read session turns: %v - incomplete status.]", err), nil)
+		return false
+	}
+	tokensBefore := EstimateTokens(beforeTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
+
+	if fa.UsageTracker != nil {
+		fa.UsageTracker.Reset()
+	}
+	compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
+		yield(fmt.Sprintf("\n\n[Auto-continuation aborted: session compaction error: %v - incomplete status.]", err), nil)
+		return false
+	}
+	afterTurns, err := ReadSessionTurns(fa.AgentDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
+		yield(fmt.Sprintf("\n\n[Auto-continuation aborted: failed to read session turns: %v - incomplete status.]", err), nil)
+		return false
+	}
+	tokensAfter := EstimateTokens(afterTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
+
+	hasReduction := len(afterTurns) < len(beforeTurns) || tokensAfter < tokensBefore
+	if !compacted || !hasReduction {
+		// Fail-safe abort: If a mid-turn bail occurs but compaction fails or produces no reduction,
+		// auto-continuation aborts with an incomplete status rather than re-tripping the context budget in an infinite loop.
+		fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction produced no reduction (session may exceed safe read limits)\n")
+		yield("\n\n[Auto-continuation aborted: session compaction produced no reduction - incomplete status.]", nil)
+		return false
+	}
+	return true
+}
+
+// handleContinuationOrCompaction determines whether to continue generation (due to mid-turn compaction bail
+// or deferred images) or finish and run post-turn compaction. Returns true if another turn iteration should run.
+func (fa *FolderAgent) handleContinuationOrCompaction(
+	ctx context.Context,
+	wsDir string,
+	deferredScratchpadIDs []string,
+	lastContinuationReason *ContinuationReason,
+	continuationCount *int,
+	maxContinuations int,
+	yield func(string, error) bool,
+) bool {
+	hasDeferredImages := fa.RuntimeConfig != nil && fa.RuntimeConfig.MaxImageDimension > 0 && len(deferredScratchpadIDs) > 0
+	hasCompactedBail := fa.UsageTracker != nil && fa.UsageTracker.StoppedEarlyForCompaction
+
+	// Image Re-inflation Edge Case:
+	// If an image blob re-inflates context past budget on the continuation turn,
+	// the continuation bails and reports an explicit incomplete status rather than looping.
+	if hasCompactedBail && *lastContinuationReason == ContinuationDeferredImage {
+		yield("\n\n[Auto-continuation aborted: image re-inflated context past budget - incomplete status.]", nil)
+		return false
+	}
+
+	if fa.DisableAutoContinuation {
+		fa.checkPostTurnCompaction(ctx, wsDir)
+		return false
+	}
+
+	if hasCompactedBail || hasDeferredImages {
+		if *continuationCount >= maxContinuations {
+			fa.checkPostTurnCompaction(ctx, wsDir)
+			yield(fmt.Sprintf("\n\n[Reached maximum auto-continuations (%d) - stopping with incomplete status.]", maxContinuations), nil)
+			return false
+		}
+	}
+
+	// Coincidence Ordering (Image + Bail in same turn):
+	// If both conditions occur in the same turn:
+	// 1. Post-turn compaction runs first on the text/tool results to free headroom.
+	// 2. The deferred <IMAGE> user turn is appended second.
+	// 3. Exactly one continuation is triggered (ContinuationDeferredImage),
+	//    allowing the image turn to drive the resumption with maximum context headroom (no redundant compaction marker).
+	if hasCompactedBail && hasDeferredImages {
+		if !fa.compactForContinuation(ctx, yield) {
+			return false
+		}
+
+		validImages := fa.appendDeferredImages(wsDir, deferredScratchpadIDs)
+		if validImages == 0 {
+			return false
+		}
+
+		*lastContinuationReason = ContinuationDeferredImage
+		*continuationCount++
+		return true
+	}
+
+	// Mid-turn Bail only:
+	// When a turn bails mid-turn (StoppedEarlyForCompaction = true),
+	// post-turn compaction executes immediately in the turn's cleanup block
+	// using the real LastPromptTokens that triggered the bail (superseding D77's skip).
+	if hasCompactedBail {
+		if !fa.compactForContinuation(ctx, yield) {
+			return false
+		}
+
+		// The harness appends an imperative sentinel user turn
+		sentinelTurn := genai.NewContentFromText(`<CONTINUATION reason="post-compaction">Session context was compacted. Resume and complete your task from where you left off, referencing any updated persistent memory.</CONTINUATION>`, "user")
+		if err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, sentinelTurn, "user"); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to record continuation sentinel for agent %s: %v\n", fa.AgentID, err)
+			yield("\n\n[Auto-continuation aborted: failed to record post-compaction sentinel - incomplete status.]", nil)
+			return false
+		}
+
+		*lastContinuationReason = ContinuationCompactedBail
+		*continuationCount++
+		return true
+	}
+
+	// Deferred Image only:
+	if hasDeferredImages {
+		// Post-turn compaction check if real tokens >= threshold before adding image
+		fa.checkPostTurnCompaction(ctx, wsDir)
+		validImages := fa.appendDeferredImages(wsDir, deferredScratchpadIDs)
+		if validImages == 0 {
+			return false
+		}
+
+		*lastContinuationReason = ContinuationDeferredImage
+		*continuationCount++
+		return true
+	}
+
+	// Normal turn completion:
+	// When a turn completes normally and real tokens >= threshold, compact post-turn.
+	fa.checkPostTurnCompaction(ctx, wsDir)
+	return false
+}
+
 // GenerateTurnStream performs the agent generation turn yielding an iterator (iter.Seq2[string, error])
 // that produces each text chunk as it is generated by the model across tool events and auto-continuation turns (D88).
 func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string, error] {
@@ -1253,40 +960,10 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 		// *only* as a defensive valve before call 1 for uncompacted cold-start sessions.
 		// When EstimateTokens(turns) >= threshold, it calls CheckAndCompactSession(..., force: true)
 		// so it forcefully shrinks the oversized session.
-		if fa.RuntimeConfig != nil && fa.RuntimeConfig.ContextWindow > 0 {
-			compactCfg, err := LoadCompactConfig(fa.AgentDir)
-			overheadPct := DefaultCompactionOverheadPct
-			if err == nil && compactCfg != nil {
-				if compactCfg.CompactOverheadPct >= 0 && compactCfg.CompactOverheadPct < 100 {
-					overheadPct = compactCfg.CompactOverheadPct
-				}
-			}
-			threshold := int(float64(fa.RuntimeConfig.ContextWindow) * (1.0 - (overheadPct / 100.0)))
-			if EstimateTokens(turns, fa.RuntimeConfig.PreserveThinking) >= threshold {
-				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: cold-start session compaction error: %v\n", err)
-				} else if compacted {
-					refreshed, err := ReadSessionTurns(fa.AgentDir)
-					if err != nil {
-						// Compaction already rewrote session.jsonl on disk; continuing with the
-						// pre-compaction transcript would generate against the very history we
-						// just paid to shrink. Abort loudly instead of proceeding silently.
-						yield("", fmt.Errorf("compaction succeeded but reload of session for agent %q failed: %w", fa.AgentID, err))
-						return
-					}
-					if len(refreshed) > 0 {
-						turns = refreshed
-					}
-					curMem, ok := readMemoryForChangeDetection(fa.AgentDir)
-					if ok && curMem != lastMemory {
-						lastMemory = curMem
-						if err := fa.refreshSystemPromptAndAgent(); err != nil {
-							fmt.Fprintf(os.Stderr, "Warning: failed to refresh system prompt after memory change for agent %s: %v\n", fa.AgentID, err)
-						}
-					}
-				}
-			}
+		turns, lastMemory, err = fa.checkColdStartCompaction(ctx, turns, lastMemory)
+		if err != nil {
+			yield("", err)
+			return
 		}
 
 		if len(turns) == 0 || turns[len(turns)-1].Role != "user" {
@@ -1399,149 +1076,9 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 			// Commit workspace event per turn boundary ("assistant")
 			commitEventBestEffort(wsDir, fa.AgentID, "assistant")
 
-			hasDeferredImages := fa.RuntimeConfig != nil && fa.RuntimeConfig.MaxImageDimension > 0 && len(deferredScratchpadIDs) > 0
-			hasCompactedBail := fa.UsageTracker != nil && fa.UsageTracker.StoppedEarlyForCompaction
-
-			// Image Re-inflation Edge Case:
-			// If an image blob re-inflates context past budget on the continuation turn,
-			// the continuation bails and reports an explicit incomplete status rather than looping.
-			if hasCompactedBail && lastContinuationReason == ContinuationDeferredImage {
-				yield("\n\n[Auto-continuation aborted: image re-inflated context past budget - incomplete status.]", nil)
+			if !fa.handleContinuationOrCompaction(ctx, wsDir, deferredScratchpadIDs, &lastContinuationReason, &continuationCount, maxContinuations, yield) {
 				return
 			}
-
-			if fa.DisableAutoContinuation {
-				fa.checkPostTurnCompaction(ctx, wsDir)
-				return
-			}
-
-			if hasCompactedBail || hasDeferredImages {
-				if continuationCount >= maxContinuations {
-					fa.checkPostTurnCompaction(ctx, wsDir)
-					yield(fmt.Sprintf("\n\n[Reached maximum auto-continuations (%d) - stopping with incomplete status.]", maxContinuations), nil)
-					return
-				}
-			}
-
-			// Coincidence Ordering (Image + Bail in same turn):
-			// If both conditions occur in the same turn:
-			// 1. Post-turn compaction runs first on the text/tool results to free headroom.
-			// 2. The deferred <IMAGE> user turn is appended second.
-			// 3. Exactly one continuation is triggered (ContinuationDeferredImage),
-			//    allowing the image turn to drive the resumption with maximum context headroom (no redundant compaction marker).
-			if hasCompactedBail && hasDeferredImages {
-				beforeTurns, err := ReadSessionTurns(fa.AgentDir)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
-					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: failed to read session turns: %v - incomplete status.]", err), nil)
-					return
-				}
-				tokensBefore := EstimateTokens(beforeTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
-
-				if fa.UsageTracker != nil {
-					fa.UsageTracker.Reset()
-				}
-				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
-					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: session compaction error: %v - incomplete status.]", err), nil)
-					return
-				}
-				afterTurns, err := ReadSessionTurns(fa.AgentDir)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
-					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: failed to read session turns: %v - incomplete status.]", err), nil)
-					return
-				}
-				tokensAfter := EstimateTokens(afterTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
-
-				hasReduction := len(afterTurns) < len(beforeTurns) || tokensAfter < tokensBefore
-				if !compacted || !hasReduction {
-					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction produced no reduction (session may exceed safe read limits)\n")
-					yield("\n\n[Auto-continuation aborted: session compaction produced no reduction - incomplete status.]", nil)
-					return
-				}
-
-				validImages := fa.appendDeferredImages(wsDir, deferredScratchpadIDs)
-				if validImages == 0 {
-					return
-				}
-
-				lastContinuationReason = ContinuationDeferredImage
-				continuationCount++
-				continue
-			}
-
-			// Mid-turn Bail only:
-			// When a turn bails mid-turn (StoppedEarlyForCompaction = true),
-			// post-turn compaction executes immediately in the turn's cleanup block
-			// using the real LastPromptTokens that triggered the bail (superseding D77's skip).
-			if hasCompactedBail {
-				beforeTurns, err := ReadSessionTurns(fa.AgentDir)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
-					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: failed to read session turns: %v - incomplete status.]", err), nil)
-					return
-				}
-				tokensBefore := EstimateTokens(beforeTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
-
-				if fa.UsageTracker != nil {
-					fa.UsageTracker.Reset()
-				}
-				compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
-					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: session compaction error: %v - incomplete status.]", err), nil)
-					return
-				}
-				afterTurns, err := ReadSessionTurns(fa.AgentDir)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
-					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: failed to read session turns: %v - incomplete status.]", err), nil)
-					return
-				}
-				tokensAfter := EstimateTokens(afterTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
-
-				hasReduction := len(afterTurns) < len(beforeTurns) || tokensAfter < tokensBefore
-				if !compacted || !hasReduction {
-					// Fail-safe abort: If a mid-turn bail occurs but compaction fails or produces no reduction,
-					// auto-continuation aborts with an incomplete status rather than re-tripping the context budget in an infinite loop.
-					fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction produced no reduction (session may exceed safe read limits)\n")
-					yield("\n\n[Auto-continuation aborted: session compaction produced no reduction - incomplete status.]", nil)
-					return
-				}
-
-				// The harness appends an imperative sentinel user turn
-				sentinelTurn := genai.NewContentFromText(`<CONTINUATION reason="post-compaction">Session context was compacted. Resume and complete your task from where you left off, referencing any updated persistent memory.</CONTINUATION>`, "user")
-				if err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, sentinelTurn, "user"); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to record continuation sentinel for agent %s: %v\n", fa.AgentID, err)
-					yield(fmt.Sprintf("\n\n[Auto-continuation aborted: failed to record post-compaction sentinel - incomplete status.]"), nil)
-					return
-				}
-
-				lastContinuationReason = ContinuationCompactedBail
-				continuationCount++
-				continue
-			}
-
-			// Deferred Image only:
-			if hasDeferredImages {
-				// Post-turn compaction check if real tokens >= threshold before adding image
-				fa.checkPostTurnCompaction(ctx, wsDir)
-				validImages := fa.appendDeferredImages(wsDir, deferredScratchpadIDs)
-				if validImages == 0 {
-					return
-				}
-
-				lastContinuationReason = ContinuationDeferredImage
-				continuationCount++
-				continue
-			}
-
-			// Normal turn completion:
-			// When a turn completes normally and real tokens >= threshold, compact post-turn.
-			fa.checkPostTurnCompaction(ctx, wsDir)
-			return
 		}
 	}
 }
