@@ -26,7 +26,16 @@ var (
 	ErrBridgeCommandNotFound = errors.New("bridge command not found")
 	// ErrBridgeProcessDied indicates the bridge subprocess exited unexpectedly or crashed mid-stream.
 	ErrBridgeProcessDied = errors.New("bridge process exited unexpectedly")
+	// ErrDispatchSuperseded indicates the bridge subprocess exited because a concurrent
+	// dispatch to the same agent was in flight and this one was cancelled while waiting on
+	// the producer-side session lock (wackyacp D117 / bugs/wackyacp/lock-wait-visibility).
+	// It is NOT a crash: classifying it as ErrBridgeProcessDied hides that the process
+	// died from lock-wait cancellation.
+	ErrDispatchSuperseded = errors.New("bridge dispatch superseded by concurrent turn")
 )
+
+// lockContentionSendinel is matched against bridge stderr to detect lock-wait cancellation.
+const lockContentionSentinel = "acp-session.lock contention"
 
 // BridgeProcessDiedError provides structured diagnostics when a bridge process terminates unexpectedly.
 type BridgeProcessDiedError struct {
@@ -223,6 +232,12 @@ func translateBridgeError(err error, agentID, command string, cmd *exec.Cmd, tai
 		var stderr string
 		if tailBuf != nil {
 			stderr = tailBuf.String()
+		}
+		// Honest classification (bugs/wackyacp/lock-wait-visibility): if the bridge died
+		// while waiting on the producer-side session lock (stderr carries the contention
+		// sentinel), this is a superseded dispatch, not a crash.
+		if strings.Contains(stderr, lockContentionSentinel) {
+			return fmt.Errorf("%w: %s (exit code %d)", ErrDispatchSuperseded, strings.TrimSpace(stderr), exitCode)
 		}
 		return &BridgeProcessDiedError{
 			AgentID:  agentID,
