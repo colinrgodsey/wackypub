@@ -3149,7 +3149,9 @@ type ToolCallUpdate struct {
 	ToolName string `protobuf:"bytes,2,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
 	// status is one of completed | error | denied.
 	Status string `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
-	// result_bytes is the byte size of the full tool result (0 when status != completed).
+	// result_bytes is the byte size of the marshaled tool result envelope (0 when status !=
+	// completed). It describes the JSON envelope, not the raw tool output; clients should not
+	// present it as the tool's own output size.
 	ResultBytes int64 `protobuf:"varint,4,opt,name=result_bytes,json=resultBytes,proto3" json:"result_bytes,omitempty"`
 	// result_head is a truncated head of the result text (<=256 bytes) for live display.
 	ResultHead string `protobuf:"bytes,5,opt,name=result_head,json=resultHead,proto3" json:"result_head,omitempty"`

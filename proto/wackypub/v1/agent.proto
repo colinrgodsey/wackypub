@@ -841,7 +841,9 @@ message ToolCallUpdate {
   // status is one of completed | error | denied.
   string status = 3;
 
-  // result_bytes is the byte size of the full tool result (0 when status != completed).
+  // result_bytes is the byte size of the marshaled tool result envelope (0 when status !=
+  // completed). It describes the JSON envelope, not the raw tool output; clients should not
+  // present it as the tool's own output size.
   int64 result_bytes = 4;
 
   // result_head is a truncated head of the result text (<=256 bytes) for live display.

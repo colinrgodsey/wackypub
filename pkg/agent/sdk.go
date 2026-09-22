@@ -502,29 +502,66 @@ func (s *AgentSDK) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, st
 		agentID = req.GetAgentId()
 	}
 	sink := NewToolEventSinkWithJournal(toolJournalPath(s.AgentDir(agentID)))
-	ctx := withToolEvents(stream.Context(), sink)
-	for chunk, err := range s.generateTurnStreamImpl(ctx, agentID) {
-		if err != nil {
-			return err
+	ctx, cancel := context.WithCancel(stream.Context())
+	defer cancel()
+	ctx = withToolEvents(ctx, sink)
+
+	// M1 liveness: the impl iterator is pulled on its own goroutine so the handler can select
+	// on sink.Notify() while a tool is still running. ADK yields nothing between the model
+	// response carrying the functionCall and tool completion, so a between-chunks drain alone
+	// would defer the announce until the tool finishes (Phoebe M1). The push signal wakes the
+	// handler immediately; the handler is the ONLY goroutine that sends on the stream.
+	type genItem struct {
+		chunk string
+		err   error
+	}
+	items := make(chan genItem, 8)
+	go func() {
+		defer close(items)
+		for chunk, err := range s.generateTurnStreamImpl(ctx, agentID) {
+			select {
+			case items <- genItem{chunk: chunk, err: err}:
+			case <-ctx.Done():
+				return
+			}
 		}
-		if events := sink.Drain(); len(events) > 0 {
-			if err := sendGenToolEvents(stream, events); err != nil {
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-sink.Notify():
+			if err := sendGenToolEvents(stream, sink.Drain()); err != nil {
+				return err
+			}
+		case it, ok := <-items:
+			if !ok {
+				if events := sink.Drain(); len(events) > 0 {
+					if err := sendGenToolEvents(stream, events); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			if it.err != nil {
+				return it.err
+			}
+			// Drain before text send: tool events are flush boundaries (Phoebe coalescing
+			// invariant), so any events recorded before this chunk ship ahead of it.
+			if events := sink.Drain(); len(events) > 0 {
+				if err := sendGenToolEvents(stream, events); err != nil {
+					return err
+				}
+			}
+			if it.chunk == "" {
+				continue
+			}
+			if err := stream.Send(&agentv1.GenerateTurnStreamResponse{Text: it.chunk}); err != nil {
 				return err
 			}
 		}
-		if chunk == "" {
-			continue
-		}
-		if err := stream.Send(&agentv1.GenerateTurnStreamResponse{Text: chunk}); err != nil {
-			return err
-		}
 	}
-	if events := sink.Drain(); len(events) > 0 {
-		if err := sendGenToolEvents(stream, events); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // toolEventIsAnnounce reports whether a ToolEvent is the announce (tool_call) half of the
@@ -900,34 +937,105 @@ func (s *AgentSDK) AddAndGenerateTurnStream(req *agentv1.AddAndGenerateTurnStrea
 		userMsg = req.GetUserMessage()
 	}
 	sink := NewToolEventSinkWithJournal(toolJournalPath(s.AgentDir(agentID)))
-	ctx := withToolEvents(stream.Context(), sink)
-	for chunk, err := range s.addAndGenerateTurnStreamImpl(ctx, agentID, userMsg, func(w string) {
-		if w == "" {
-			return
+	ctx, cancel := context.WithCancel(stream.Context())
+	defer cancel()
+	ctx = withToolEvents(ctx, sink)
+
+	// M1 liveness: same push-path shape as GenerateTurnStream. Warnings flow on their own
+	// channel (the generator goroutine must never send on the grpc stream - it is not safe
+	// for concurrent Send; the handler is the single sender).
+	type aagItem struct {
+		chunk string
+		err   error
+	}
+	items := make(chan aagItem, 8)
+	warnings := make(chan string, 8)
+	go func() {
+		defer close(items)
+		defer close(warnings)
+		onWarning := func(w string) {
+			if w == "" {
+				return
+			}
+			select {
+			case warnings <- w:
+			case <-ctx.Done():
+			}
 		}
-		_ = stream.Send(&agentv1.AddAndGenerateTurnStreamResponse{Warning: w})
-	}) {
-		if err != nil {
-			return err
+		for chunk, err := range s.addAndGenerateTurnStreamImpl(ctx, agentID, userMsg, onWarning) {
+			select {
+			case items <- aagItem{chunk: chunk, err: err}:
+			case <-ctx.Done():
+				return
+			}
 		}
-		if events := sink.Drain(); len(events) > 0 {
-			if err := sendAAGToolEvents(stream, events); err != nil {
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-sink.Notify():
+			if err := sendAAGToolEvents(stream, sink.Drain()); err != nil {
+				return err
+			}
+		case w := <-warnings:
+			if w == "" {
+				continue
+			}
+			if err := stream.Send(&agentv1.AddAndGenerateTurnStreamResponse{Warning: w}); err != nil {
+				return err
+			}
+		case it, ok := <-items:
+			if !ok {
+				// Generator finished: drain any remaining warnings (ok-form handles the closed
+				// channel - a closed channel is always ready, so single-value receive would spin)
+				// then flush pending tool events and return.
+				for {
+					select {
+					case w, ok2 := <-warnings:
+						if !ok2 {
+							if events := sink.Drain(); len(events) > 0 {
+								if err := sendAAGToolEvents(stream, events); err != nil {
+									return err
+								}
+							}
+							return nil
+						}
+						if w != "" {
+							if err := stream.Send(&agentv1.AddAndGenerateTurnStreamResponse{Warning: w}); err != nil {
+								return err
+							}
+						}
+					default:
+						// No more warnings pending (not yet closed): flush events, return.
+						if events := sink.Drain(); len(events) > 0 {
+							if err := sendAAGToolEvents(stream, events); err != nil {
+								return err
+							}
+						}
+						return nil
+					}
+				}
+			}
+			if it.err != nil {
+				return it.err
+			}
+			// Drain before text send: tool events are flush boundaries (Phoebe coalescing
+			// invariant), so any events recorded before this chunk ship ahead of it.
+			if events := sink.Drain(); len(events) > 0 {
+				if err := sendAAGToolEvents(stream, events); err != nil {
+					return err
+				}
+			}
+			if it.chunk == "" {
+				continue
+			}
+			if err := stream.Send(&agentv1.AddAndGenerateTurnStreamResponse{Text: it.chunk}); err != nil {
 				return err
 			}
 		}
-		if chunk == "" {
-			continue
-		}
-		if err := stream.Send(&agentv1.AddAndGenerateTurnStreamResponse{Text: chunk}); err != nil {
-			return err
-		}
 	}
-	if events := sink.Drain(); len(events) > 0 {
-		if err := sendAAGToolEvents(stream, events); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // sendAAGToolEvents sends drained tool events as tool_call / tool_call_update responses on

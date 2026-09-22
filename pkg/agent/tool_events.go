@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // ToolEventStatus is the lifecycle status of a tool invocation for protocol emission.
@@ -46,18 +48,21 @@ type ToolEventSink struct {
 	// journalPath, when set, appends every completed event to a JSONL tool journal on disk
 	// (stream announces; journal preserves the evidence trail).
 	journalPath string
+	// notify is a buffered(1) push signal fired on every record so stream handlers can wake
+	// and drain mid-tool (liveness): the announce becomes observable before tool completion.
+	notify chan struct{}
 }
 
 // NewToolEventSink returns a sink with no journal backing.
 func NewToolEventSink() *ToolEventSink {
-	return &ToolEventSink{}
+	return &ToolEventSink{notify: make(chan struct{}, 1)}
 }
 
 // NewToolEventSinkWithJournal returns a sink that appends completed/denied events to a
 // JSONL journal at the given path (created on first write). Event ordering on the wire is
 // unchanged; the journal is a preservation side-effect.
 func NewToolEventSinkWithJournal(journalPath string) *ToolEventSink {
-	return &ToolEventSink{journalPath: journalPath}
+	return &ToolEventSink{journalPath: journalPath, notify: make(chan struct{}, 1)}
 }
 
 // Announce records a tool_call (pre-execution) event. The returned call_id pairs the
@@ -77,6 +82,16 @@ func (s *ToolEventSink) Announce(toolName, argsSummary string, denied bool) stri
 // Update records a tool_call_update (outcome) event.
 func (s *ToolEventSink) Update(callID, toolName, status string, resultBytes int64, resultHead, resultRef string) {
 	s.record(ToolEvent{CallID: callID, ToolName: toolName, Status: status, ResultBytes: resultBytes, ResultHead: resultHead, ResultRef: resultRef, Timestamp: time.Now()})
+}
+
+// Notify returns a push channel signaled (buffered, at least once) whenever a new tool
+// event is recorded. Stream handlers select on it to drain between text chunks AND while
+// a tool is still executing (the announce becomes live, not deferred to tool completion).
+func (s *ToolEventSink) Notify() <-chan struct{} {
+	if s == nil {
+		return nil
+	}
+	return s.notify
 }
 
 // Drain returns and clears all pending events in FIFO order.
@@ -101,6 +116,10 @@ func (s *ToolEventSink) record(ev ToolEvent) {
 	s.mu.Lock()
 	s.events = append(s.events, ev)
 	s.mu.Unlock()
+	select {
+	case s.notify <- struct{}{}:
+	default:
+	}
 	if s.journalPath != "" {
 		s.appendJournal(ev)
 	}
@@ -173,16 +192,16 @@ func buildArgsSummary(args map[string]any) string {
 		}
 		v := red[k]
 		if s, ok := scalarPreview(v); ok {
-			fmt.Fprintf(&sb, "%s=%s", k, s)
+			// B2: secret-shaped values inside non-secret keys (e.g. command=curl -H Authorization:
+			// Bearer sk-live-...) must be redacted at the VALUE level too.
+			fmt.Fprintf(&sb, "%s=%s", k, redactSecretValues(s))
 		} else {
 			fmt.Fprintf(&sb, "%s=<%T %d bytes>", k, v, approxSize(v))
 		}
 	}
-	out := sb.String()
-	if len(out) > maxArgsSummaryLen {
-		out = out[:maxArgsSummaryLen]
-	}
-	return out
+	// B1: rune-safe truncation - byte-slicing mid-rune makes the string invalid UTF-8 and proto
+	// refuses to marshal it, killing the whole turn.
+	return truncateRunesSafe(sb.String(), maxArgsSummaryLen)
 }
 
 // scalarPreview returns a stable string for scalar-like values (strings, numbers, bools).
@@ -211,18 +230,17 @@ func approxSize(v any) int {
 }
 
 // buildResultSummary produces the wire-safe result representation: byte size + truncated
-// head (<=256 chars). Full bodies stay out of the stream.
+// head (<=256 bytes) + value-level redaction (B3: tool results routinely carry file contents
+// with OPENAI_API_KEY=sk-... style lines - the head must not leak them). Full bodies stay
+// out of the stream.
 func buildResultSummary(result map[string]any) (bytes int64, head string) {
 	data, err := json.Marshal(result)
 	if err != nil {
 		return 0, ""
 	}
 	bytes = int64(len(data))
-	if len(data) > 256 {
-		head = string(data[:256])
-	} else {
-		head = string(data)
-	}
+	head = truncateRunesSafe(string(data), 256)
+	head = redactSecretValues(head)
 	return
 }
 
@@ -253,4 +271,41 @@ func toolEventsFromCtx(ctx context.Context) *ToolEventSink {
 		return v
 	}
 	return nil
+}
+
+// truncateRunesSafe truncates s to at most max bytes without splitting a UTF-8 rune.
+// Byte-slicing can land mid-rune, and proto (protobuf string fields must be valid UTF-8)
+// then REFUSES to marshal the response - which would fail the whole turn, not just the
+// preview. Same approach agy bridge uses (truncateRunes) for consistency.
+func truncateRunesSafe(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	out := s[:max]
+	for !utf8.ValidString(out) {
+		out = out[:len(out)-1]
+	}
+	return out
+}
+
+// secretValuePatterns match secret-shaped substrings inside arbitrary values (B2/B3): a
+// token embedded in a non-secret keyed value (e.g. command=curl -H Authorization: Bearer
+// sk-live-...) must still be removed from the wire. Redaction is value-level, not just
+// key-level.
+var secretValuePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`sk-[A-Za-z0-9_-]{8,}`),
+	regexp.MustCompile(`sk_live_[A-Za-z0-9_-]{8,}`),
+	regexp.MustCompile(`Bearer\s+[A-Za-z0-9._~+/=-]+`),
+	regexp.MustCompile(`Basic\s+[A-Za-z0-9+/=]+`),
+	regexp.MustCompile(`-----BEGIN [A-Z ]+-----`),
+	regexp.MustCompile(`(?i)(api[_-]?key|token|password|passwd|secret|bearer|authorization)[:=]\s*[^\s,\};]+`),
+}
+
+// redactSecretValues scans a string for secret-shaped substrings and replaces them with
+// [REDACTED]. Applies to scalar arg VALUES and result heads, not just secret-named keys.
+func redactSecretValues(s string) string {
+	for _, re := range secretValuePatterns {
+		s = re.ReplaceAllString(s, "[REDACTED]")
+	}
+	return s
 }

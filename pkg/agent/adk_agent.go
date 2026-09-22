@@ -465,10 +465,9 @@ func buildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 			var resultHead string
 			if err != nil {
 				status = string(ToolEventStatusError)
-				resultHead = err.Error()
-				if len(resultHead) > 256 {
-					resultHead = resultHead[:256]
-				}
+				// B1+B3: rune-safe + value-level redaction on the error head too (errors can
+				// echo command lines or token-bearing tool output).
+				resultHead = redactSecretValues(truncateRunesSafe(err.Error(), 256))
 			} else {
 				resultBytes, resultHead = buildResultSummary(result)
 			}
