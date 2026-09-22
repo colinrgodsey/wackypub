@@ -234,11 +234,8 @@ that looks like success, or a security-relevant check that fails open
 instead of closed. Both are much harder to debug later than a propagated
 error would have been, because there's no signal anything went wrong at all.
 
-Concrete examples in this repo worth fixing opportunistically (not a mandate
-to sweep): `ValidateAgentTarget` (`pkg/agent/workspace.go`) skips its entire
-`WACKYPUB_ALLOWED_AGENTS` authorization check if `os.Getwd()` errors
-(`if err == nil { ... }`, no `else`) - failing open on a security-relevant
-check rather than failing closed. `InspectAgentDir`'s tool discovery
+A concrete example in this repo worth fixing opportunistically (not a mandate
+to sweep): `InspectAgentDir`'s tool discovery
 (`discovered, shadowed, _ := DiscoverAgentTools(agentDir)`) discards a real
 error return entirely, so a broken `tools/` directory (permission error,
 whatever) reports "0 tools found," indistinguishable from "no `tools/`
