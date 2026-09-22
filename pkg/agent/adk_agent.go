@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"regexp"
 	"strings"
@@ -409,6 +410,22 @@ func BuildADKAgentWithConfigAndTrackerForCompactionWithSink(agentID string, rend
 	}, nil, tools...)
 }
 
+// toolInvocationSig returns a stable signature for a tool invocation so the announce (Before
+// callback) and the outcome (After callback) pair correctly even when base_flow interleaves
+// several tool calls from one model response. encoding/json sorts map keys, so Marshal(args)
+// is canonical for the args component.
+func toolInvocationSig(name string, args map[string]any) string {
+	data, err := json.Marshal(args)
+	if err != nil {
+		data = []byte("<unmarshalable>")
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(name))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(data)
+	return fmt.Sprintf("%s:%08x", name, h.Sum32())
+}
+
 func buildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, maxToolTurns int, runtimeCfg *RuntimeConfig, llmModel model.LLM, agentDir string, tracker *TurnUsageTracker, sink *ToolEventSink, beforeToolCallbacks []llmagent.BeforeToolCallback, afterToolCallbacks []llmagent.AfterToolCallback, tools ...tool.Tool) (agent.Agent, error) {
 	if maxToolTurns <= 0 {
 		maxToolTurns = DefaultMaxToolTurns
@@ -435,19 +452,24 @@ func buildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 	// Tool-call visibility (D112): when a sink is provided, every real tool invocation emits
 	// a tool_call announce (BeforeToolCallback) before execution and a tool_call_update
 	// (AfterToolCallback) after outcome. Only redacted summaries travel; full args/results
-	// stay on disk. base_flow executes tool invocations sequentially, so a single guarded
-	// pendingCallID slot pairs the announce with its outcome.
+	// stay on disk. Note the pairing: a single pending slot is NOT enough - base_flow can
+	// interleave multiple tool invocations from one model response (batch functionCalls in a
+	// single part set, or long-running/asynchronous tools), so a plain last-write-wins slot
+	// attributes completions to the wrong call (empty or swapped call_id). Each Before pushes
+	// its call_id onto a FIFO keyed by the invocation signature (name + canonical args); the
+	// matching After pops the front. FIFO pairing stays correct for same-signature fan-out.
 	if sink != nil {
 		var pendingMu sync.Mutex
-		pendingCallID := ""
+		pendingBySig := make(map[string][]string)
 		visibilityBefore := llmagent.BeforeToolCallback(func(ctx agent.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
 			name := ""
 			if t != nil {
 				name = t.Name()
 			}
 			callID := sink.Announce(name, buildArgsSummary(args), false)
+			sig := toolInvocationSig(name, args)
 			pendingMu.Lock()
-			pendingCallID = callID
+			pendingBySig[sig] = append(pendingBySig[sig], callID)
 			pendingMu.Unlock()
 			return nil, nil
 		})
@@ -456,9 +478,18 @@ func buildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 			if t != nil {
 				name = t.Name()
 			}
+			sig := toolInvocationSig(name, args)
 			pendingMu.Lock()
-			callID := pendingCallID
-			pendingCallID = ""
+			queue := pendingBySig[sig]
+			var callID string
+			if len(queue) > 0 {
+				callID = queue[0]
+				if len(queue) == 1 {
+					delete(pendingBySig, sig)
+				} else {
+					pendingBySig[sig] = queue[1:]
+				}
+			}
 			pendingMu.Unlock()
 			status := string(ToolEventStatusCompleted)
 			var resultBytes int64
@@ -467,7 +498,7 @@ func buildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 				status = string(ToolEventStatusError)
 				// B1+B3: rune-safe + value-level redaction on the error head too (errors can
 				// echo command lines or token-bearing tool output).
-				resultHead = redactSecretValues(truncateRunesSafe(err.Error(), 256))
+				resultHead = truncateRunesSafe(redactSecretValues(err.Error()), 256)
 			} else {
 				resultBytes, resultHead = buildResultSummary(result)
 			}

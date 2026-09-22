@@ -165,15 +165,15 @@ func redactSecretShapedValues(args map[string]any) map[string]any {
 	return out
 }
 
+// secretKeyRe matches a secret-shaped KEY as a whole token (with word boundaries), so
+// common substring false positives (author, authorize, tokenizer, authority) do not render
+// as [REDACTED] - only keys that ARE secret-shaped (api_key, access_token, bearer,
+// authorization, auth, password, secret, token...).
+var secretKeyRe = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(api[_-]?key|apikey|access[_-]?token|bearer[_-]?token|authtoken|token|password|passwd|secret|bearer|authorization|auth)([^a-z0-9_]|$)`)
+
 // isSecretKey reports whether a map key names a secret-shaped value.
 func isSecretKey(key string) bool {
-	lower := strings.ToLower(key)
-	for _, marker := range []string{"api_key", "apikey", "api-key", "token", "password", "passwd", "secret", "bearer", "authorization", "auth"} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
+	return secretKeyRe.MatchString(key)
 }
 
 // buildArgsSummary renders a redacted scalar preview of tool args, truncated to
@@ -239,8 +239,11 @@ func buildResultSummary(result map[string]any) (bytes int64, head string) {
 		return 0, ""
 	}
 	bytes = int64(len(data))
-	head = truncateRunesSafe(string(data), 256)
-	head = redactSecretValues(head)
+	// Redact BEFORE truncating: a secret straddling the 256-byte cut (e.g. sk-live-... with
+	// the token starting at byte ~240) would otherwise survive as a stub too short for the
+	// value patterns to match. Redact the full body, then take the head.
+	redacted := redactSecretValues(string(data))
+	head = truncateRunesSafe(redacted, 256)
 	return
 }
 
@@ -293,12 +296,17 @@ func truncateRunesSafe(s string, max int) string {
 // sk-live-...) must still be removed from the wire. Redaction is value-level, not just
 // key-level.
 var secretValuePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`sk-[A-Za-z0-9_-]{8,}`),
-	regexp.MustCompile(`sk_live_[A-Za-z0-9_-]{8,}`),
+	regexp.MustCompile(`sk-[A-Za-z0-9_-]{8,}`),                                             // OpenAI-style key
+	regexp.MustCompile(`sk_live_[A-Za-z0-9_-]{8,}`),                                        // Stripe-style key
+	regexp.MustCompile(`AKIA[0-9A-Z]{16}`),                                                 // AWS access key ID
+	regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`),                                       // GitHub PAT / OAuth / refresh / server-to-server / user tokens
+	regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`),                                            // Google API key
+	regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}`),                                     // Slack tokens (bot, app, app-level, user)
+	regexp.MustCompile(`eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`), // bare JWT (no Bearer prefix)
 	regexp.MustCompile(`Bearer\s+[A-Za-z0-9._~+/=-]+`),
 	regexp.MustCompile(`Basic\s+[A-Za-z0-9+/=]+`),
 	regexp.MustCompile(`-----BEGIN [A-Z ]+-----`),
-	regexp.MustCompile(`(?i)(api[_-]?key|token|password|passwd|secret|bearer|authorization)[:=]\s*[^\s,\};]+`),
+	regexp.MustCompile(`(?i)(api[_-]?key|token|password|passwd|secret|bearer|authorization|aws_access_key_id|secret_access_key)[:=]\s*[^\s,\};]+`),
 }
 
 // redactSecretValues scans a string for secret-shaped substrings and replaces them with
