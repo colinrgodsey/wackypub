@@ -261,7 +261,11 @@ func ValidateAgentTarget(targetAgentID string) (*A2AMetadata, error) {
 		newMetaMap[k] = v
 	}
 
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current working directory: %w", err)
+	}
+	// wsDir resolution is best-effort: if cwd is not in a wackypub workspace, workspace_revision is omitted.
 	wsDir, _ := ResolveWorkspaceDir(cwd, false)
 	sendingAgentID := callerID
 	if sendingAgentID == "" && looksLikeAgentDir(cwd) {
@@ -270,6 +274,7 @@ func ValidateAgentTarget(targetAgentID string) (*A2AMetadata, error) {
 
 	sendingRepoDir := ResolveGitRepoDir(wsDir, sendingAgentID)
 	if sendingRepoDir != "" {
+		// Revision lookup is best-effort: if git fails or repo has no commits, workspace_revision is omitted.
 		if headSHA, _ := GetWorkspaceHeadCommit(sendingRepoDir); headSHA != "" {
 			newMetaMap["workspace_revision"] = headSHA
 		}

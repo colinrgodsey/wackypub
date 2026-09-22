@@ -405,3 +405,33 @@ func TestShortenCommandArgsRedactsCredentialFlags(t *testing.T) {
 		t.Errorf("shortenCommandArgs with limit 0 = %v, want just the program name", got)
 	}
 }
+
+func TestValidateAgentTarget_GetwdErrorFailsClosed(t *testing.T) {
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(origCwd)
+	}()
+
+	deletedDir := t.TempDir()
+	subDir := filepath.Join(deletedDir, "deleted")
+	if err := os.Mkdir(subDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chdir(subDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.Remove(subDir); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	meta, err := ValidateAgentTarget("alice")
+	if err == nil {
+		t.Fatalf("expected error when cwd is invalid, got meta=%v", meta)
+	}
+	if !strings.Contains(err.Error(), "failed to get current working directory") {
+		t.Errorf("expected 'failed to get current working directory' error, got: %v", err)
+	}
+}
