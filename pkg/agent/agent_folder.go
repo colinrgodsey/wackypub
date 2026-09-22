@@ -416,6 +416,10 @@ type FolderAgent struct {
 	Tools                   []tool.Tool
 	MaxAutoContinuations    *int
 	DisableAutoContinuation bool
+	// ToolEvents, when set, receives tool_call/tool_call_update protocol events from the
+	// ADK Before/AfterTool callbacks during generation (D112 tool-call visibility). The field
+	// is attached at load time; stream handlers drain it between chunks.
+	ToolEvents *ToolEventSink
 }
 
 // LoadFolderAgent loads and initializes an agent from <wsDir>/<agentID>.
@@ -455,13 +459,36 @@ func LoadFolderAgentWithHookEnv(wsDir string, agentID string, a2aMeta *A2AMetada
 		return nil, fmt.Errorf("failed to read runtime config: %w", err)
 	}
 
-	return loadFolderAgentFromRuntime(agentDir, wsDir, agentID, a2aMeta, hookEnv, runtimeCfg, dotEnv, maxToolTurns, commandTimeoutSeconds...)
+	return loadFolderAgentFromRuntime(agentDir, wsDir, agentID, a2aMeta, hookEnv, runtimeCfg, dotEnv, maxToolTurns, nil, commandTimeoutSeconds...)
+}
+
+// LoadFolderAgentWithHookEnvWithSink is LoadFolderAgentWithHookEnv with a D112 tool-call
+// visibility sink: the loaded FolderAgent.ToolEvents is set and the ADK build wires
+// Before/AfterTool callbacks to emit tool_call/tool_call_update events into it. Pass nil
+// for the default (no visibility) behavior.
+func LoadFolderAgentWithHookEnvWithSink(wsDir string, agentID string, a2aMeta *A2AMetadata, hookEnv map[string]string, maxToolTurns int, toolEvents *ToolEventSink, commandTimeoutSeconds ...int) (*FolderAgent, error) {
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+	agentDir := filepath.Join(wsDir, agentID)
+	if !pathExists(agentDir) {
+		return nil, fmt.Errorf("agent directory %s does not exist", agentDir)
+	}
+	dotEnv, err := LoadAgentDotEnv(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load agent .env: %w", err)
+	}
+	runtimeCfg, err := LoadRuntimeConfig(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read runtime config: %w", err)
+	}
+	return loadFolderAgentFromRuntime(agentDir, wsDir, agentID, a2aMeta, hookEnv, runtimeCfg, dotEnv, maxToolTurns, toolEvents, commandTimeoutSeconds...)
 }
 
 // loadFolderAgentFromRuntime initializes an agent from an already-resolved runtime config
 // (one level of the fallback chain). Each level is fully self-describing: the model
 // constructor runs per level, so a fallback may be a different provider entirely.
-func loadFolderAgentFromRuntime(agentDir, wsDir, agentID string, a2aMeta *A2AMetadata, hookEnv map[string]string, runtimeCfg *RuntimeConfig, dotEnv map[string]string, maxToolTurns int, commandTimeoutSeconds ...int) (*FolderAgent, error) {
+func loadFolderAgentFromRuntime(agentDir, wsDir, agentID string, a2aMeta *A2AMetadata, hookEnv map[string]string, runtimeCfg *RuntimeConfig, dotEnv map[string]string, maxToolTurns int, toolEvents *ToolEventSink, commandTimeoutSeconds ...int) (*FolderAgent, error) {
 	if runtimeCfg == nil {
 		return nil, fmt.Errorf("runtime config cannot be nil for agent %s", agentID)
 	}
@@ -525,7 +552,7 @@ func loadFolderAgentFromRuntime(agentDir, wsDir, agentID string, a2aMeta *A2AMet
 	tracker := &TurnUsageTracker{
 		DisableAutoContinuation: disableAutoCont,
 	}
-	ag, err := BuildADKAgentWithConfigAndTracker(agentID, expandedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, toolsList...)
+	ag, err := BuildADKAgentWithConfigAndTrackerWithSink(agentID, expandedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, toolEvents, toolsList...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build ADK agent for folder agent %s: %w", agentID, err)
 	}
@@ -533,7 +560,7 @@ func loadFolderAgentFromRuntime(agentDir, wsDir, agentID string, a2aMeta *A2AMet
 	// Build the compaction-scoped agent with tool invocation denied. Zero request bytes
 	// change (same declarations in the payload); only the impl path is vetoed.
 	var compactionDenials int64
-	compactionAgent, err := BuildADKAgentWithConfigAndTrackerForCompaction(agentID, expandedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, &compactionDenials, toolsList...)
+	compactionAgent, err := BuildADKAgentWithConfigAndTrackerForCompactionWithSink(agentID, expandedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, &compactionDenials, toolEvents, toolsList...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build compaction agent for folder agent %s: %w", agentID, err)
 	}
@@ -555,6 +582,7 @@ func loadFolderAgentFromRuntime(agentDir, wsDir, agentID string, a2aMeta *A2AMet
 		UsageTracker:            tracker,
 		HookEnv:                 hookEnv,
 		Tools:                   toolsList,
+		ToolEvents:              toolEvents,
 		MaxAutoContinuations:    maxAutoCont,
 		DisableAutoContinuation: disableAutoCont,
 	}, nil
