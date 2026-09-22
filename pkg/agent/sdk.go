@@ -132,7 +132,7 @@ func (s *AgentSDK) AddUserTurn(ctx context.Context, req *agentv1.AddUserTurnRequ
 		return nil, fmt.Errorf("failed to create agent directory %s: %w", agentDir, err)
 	}
 
-	lock, err := AcquireSessionLock(agentDir)
+	lock, err := AcquireSessionLockContext(ctx, agentDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
 	}
@@ -194,7 +194,7 @@ func (s *AgentSDK) AddMedia(ctx context.Context, req *agentv1.AddMediaRequest) (
 		return nil, fmt.Errorf("failed to create agent directory %s: %w", agentDir, err)
 	}
 
-	lock, err := AcquireSessionLock(agentDir)
+	lock, err := AcquireSessionLockContext(ctx, agentDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
 	}
@@ -465,7 +465,7 @@ func (s *AgentSDK) generateTurnStreamImpl(ctx context.Context, agentID string) i
 		}
 
 		agentDir := s.AgentDir(agentID)
-		lock, err := AcquireSessionLock(agentDir)
+		lock, err := AcquireSessionLockContext(ctx, agentDir)
 		if err != nil {
 			yield("", fmt.Errorf("failed to acquire session lock: %w", err))
 			return
@@ -573,7 +573,7 @@ func (s *AgentSDK) addAndGenerateTurnStreamImpl(ctx context.Context, agentID str
 			return
 		}
 
-		lock, err := AcquireSessionLock(agentDir)
+		lock, err := AcquireSessionLockContext(ctx, agentDir)
 		if err != nil {
 			yield("", fmt.Errorf("failed to acquire session lock: %w", err))
 			return
@@ -1096,7 +1096,7 @@ func (s *AgentSDK) StripSignatures(ctx context.Context, req *agentv1.StripSignat
 		wsDir = req.GetWorkspaceDir()
 	}
 	agentDir := filepath.Join(wsDir, agentID)
-	lock, err := AcquireSessionLock(agentDir)
+	lock, err := AcquireSessionLockContext(ctx, agentDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
 	}
@@ -1137,7 +1137,7 @@ func (s *AgentSDK) CompactSession(ctx context.Context, req *agentv1.CompactSessi
 		wsDir = req.GetWorkspaceDir()
 	}
 	agentDir := filepath.Join(wsDir, agentID)
-	lock, err := AcquireSessionLock(agentDir)
+	lock, err := AcquireSessionLockContext(ctx, agentDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
 	}

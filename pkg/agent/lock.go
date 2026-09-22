@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 // SessionLock provides process-level exclusive locking for an agent session.
@@ -12,9 +15,23 @@ type SessionLock struct {
 	file *os.File
 }
 
-// AcquireSessionLock acquires an exclusive POSIX lock (flock) on <agent_dir>/session.lock.
-// It writes the current process PID to the lock file for diagnostic visibility.
+// AcquireSessionLock acquires an exclusive POSIX lock (flock) on <agent_dir>/session.lock
+// with no cancellation. It is a thin wrapper over AcquireSessionLockContext with a
+// background context; call sites that already hold a ctx (all SDK turn paths) should use
+// the ctx variant so a contended lock does not hang shutdown.
 func AcquireSessionLock(agentDir string) (*SessionLock, error) {
+	return AcquireSessionLockContext(context.Background(), agentDir)
+}
+
+// AcquireSessionLockContext acquires an exclusive POSIX lock (flock) on <agent_dir>/session.lock,
+// polling with LOCK_NB so the wait is cancellable. It mirrors wackyacp's D117 pattern
+// (internal/session/session.go AcquireLock): a raw blocking flock would never wake when the
+// ctx is cancelled, and wackypub converts SIGINT/SIGTERM into ctx cancellation via
+// signal.NotifyContext - so on a contended lock a goroutine must be able to abandon the wait
+// to make graceful shutdown possible. flock auto-releases on process death, but clean
+// shutdown is broken if the wait is uninterruptible. The uncontended first attempt is still
+// immediate (first LOCK_NB succeeds without a tick).
+func AcquireSessionLockContext(ctx context.Context, agentDir string) (*SessionLock, error) {
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create agent directory for lock: %w", err)
 	}
@@ -25,10 +42,36 @@ func AcquireSessionLock(agentDir string) (*SessionLock, error) {
 		return nil, fmt.Errorf("failed to open lock file %s: %w", lockPath, err)
 	}
 
-	// Acquire exclusive file lock using syscall.Flock
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
-		file.Close()
-		return nil, fmt.Errorf("failed to acquire flock on %s: %w", lockPath, err)
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+
+	// contended is set on the first EWOULDBLOCK so the wait-visibility line prints ONCE
+	// instead of every 25ms tick.
+	contended := false
+	for {
+		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			if contended {
+				fmt.Fprintf(os.Stderr, "session.lock: acquired lock on %s after waiting\n", lockPath)
+			}
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			file.Close()
+			return nil, fmt.Errorf("failed to acquire flock on %s: %w", lockPath, err)
+		}
+
+		if !contended {
+			contended = true
+			fmt.Fprintf(os.Stderr, "waiting for session.lock on %s (held by another process)\n", lockPath)
+		}
+
+		select {
+		case <-ctx.Done():
+			file.Close()
+			return nil, fmt.Errorf("acquiring lock on %s: %w", lockPath, ctx.Err())
+		case <-ticker.C:
+		}
 	}
 
 	// Write current PID to lock file
