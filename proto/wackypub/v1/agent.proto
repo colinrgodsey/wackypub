@@ -806,6 +806,54 @@ message TurnUsage {
   string backend = 4;
 }
 
+// ToolCall announces a tool invocation that is about to run (the ACP tool_call mirror).
+// It carries a stable call_id so the matching ToolCallUpdate can be paired with it, the
+// tool name, and a REDACTED scalar preview of the arguments - never full argument bodies
+// on the wire (secret-shaped values are removed before summary is built).
+message ToolCall {
+  // call_id is the stable identifier pairing this announce with its ToolCallUpdate.
+  string call_id = 1;
+
+  // tool_name is the tool's registered name (e.g. create_scratchpad, bash).
+  string tool_name = 2;
+
+  // args_summary is a redacted scalar preview of the invocation arguments, truncated to
+  // ~200 chars. Secret-shaped values (api keys, tokens, passwords, bearer headers) are
+  // removed before this summary is built; the full args live only in the session/tool
+  // journal on disk.
+  string args_summary = 3;
+
+  // denied is true when the invocation was refused before execution (compaction/aside
+  // deny paths emit the same announce shape with denied=true and no update).
+  bool denied = 4;
+}
+
+// ToolCallUpdate reports the outcome of a previously announced ToolCall (the ACP
+// tool_call_update mirror). It carries byte-size + truncated head + a store/session
+// reference for the FULL result - never the full body on the wire.
+message ToolCallUpdate {
+  // call_id pairs this update with the ToolCall that announced it.
+  string call_id = 1;
+
+  // tool_name is the tool's registered name (echoed from the announce).
+  string tool_name = 2;
+
+  // status is one of completed | error | denied.
+  string status = 3;
+
+  // result_bytes is the byte size of the marshaled tool result envelope (0 when status !=
+  // completed). It describes the JSON envelope, not the raw tool output; clients should not
+  // present it as the tool's own output size.
+  int64 result_bytes = 4;
+
+  // result_head is a truncated head of the result text (<=256 bytes) for live display.
+  string result_head = 5;
+
+  // result_ref is a store/session reference for the full result body (see journal
+  // stamping). May be empty when the result had no persisted body.
+  string result_ref = 6;
+}
+
 // GenerateTurnStreamResponse is a single streamed slice of the assistant response text
 // for GenerateTurnStream.
 message GenerateTurnStreamResponse {
@@ -814,6 +862,12 @@ message GenerateTurnStreamResponse {
 
   // usage carries token consumption metrics for the turn when emitted as the final chunk (D116).
   TurnUsage usage = 2;
+
+  // tool_call announces a tool invocation (additive; empty when the response carries text).
+  ToolCall tool_call = 3;
+
+  // tool_call_update reports a tool invocation outcome (additive; empty when not present).
+  ToolCallUpdate tool_call_update = 4;
 }
 
 // GenerateTurnRequest specifies parameters for the non-streaming generate twin.
@@ -852,7 +906,7 @@ message AddAndGenerateTurnStreamRequest {
 // AddAndGenerateTurnStreamResponse is one streamed unit of an add-and-generate turn: either
 // a text chunk of the assistant response, or a hook warning surfaced out-of-band.
 message AddAndGenerateTurnStreamResponse {
-  // text is the next chunk of generated assistant content (empty when warning is set).
+  // text is the next chunk of generated assistant content (empty when warning/tool event is set).
   string text = 1;
 
   // warning carries a hook execution warning for this turn (empty when text is set).
@@ -860,6 +914,12 @@ message AddAndGenerateTurnStreamResponse {
 
   // usage carries token consumption metrics for the turn when emitted as the final chunk (D116).
   TurnUsage usage = 3;
+
+  // tool_call announces a tool invocation (additive; empty when the response carries text).
+  ToolCall tool_call = 4;
+
+  // tool_call_update reports a tool invocation outcome (additive; empty when not present).
+  ToolCallUpdate tool_call_update = 5;
 }
 
 // AddAndGenerateTurnRequest specifies parameters for the non-streaming add-and-generate twin.

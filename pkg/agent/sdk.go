@@ -476,7 +476,7 @@ func (s *AgentSDK) generateTurnStreamImpl(ctx context.Context, agentID string) i
 		defer registerInFlightTurn(agentID, cancel)()
 
 		hookEnv := s.popLastHookEnv(agentID)
-		primary, err := LoadFolderAgentWithHookEnv(s.WorkspaceDir, agentID, a2aMeta, hookEnv, s.MaxToolTurns, s.CommandTimeoutSeconds)
+		primary, err := LoadFolderAgentWithHookEnvWithSink(s.WorkspaceDir, agentID, a2aMeta, hookEnv, s.MaxToolTurns, toolEventsFromCtx(turnCtx), s.CommandTimeoutSeconds)
 		if err != nil {
 			yield("", fmt.Errorf("failed to load agent %q: %w", agentID, err))
 			return
@@ -484,7 +484,7 @@ func (s *AgentSDK) generateTurnStreamImpl(ctx context.Context, agentID string) i
 		chain := primary.RuntimeConfig.FallbackChain()
 
 		load := func(cfg *RuntimeConfig) (*FolderAgent, error) {
-			return loadFolderAgentFromRuntime(primary.AgentDir, s.WorkspaceDir, agentID, a2aMeta, hookEnv, cfg, primary.DotEnv, s.MaxToolTurns, s.CommandTimeoutSeconds)
+			return loadFolderAgentFromRuntime(primary.AgentDir, s.WorkspaceDir, agentID, a2aMeta, hookEnv, cfg, primary.DotEnv, s.MaxToolTurns, primary.ToolEvents, s.CommandTimeoutSeconds)
 		}
 		s.runTurnWithRuntimeFallback(turnCtx, agentID, primary, chain, load,
 			func(fa *FolderAgent) iter.Seq2[string, error] { return fa.GenerateTurnStream(turnCtx) },
@@ -501,14 +501,86 @@ func (s *AgentSDK) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, st
 	if req != nil {
 		agentID = req.GetAgentId()
 	}
-	for chunk, err := range s.generateTurnStreamImpl(stream.Context(), agentID) {
-		if err != nil {
-			return err
+	sink := NewToolEventSinkWithJournal(toolJournalPath(s.AgentDir(agentID)))
+	ctx, cancel := context.WithCancel(stream.Context())
+	defer cancel()
+	ctx = withToolEvents(ctx, sink)
+
+	// M1 liveness: the impl iterator is pulled on its own goroutine so the handler can select
+	// on sink.Notify() while a tool is still running. ADK yields nothing between the model
+	// response carrying the functionCall and tool completion, so a between-chunks drain alone
+	// would defer the announce until the tool finishes (Phoebe M1). The push signal wakes the
+	// handler immediately; the handler is the ONLY goroutine that sends on the stream.
+	type genItem struct {
+		chunk string
+		err   error
+	}
+	items := make(chan genItem, 8)
+	go func() {
+		defer close(items)
+		for chunk, err := range s.generateTurnStreamImpl(ctx, agentID) {
+			select {
+			case items <- genItem{chunk: chunk, err: err}:
+			case <-ctx.Done():
+				return
+			}
 		}
-		if chunk == "" {
-			continue
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-sink.Notify():
+			if err := sendGenToolEvents(stream, sink.Drain()); err != nil {
+				return err
+			}
+		case it, ok := <-items:
+			if !ok {
+				if events := sink.Drain(); len(events) > 0 {
+					if err := sendGenToolEvents(stream, events); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			if it.err != nil {
+				return it.err
+			}
+			// Drain before text send: tool events are flush boundaries (Phoebe coalescing
+			// invariant), so any events recorded before this chunk ship ahead of it.
+			if events := sink.Drain(); len(events) > 0 {
+				if err := sendGenToolEvents(stream, events); err != nil {
+					return err
+				}
+			}
+			if it.chunk == "" {
+				continue
+			}
+			if err := stream.Send(&agentv1.GenerateTurnStreamResponse{Text: it.chunk}); err != nil {
+				return err
+			}
 		}
-		if err := stream.Send(&agentv1.GenerateTurnStreamResponse{Text: chunk}); err != nil {
+	}
+}
+
+// toolEventIsAnnounce reports whether a ToolEvent is the announce (tool_call) half of the
+// pair rather than the outcome (tool_call_update). Live announces have empty Status; denied
+// announces carry Status=denied plus the Denied flag, so both are announce-shaped.
+func toolEventIsAnnounce(ev ToolEvent) bool {
+	return ev.Status == "" || ev.Denied
+}
+
+// sendGenToolEvents sends drained tool events as tool_call / tool_call_update responses.
+func sendGenToolEvents(stream grpc.ServerStreamingServer[agentv1.GenerateTurnStreamResponse], events []ToolEvent) error {
+	for _, ev := range events {
+		resp := &agentv1.GenerateTurnStreamResponse{}
+		if toolEventIsAnnounce(ev) {
+			resp.ToolCall = &agentv1.ToolCall{CallId: ev.CallID, ToolName: ev.ToolName, ArgsSummary: ev.ArgsSummary, Denied: ev.Denied}
+		} else {
+			resp.ToolCallUpdate = &agentv1.ToolCallUpdate{CallId: ev.CallID, ToolName: ev.ToolName, Status: ev.Status, ResultBytes: ev.ResultBytes, ResultHead: ev.ResultHead, ResultRef: ev.ResultRef}
+		}
+		if err := stream.Send(resp); err != nil {
 			return err
 		}
 	}
@@ -608,7 +680,7 @@ func (s *AgentSDK) addAndGenerateTurnStreamImpl(ctx context.Context, agentID str
 		// 2. Load Folder Agent & Stream Assistant Turn, walking the runtime fallback chain.
 		// The user turn is already appended above; fallback levels only re-run generation
 		// against the same session, never re-append the user message.
-		primary, err := LoadFolderAgentWithHookEnv(s.WorkspaceDir, agentID, a2aMeta, hookEnv, s.MaxToolTurns, s.CommandTimeoutSeconds)
+		primary, err := LoadFolderAgentWithHookEnvWithSink(s.WorkspaceDir, agentID, a2aMeta, hookEnv, s.MaxToolTurns, toolEventsFromCtx(turnCtx), s.CommandTimeoutSeconds)
 		if err != nil {
 			yield("", fmt.Errorf("failed to load agent %q: %w", agentID, err))
 			return
@@ -616,7 +688,7 @@ func (s *AgentSDK) addAndGenerateTurnStreamImpl(ctx context.Context, agentID str
 		chain := primary.RuntimeConfig.FallbackChain()
 
 		load := func(cfg *RuntimeConfig) (*FolderAgent, error) {
-			return loadFolderAgentFromRuntime(primary.AgentDir, s.WorkspaceDir, agentID, a2aMeta, hookEnv, cfg, primary.DotEnv, s.MaxToolTurns, s.CommandTimeoutSeconds)
+			return loadFolderAgentFromRuntime(primary.AgentDir, s.WorkspaceDir, agentID, a2aMeta, hookEnv, cfg, primary.DotEnv, s.MaxToolTurns, primary.ToolEvents, s.CommandTimeoutSeconds)
 		}
 		s.runTurnWithRuntimeFallback(turnCtx, agentID, primary, chain, load,
 			func(fa *FolderAgent) iter.Seq2[string, error] { return fa.GenerateTurnStream(turnCtx) },
@@ -638,7 +710,10 @@ type asideTurnResult struct {
 	Text        string
 	Warnings    []string
 	ToolDenials int64
-	Usage       asideUsage
+	// ToolEvents carries the denied-only tool events emitted during the aside fork (stream
+	// visibility; never persisted - the aside side-effect contract).
+	ToolEvents []ToolEvent
+	Usage      asideUsage
 }
 
 // AsideTurnStream answers a one-shot question against a FORKED in-memory copy of the agent's
@@ -770,7 +845,12 @@ func asideInternal(s *AgentSDK, ctx context.Context, workspaceDir, agentID, ques
 	// invocation denied via the #50 deny machinery; fresh tracker for usage metadata only.
 	var denials int64
 	tracker := &TurnUsageTracker{}
-	asideAgent, err := BuildADKAgentWithConfigAndTrackerForCompaction(fa.AgentID, fa.SystemPrompt, fa.MaxToolTurns, fa.RuntimeConfig, fa.Model, fa.AgentDir, tracker, &denials, fa.Tools...)
+	// Aside is denied-only for tool visibility: the fork never executes tools, but it still
+	// emits tool_call announce + denied update events so clients see the denials uniformly.
+	// The sink is deliberately journal-free - asides never persist (archon side-effect
+	// contract), so the events are stream-visible only.
+	asideSink := NewToolEventSink()
+	asideAgent, err := BuildADKAgentWithConfigAndTrackerForCompactionWithSink(fa.AgentID, fa.SystemPrompt, fa.MaxToolTurns, fa.RuntimeConfig, fa.Model, fa.AgentDir, tracker, &denials, asideSink, fa.Tools...)
 	if err != nil {
 		yield("", fmt.Errorf("failed to build aside agent for %q: %w", agentID, err))
 		return err
@@ -801,6 +881,7 @@ func asideInternal(s *AgentSDK, ctx context.Context, workspaceDir, agentID, ques
 		}
 	}
 	if asideResult != nil {
+		asideResult.ToolEvents = asideSink.Drain()
 		asideResult.ToolDenials = atomic.LoadInt64(&denials)
 		tracker.mu.Lock()
 		asideResult.Usage.PromptTokens = tracker.LastPromptTokens
@@ -855,19 +936,119 @@ func (s *AgentSDK) AddAndGenerateTurnStream(req *agentv1.AddAndGenerateTurnStrea
 	if req != nil {
 		userMsg = req.GetUserMessage()
 	}
-	for chunk, err := range s.addAndGenerateTurnStreamImpl(stream.Context(), agentID, userMsg, func(w string) {
-		if w == "" {
-			return
+	sink := NewToolEventSinkWithJournal(toolJournalPath(s.AgentDir(agentID)))
+	ctx, cancel := context.WithCancel(stream.Context())
+	defer cancel()
+	ctx = withToolEvents(ctx, sink)
+
+	// M1 liveness: same push-path shape as GenerateTurnStream. Warnings flow on their own
+	// channel (the generator goroutine must never send on the grpc stream - it is not safe
+	// for concurrent Send; the handler is the single sender).
+	type aagItem struct {
+		chunk string
+		err   error
+	}
+	items := make(chan aagItem, 8)
+	warnings := make(chan string, 8)
+	go func() {
+		defer close(items)
+		defer close(warnings)
+		onWarning := func(w string) {
+			if w == "" {
+				return
+			}
+			select {
+			case warnings <- w:
+			case <-ctx.Done():
+			}
 		}
-		_ = stream.Send(&agentv1.AddAndGenerateTurnStreamResponse{Warning: w})
-	}) {
-		if err != nil {
-			return err
+		for chunk, err := range s.addAndGenerateTurnStreamImpl(ctx, agentID, userMsg, onWarning) {
+			select {
+			case items <- aagItem{chunk: chunk, err: err}:
+			case <-ctx.Done():
+				return
+			}
 		}
-		if chunk == "" {
-			continue
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-sink.Notify():
+			if err := sendAAGToolEvents(stream, sink.Drain()); err != nil {
+				return err
+			}
+		case w := <-warnings:
+			if w == "" {
+				continue
+			}
+			if err := stream.Send(&agentv1.AddAndGenerateTurnStreamResponse{Warning: w}); err != nil {
+				return err
+			}
+		case it, ok := <-items:
+			if !ok {
+				// Generator finished: drain any remaining warnings (ok-form handles the closed
+				// channel - a closed channel is always ready, so single-value receive would spin)
+				// then flush pending tool events and return.
+				for {
+					select {
+					case w, ok2 := <-warnings:
+						if !ok2 {
+							if events := sink.Drain(); len(events) > 0 {
+								if err := sendAAGToolEvents(stream, events); err != nil {
+									return err
+								}
+							}
+							return nil
+						}
+						if w != "" {
+							if err := stream.Send(&agentv1.AddAndGenerateTurnStreamResponse{Warning: w}); err != nil {
+								return err
+							}
+						}
+					default:
+						// No more warnings pending (not yet closed): flush events, return.
+						if events := sink.Drain(); len(events) > 0 {
+							if err := sendAAGToolEvents(stream, events); err != nil {
+								return err
+							}
+						}
+						return nil
+					}
+				}
+			}
+			if it.err != nil {
+				return it.err
+			}
+			// Drain before text send: tool events are flush boundaries (Phoebe coalescing
+			// invariant), so any events recorded before this chunk ship ahead of it.
+			if events := sink.Drain(); len(events) > 0 {
+				if err := sendAAGToolEvents(stream, events); err != nil {
+					return err
+				}
+			}
+			if it.chunk == "" {
+				continue
+			}
+			if err := stream.Send(&agentv1.AddAndGenerateTurnStreamResponse{Text: it.chunk}); err != nil {
+				return err
+			}
 		}
-		if err := stream.Send(&agentv1.AddAndGenerateTurnStreamResponse{Text: chunk}); err != nil {
+	}
+}
+
+// sendAAGToolEvents sends drained tool events as tool_call / tool_call_update responses on
+// the add-and-generate stream.
+func sendAAGToolEvents(stream grpc.ServerStreamingServer[agentv1.AddAndGenerateTurnStreamResponse], events []ToolEvent) error {
+	for _, ev := range events {
+		resp := &agentv1.AddAndGenerateTurnStreamResponse{}
+		if toolEventIsAnnounce(ev) {
+			resp.ToolCall = &agentv1.ToolCall{CallId: ev.CallID, ToolName: ev.ToolName, ArgsSummary: ev.ArgsSummary, Denied: ev.Denied}
+		} else {
+			resp.ToolCallUpdate = &agentv1.ToolCallUpdate{CallId: ev.CallID, ToolName: ev.ToolName, Status: ev.Status, ResultBytes: ev.ResultBytes, ResultHead: ev.ResultHead, ResultRef: ev.ResultRef}
+		}
+		if err := stream.Send(resp); err != nil {
 			return err
 		}
 	}

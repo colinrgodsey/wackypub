@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"regexp"
 	"strings"
@@ -362,29 +363,70 @@ func (t *TurnUsageTracker) Reset() {
 
 // BuildADKAgentWithConfigAndTracker constructs a Google ADK LLMAgent for an agent directory, applying RuntimeConfig settings and tracking turn usage.
 func BuildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, maxToolTurns int, runtimeCfg *RuntimeConfig, llmModel model.LLM, agentDir string, tracker *TurnUsageTracker, tools ...tool.Tool) (agent.Agent, error) {
-	return buildADKAgentWithConfigAndTracker(agentID, renderedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, nil, tools...)
+	return buildADKAgentWithConfigAndTracker(agentID, renderedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, nil, nil, nil, tools...)
 }
 
-// BuildADKAgentWithConfigAndTrackerForCompaction constructs the same LLMAgent but with a
-// BeforeToolCallback that DENIES every tool invocation during the compaction turn (D45
-// routes compaction through the real runner so the shared request prefix stays cache-identical
-// with a real generation call - the model sees the tool declarations but must not execute
-// any of them). The callback returns a synthetic non-error result, which makes ADK's callTool
-// skip tool.Run entirely (base_flow.go) and hand the model a completable denial. The callback
-// increments *deniedCalls once per invocation so the compaction result can expose the count
-// to the post-compact payload.
+// BuildADKAgentWithConfigAndTrackerWithSink is the normal builder with tool-call visibility:
+// BeforeToolCallback announces (tool_call) and AfterToolCallback reports (tool_call_update)
+// for every real tool invocation, writing redacted summaries into the sink.
+func BuildADKAgentWithConfigAndTrackerWithSink(agentID string, renderedPrompt string, maxToolTurns int, runtimeCfg *RuntimeConfig, llmModel model.LLM, agentDir string, tracker *TurnUsageTracker, sink *ToolEventSink, tools ...tool.Tool) (agent.Agent, error) {
+	return buildADKAgentWithConfigAndTracker(agentID, renderedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, sink, nil, nil, tools...)
+}
+
 func BuildADKAgentWithConfigAndTrackerForCompaction(agentID string, renderedPrompt string, maxToolTurns int, runtimeCfg *RuntimeConfig, llmModel model.LLM, agentDir string, tracker *TurnUsageTracker, deniedCalls *int64, tools ...tool.Tool) (agent.Agent, error) {
-	return buildADKAgentWithConfigAndTracker(agentID, renderedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, []llmagent.BeforeToolCallback{
+	return buildADKAgentWithConfigAndTracker(agentID, renderedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, nil, []llmagent.BeforeToolCallback{
 		func(ctx agent.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
 			if deniedCalls != nil {
 				atomic.AddInt64(deniedCalls, 1)
 			}
 			return map[string]any{"result": "denied: tools are unavailable during compaction"}, nil
 		},
-	}, tools...)
+	}, nil, tools...)
 }
 
-func buildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, maxToolTurns int, runtimeCfg *RuntimeConfig, llmModel model.LLM, agentDir string, tracker *TurnUsageTracker, beforeToolCallbacks []llmagent.BeforeToolCallback, tools ...tool.Tool) (agent.Agent, error) {
+// BuildADKAgentWithConfigAndTrackerForCompactionWithSink is the compaction variant with a
+// ToolEventSink: the deny callback emits a tool_call announce + denied update so compaction
+// and aside turns are protocol-visible exactly like real invocations (uniformity over
+// special-casing; aside rides the same path, denied-only).
+func BuildADKAgentWithConfigAndTrackerForCompactionWithSink(agentID string, renderedPrompt string, maxToolTurns int, runtimeCfg *RuntimeConfig, llmModel model.LLM, agentDir string, tracker *TurnUsageTracker, deniedCalls *int64, sink *ToolEventSink, tools ...tool.Tool) (agent.Agent, error) {
+	// Deliberately pass nil sink to the internal builder: its generic visibility machinery
+	// would double-emit (visibilityBefore/After around the deny callback on top of the deny
+	// closure's own announce+update). The deny closure is the sole emitter for this path.
+	return buildADKAgentWithConfigAndTracker(agentID, renderedPrompt, maxToolTurns, runtimeCfg, llmModel, agentDir, tracker, nil, []llmagent.BeforeToolCallback{
+		func(ctx agent.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
+			if sink != nil {
+				name := ""
+				if t != nil {
+					name = t.Name()
+				}
+				callID := sink.Announce(name, buildArgsSummary(args), true)
+				sink.Update(callID, name, string(ToolEventStatusDenied), 0, "denied: tools are unavailable during compaction", "")
+			}
+			if deniedCalls != nil {
+				atomic.AddInt64(deniedCalls, 1)
+			}
+			return map[string]any{"result": "denied: tools are unavailable during compaction"}, nil
+		},
+	}, nil, tools...)
+}
+
+// toolInvocationSig returns a stable signature for a tool invocation so the announce (Before
+// callback) and the outcome (After callback) pair correctly even when base_flow interleaves
+// several tool calls from one model response. encoding/json sorts map keys, so Marshal(args)
+// is canonical for the args component.
+func toolInvocationSig(name string, args map[string]any) string {
+	data, err := json.Marshal(args)
+	if err != nil {
+		data = []byte("<unmarshalable>")
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(name))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(data)
+	return fmt.Sprintf("%s:%08x", name, h.Sum32())
+}
+
+func buildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, maxToolTurns int, runtimeCfg *RuntimeConfig, llmModel model.LLM, agentDir string, tracker *TurnUsageTracker, sink *ToolEventSink, beforeToolCallbacks []llmagent.BeforeToolCallback, afterToolCallbacks []llmagent.AfterToolCallback, tools ...tool.Tool) (agent.Agent, error) {
 	if maxToolTurns <= 0 {
 		maxToolTurns = DefaultMaxToolTurns
 	}
@@ -398,6 +440,74 @@ func buildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 		return nil, fmt.Errorf("invalid thinking config for agent %q: %w", agentID, err)
 	}
 
+	// Always keep the consecutive-failure reset wired to AfterToolCallback (D101 P1.4:
+	// a successful tool run clears the failure breaker even when no visibility sink is used).
+	afterToolCallbacks = append([]llmagent.AfterToolCallback{func(ctx agent.Context, t tool.Tool, args, result map[string]any, err error) (map[string]any, error) {
+		if err == nil && tracker != nil {
+			resetConsecutiveToolFailure(tracker)
+		}
+		return nil, nil
+	}}, afterToolCallbacks...)
+
+	// Tool-call visibility (D112): when a sink is provided, every real tool invocation emits
+	// a tool_call announce (BeforeToolCallback) before execution and a tool_call_update
+	// (AfterToolCallback) after outcome. Only redacted summaries travel; full args/results
+	// stay on disk. Note the pairing: a single pending slot is NOT enough - base_flow can
+	// interleave multiple tool invocations from one model response (batch functionCalls in a
+	// single part set, or long-running/asynchronous tools), so a plain last-write-wins slot
+	// attributes completions to the wrong call (empty or swapped call_id). Each Before pushes
+	// its call_id onto a FIFO keyed by the invocation signature (name + canonical args); the
+	// matching After pops the front. FIFO pairing stays correct for same-signature fan-out.
+	if sink != nil {
+		var pendingMu sync.Mutex
+		pendingBySig := make(map[string][]string)
+		visibilityBefore := llmagent.BeforeToolCallback(func(ctx agent.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
+			name := ""
+			if t != nil {
+				name = t.Name()
+			}
+			callID := sink.Announce(name, buildArgsSummary(args), false)
+			sig := toolInvocationSig(name, args)
+			pendingMu.Lock()
+			pendingBySig[sig] = append(pendingBySig[sig], callID)
+			pendingMu.Unlock()
+			return nil, nil
+		})
+		visibilityAfter := llmagent.AfterToolCallback(func(ctx agent.Context, t tool.Tool, args, result map[string]any, err error) (map[string]any, error) {
+			name := ""
+			if t != nil {
+				name = t.Name()
+			}
+			sig := toolInvocationSig(name, args)
+			pendingMu.Lock()
+			queue := pendingBySig[sig]
+			var callID string
+			if len(queue) > 0 {
+				callID = queue[0]
+				if len(queue) == 1 {
+					delete(pendingBySig, sig)
+				} else {
+					pendingBySig[sig] = queue[1:]
+				}
+			}
+			pendingMu.Unlock()
+			status := string(ToolEventStatusCompleted)
+			var resultBytes int64
+			var resultHead string
+			if err != nil {
+				status = string(ToolEventStatusError)
+				// B1+B3: rune-safe + value-level redaction on the error head too (errors can
+				// echo command lines or token-bearing tool output).
+				resultHead = truncateRunesSafe(redactSecretValues(err.Error()), 256)
+			} else {
+				resultBytes, resultHead = buildResultSummary(result)
+			}
+			sink.Update(callID, name, status, resultBytes, resultHead, "")
+			return nil, nil
+		})
+		beforeToolCallbacks = append(beforeToolCallbacks, visibilityBefore)
+		afterToolCallbacks = append(afterToolCallbacks, visibilityAfter)
+	}
 	cfg := llmagent.Config{
 		Name:                agentID,
 		Description:         fmt.Sprintf("Agent %s", agentID),
@@ -438,14 +548,7 @@ func buildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 				return nil, nil
 			},
 		},
-		AfterToolCallbacks: []llmagent.AfterToolCallback{
-			func(ctx agent.Context, t tool.Tool, args, result map[string]any, err error) (map[string]any, error) {
-				if err == nil && tracker != nil {
-					resetConsecutiveToolFailure(tracker)
-				}
-				return nil, nil
-			},
-		},
+		AfterToolCallbacks: afterToolCallbacks,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			func(ctx agent.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
 				// Circuit breaker check (D101 P1.4): takes precedence over the D88 mid-turn token
