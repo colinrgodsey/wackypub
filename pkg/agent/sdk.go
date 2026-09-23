@@ -1842,12 +1842,12 @@ func (s *AgentSDK) InspectSessionContext(ctx context.Context, req *agentv1.Inspe
 	}
 
 	if lastUsage, err := ReadLastUsage(agentDir); err == nil && lastUsage != nil {
+		// Compacted marks these as predating the last compaction. They stay visible so a
+		// test or an operator can see the reading a decision was actually made on.
 		resp.Compacted = lastUsage.Compacted
-		if !lastUsage.Compacted {
-			resp.LastPromptTokens = lastUsage.PromptTokens
-			resp.LastCandidatesTokens = lastUsage.CandidatesTokens
-			resp.LastTotalTokens = lastUsage.TotalTokens
-		}
+		resp.LastPromptTokens = lastUsage.PromptTokens
+		resp.LastCandidatesTokens = lastUsage.CandidatesTokens
+		resp.LastTotalTokens = lastUsage.TotalTokens
 	}
 
 	return resp, nil

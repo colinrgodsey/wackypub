@@ -67,11 +67,24 @@ func ReadLastUsage(agentDir string) (*LastUsageRecord, error) {
 	return &rec, nil
 }
 
-// InvalidateLastUsage marks .last_usage.json as compacted so cold-start emergency valves do not read stale tokens.
+// InvalidateLastUsage marks .last_usage.json as compacted so cold-start emergency
+// valves do not read stale tokens.
+//
+// The numbers are preserved rather than zeroed. Compacted is the staleness marker;
+// zeroing the counters alongside it destroyed the only record of what the provider
+// had actually reported, which is why a compaction warning could not be traced to
+// the reading that caused it.
 func InvalidateLastUsage(agentDir string) error {
 	rec := &LastUsageRecord{
 		Timestamp: time.Now(),
 		Compacted: true,
 	}
+	if prev, err := ReadLastUsage(agentDir); err == nil && prev != nil {
+		rec.PromptTokens = prev.PromptTokens
+		rec.CandidatesTokens = prev.CandidatesTokens
+		rec.TotalTokens = prev.TotalTokens
+	}
+	// A missing or unreadable prior record has nothing to preserve; the invalidation
+	// still has to land, so that error is deliberately not propagated.
 	return WriteLastUsage(agentDir, rec)
 }

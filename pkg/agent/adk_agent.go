@@ -596,22 +596,16 @@ func buildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 							}
 						}
 					}
-					threshold := int(float64(runtimeCfg.ContextWindow) * (1.0 - (overheadPct / 100.0)))
+					budget := contextBudget(runtimeCfg.ContextWindow, runtimeCfg.MaxOutputReserve, overheadPct)
+					used, usedSource := contextUsed(int64(lastPrompt), req.Contents, runtimeCfg.PreserveThinking)
 
-					var tokens int
-					if lastPrompt > 0 {
-						tokens = int(lastPrompt)
-					} else {
-						tokens = EstimateTokens(req.Contents, runtimeCfg.PreserveThinking)
-					}
-
-					if tokens >= threshold {
+					if exceedsBudget(used, budget) {
 						if tracker != nil {
 							tracker.mu.Lock()
 							tracker.StoppedEarlyForCompaction = true
 							tracker.mu.Unlock()
 						}
-						fmt.Fprintf(os.Stderr, "Warning: agent %q accumulated ~%d tokens in mid-turn tool context, reaching compaction threshold (%d / %d contextWindow) - stopping early for compaction.\n", agentID, tokens, threshold, runtimeCfg.ContextWindow)
+						fmt.Fprintf(os.Stderr, "Warning: agent %q accumulated ~%d tokens (%s) in mid-turn tool context, reaching the %d token budget for a %d contextWindow - stopping early for compaction.\n", agentID, used, usedSource, budget, runtimeCfg.ContextWindow)
 						var continueHint string
 						if disableAuto {
 							continueHint = " Send another message (e.g. \"continue\") to proceed."
@@ -620,7 +614,7 @@ func buildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 							Content: &genai.Content{
 								Role: "model",
 								Parts: []*genai.Part{
-									{Text: fmt.Sprintf("[Accumulated tool context reached ~%d tokens (exceeding %d budget threshold for %d contextWindow) - stopping turn early to allow session compaction.%s]", tokens, threshold, runtimeCfg.ContextWindow, continueHint)},
+									{Text: fmt.Sprintf("[Accumulated tool context reached ~%d tokens (measured by %s; exceeding %d budget threshold for %d contextWindow) - stopping turn early to allow session compaction.%s]", used, usedSource, budget, runtimeCfg.ContextWindow, continueHint)},
 								},
 							},
 						}, nil

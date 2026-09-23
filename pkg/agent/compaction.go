@@ -448,13 +448,13 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		if runtimeCfg == nil || runtimeCfg.ContextWindow <= 0 {
 			return false, nil
 		}
-		overheadPct := compactCfg.CompactOverheadPct
-		if overheadPct < 0 || overheadPct >= 100 {
-			overheadPct = DefaultCompactionOverheadPct
-		}
-		threshold := int(float64(runtimeCfg.ContextWindow) * (1.0 - (overheadPct / 100.0)))
-		estimatedTokens := EstimateTokens(turns, runtimeCfg.PreserveThinking)
-		if estimatedTokens < threshold {
+		// Shares the ceiling with every other decision but keeps the raw session
+		// estimate as the measure. The calibrated measure exists so the mid-turn stop
+		// can face the provider's real ceiling; running it through this gate would
+		// silently compact every session earlier, which is a policy change rather
+		// than part of making the warning truthful.
+		budget := contextBudget(runtimeCfg.ContextWindow, runtimeCfg.MaxOutputReserve, compactCfg.CompactOverheadPct)
+		if EstimateTokens(turns, runtimeCfg.PreserveThinking) < budget {
 			return false, nil
 		}
 	}

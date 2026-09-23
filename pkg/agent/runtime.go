@@ -26,6 +26,11 @@ type RuntimeConfig struct {
 	Model         string `json:"model"`
 	APIKey        string `json:"apiKey"`
 	ContextWindow int    `json:"contextWindow"`
+	// MaxOutputReserve is the token headroom kept free for the model's reply. The
+	// mid-turn budget stop fires at ContextWindow - MaxOutputReserve - safety margin
+	// instead of a flat share of the window. Unset or <= 0 selects
+	// DefaultMaxOutputReserveTokens.
+	MaxOutputReserve int `json:"maxOutputReserve,omitempty"`
 
 	// TimeoutSeconds sets the HTTP client timeout in seconds for API calls to the LLM backend.
 	// Defaults to DefaultHTTPTimeoutSeconds (900s / 15 minutes) when unset or <= 0.
