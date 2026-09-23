@@ -169,7 +169,13 @@ func redactSecretShapedValues(args map[string]any) map[string]any {
 // common substring false positives (author, authorize, tokenizer, authority) do not render
 // as [REDACTED] - only keys that ARE secret-shaped (api_key, access_token, bearer,
 // authorization, auth, password, secret, token...).
-var secretKeyRe = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(api[_-]?key|apikey|access[_-]?token|bearer[_-]?token|authtoken|token|password|passwd|secret|bearer|authorization|auth)([^a-z0-9_]|$)`)
+var secretKeyRe = regexp.MustCompile(`(?i)(^|[^a-z0-9])(api[_-]?key|apikey|access[_-]?token|bearer[_-]?token|authtoken|client[_-]?secret|refresh[_-]?token|oauth[_-]?token|id[_-]?token|session[_-]?token|token|password|passwd|secret|bearer|authorization|auth)([^a-z0-9_]|$)`)
+
+// Left boundary deliberately accepts '_' so underscore-joined compound secret keys match
+// (auth_token, client_secret, refresh_token, oauth_token, id_token, session_token): in a
+// compound the secret word arrives after the underscore, so the LEFT char may be '_'.
+// The right boundary stays strict (no '_'), which keeps benign keys like secret_shares_ratio,
+// password_length_hint, author, and tokenizer from matching.
 
 // isSecretKey reports whether a map key names a secret-shaped value.
 func isSecretKey(key string) bool {
@@ -307,6 +313,10 @@ var secretValuePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`Basic\s+[A-Za-z0-9+/=]+`),
 	regexp.MustCompile(`-----BEGIN [A-Z ]+-----`),
 	regexp.MustCompile(`(?i)(api[_-]?key|token|password|passwd|secret|bearer|authorization|aws_access_key_id|secret_access_key)[:=]\s*[^\s,\};]+`),
+	// JSON-aware kv: the quoted key form ({"client_secret":"..."}) defeats the separator
+	// pattern above because the inner quote sits between key and colon. Match the quoted
+	// key (same compound set) plus its quoted value, and redact the whole pair.
+	regexp.MustCompile(`(?i)"([a-z0-9_]+[_-])?(api[_-]?key|apikey|access[_-]?token|bearer[_-]?token|client[_-]?secret|refresh[_-]?token|oauth[_-]?token|id[_-]?token|session[_-]?token|authtoken|token|password|passwd|secret|bearer|authorization|auth)"\s*:\s*"[^"]*"`),
 }
 
 // redactSecretValues scans a string for secret-shaped substrings and replaces them with
