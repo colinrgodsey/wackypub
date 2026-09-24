@@ -15,6 +15,7 @@ import (
 	"time"
 
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
+	"github.com/colinrgodsey/wackypub/pkg/stdio"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -133,7 +134,7 @@ func dialBridge(ctx context.Context, wsDir, agentID string, route RemoteRoute) (
 		return nil, nil, fmt.Errorf("starting bridge %q: %w", route.Command, err)
 	}
 
-	conn := newStdioConn(cmd, stdin, stdout)
+	conn := stdio.NewClientConn(cmd, stdin, stdout, 0)
 
 	// Fix #5: Atomic flag preventing grpc-go redial loops on dead pipes
 	var dialed atomic.Bool
