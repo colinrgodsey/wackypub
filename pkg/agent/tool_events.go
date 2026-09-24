@@ -38,6 +38,7 @@ type ToolEvent struct {
 	ResultHead  string    `json:"result_head,omitempty"`
 	ResultRef   string    `json:"result_ref,omitempty"`
 	Timestamp   time.Time `json:"timestamp"`
+	Seq         int64     `json:"seq,omitempty"`
 }
 
 // ToolEventSink is a thread-safe collector for tool lifecycle events produced by the ADK
@@ -51,6 +52,8 @@ type ToolEventSink struct {
 	// notify is a buffered(1) push signal fired on every record so stream handlers can wake
 	// and drain mid-tool (liveness): the announce becomes observable before tool completion.
 	notify chan struct{}
+	// seqAlloc, when set, is called under the session lock to assign monotonic sequence numbers.
+	seqAlloc func() int64
 }
 
 // NewToolEventSink returns a sink with no journal backing.
@@ -65,6 +68,16 @@ func NewToolEventSinkWithJournal(journalPath string) *ToolEventSink {
 	return &ToolEventSink{journalPath: journalPath, notify: make(chan struct{}, 1)}
 }
 
+// SetSeqAlloc configures the sequence number allocator for events recorded by this sink.
+func (s *ToolEventSink) SetSeqAlloc(alloc func() int64) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seqAlloc = alloc
+}
+
 // Announce records a tool_call (pre-execution) event. The returned call_id pairs the
 // announce with its later Update. Denied announces set Denied and Status=denied (the deny
 // path emits announce+update back to back); live announces leave Status empty so consumers
@@ -75,13 +88,25 @@ func (s *ToolEventSink) Announce(toolName, argsSummary string, denied bool) stri
 	if denied {
 		status = string(ToolEventStatusDenied)
 	}
-	s.record(ToolEvent{CallID: callID, ToolName: toolName, ArgsSummary: argsSummary, Status: status, Denied: denied, Timestamp: time.Now()})
+	var seq int64
+	s.mu.Lock()
+	if s.seqAlloc != nil {
+		seq = s.seqAlloc()
+	}
+	s.mu.Unlock()
+	s.record(ToolEvent{CallID: callID, ToolName: toolName, ArgsSummary: argsSummary, Status: status, Denied: denied, Timestamp: time.Now(), Seq: seq})
 	return callID
 }
 
 // Update records a tool_call_update (outcome) event.
 func (s *ToolEventSink) Update(callID, toolName, status string, resultBytes int64, resultHead, resultRef string) {
-	s.record(ToolEvent{CallID: callID, ToolName: toolName, Status: status, ResultBytes: resultBytes, ResultHead: resultHead, ResultRef: resultRef, Timestamp: time.Now()})
+	var seq int64
+	s.mu.Lock()
+	if s.seqAlloc != nil {
+		seq = s.seqAlloc()
+	}
+	s.mu.Unlock()
+	s.record(ToolEvent{CallID: callID, ToolName: toolName, Status: status, ResultBytes: resultBytes, ResultHead: resultHead, ResultRef: resultRef, Timestamp: time.Now(), Seq: seq})
 }
 
 // Notify returns a push channel signaled (buffered, at least once) whenever a new tool
@@ -138,6 +163,7 @@ func (s *ToolEventSink) appendJournal(ev ToolEvent) {
 	}
 	defer f.Close()
 	_, _ = f.Write(append(data, '\n'))
+	NotifySessionActivity(filepath.Dir(s.journalPath))
 }
 
 // newToolCallID returns a short random identifier pairing announce with update.

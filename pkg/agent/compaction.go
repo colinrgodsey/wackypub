@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -620,12 +621,62 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 	// turn) - no special-casing needed. Skipped on an empty remaining session
 	// (nothing to attach it in front of) or an explicit opt-out.
 	notice := strings.TrimSpace(compactCfg.CompactionNotice)
-	if len(remainingTurns) > 0 && notice != "" {
-		noticeTurn := genai.NewContentFromText(FormatCompactionNotice(notice), "user")
-		remainingTurns = append([]*genai.Content{noticeTurn}, remainingTurns...)
+	existing, _ := ReadPersistedTurns(agentDir)
+	numCompacted := len(existing) - len(remainingTurns)
+	if numCompacted < 0 {
+		numCompacted = 0
 	}
 
-	if err := WriteSessionTurns(agentDir, remainingTurns); err != nil {
+	var survivingTurns []PersistedTurn
+	for i, t := range remainingTurns {
+		if t == nil {
+			continue
+		}
+		var seq int64
+		idx := numCompacted + i
+		if idx >= 0 && idx < len(existing) && existing[idx].Seq > 0 {
+			seq = existing[idx].Seq
+		}
+		survivingTurns = append(survivingTurns, PersistedTurn{
+			Role:  t.Role,
+			Parts: t.Parts,
+			Seq:   seq,
+		})
+	}
+
+	var baselineSeq int64
+	if len(survivingTurns) > 0 {
+		baselineSeq = survivingTurns[0].Seq
+	}
+
+	summarySeq, _ := NextSeq(agentDir)
+	if baselineSeq == 0 {
+		baselineSeq = summarySeq
+	}
+
+	var pTurns []PersistedTurn
+	if len(remainingTurns) > 0 && notice != "" {
+		noticeTurn := genai.NewContentFromText(FormatCompactionNotice(notice), "user")
+		pTurns = append(pTurns, PersistedTurn{
+			Role:  "user",
+			Parts: noticeTurn.Parts,
+			Seq:   summarySeq,
+		})
+	} else if notice == "" {
+		// Emit compaction event to tool-journal.jsonl if notice was opted out
+		sink := NewToolEventSinkWithJournal(toolJournalPath(agentDir))
+		sink.record(ToolEvent{
+			ToolName:    "compaction",
+			Status:      string(ToolEventStatusCompleted),
+			Timestamp:   time.Now(),
+			Seq:         summarySeq,
+			ArgsSummary: fmt.Sprintf("baseline_seq=%d compacted_turns=%d", baselineSeq, numCompacted),
+		})
+	}
+
+	pTurns = append(pTurns, survivingTurns...)
+
+	if err := WritePersistedTurns(agentDir, pTurns); err != nil {
 		return fail("write-session", fmt.Errorf("failed to update session.jsonl after compaction: %w", err))
 	}
 

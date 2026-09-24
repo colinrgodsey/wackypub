@@ -502,6 +502,10 @@ func (s *AgentSDK) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, st
 		agentID = req.GetAgentId()
 	}
 	sink := NewToolEventSinkWithJournal(toolJournalPath(s.AgentDir(agentID)))
+	sink.SetSeqAlloc(func() int64 {
+		seq, _ := NextSeq(s.AgentDir(agentID))
+		return seq
+	})
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 	ctx = withToolEvents(ctx, sink)
@@ -937,6 +941,10 @@ func (s *AgentSDK) AddAndGenerateTurnStream(req *agentv1.AddAndGenerateTurnStrea
 		userMsg = req.GetUserMessage()
 	}
 	sink := NewToolEventSinkWithJournal(toolJournalPath(s.AgentDir(agentID)))
+	sink.SetSeqAlloc(func() int64 {
+		seq, _ := NextSeq(s.AgentDir(agentID))
+		return seq
+	})
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 	ctx = withToolEvents(ctx, sink)

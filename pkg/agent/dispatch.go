@@ -155,3 +155,17 @@ func (l *localAgentClient) AddAndGenerateTurnStream(ctx context.Context, in *age
 	}()
 	return NewInProcessStreamClient(stream, errCh), nil
 }
+
+func (l *localAgentClient) ReadSessionEvents(ctx context.Context, in *agentv1.ReadSessionEventsRequest, _ ...grpc.CallOption) (*agentv1.ReadSessionEventsResponse, error) {
+	return l.sdk.ReadSessionEvents(ctx, in)
+}
+
+func (l *localAgentClient) SubscribeSession(ctx context.Context, in *agentv1.SubscribeSessionRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[agentv1.SubscribeSessionResponse], error) {
+	stream := NewInProcessStream[agentv1.SubscribeSessionResponse](ctx, 64)
+	errCh := make(chan error, 1)
+	go func() {
+		defer stream.Close()
+		errCh <- l.sdk.SubscribeSession(in, stream)
+	}()
+	return NewInProcessStreamClient(stream, errCh), nil
+}

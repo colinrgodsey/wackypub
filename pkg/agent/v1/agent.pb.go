@@ -519,7 +519,9 @@ type SessionTurn struct {
 	// role identifies the author of the turn, typically "user" or "model".
 	Role string `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
 	// parts contains the ordered sequence of content parts comprising this turn.
-	Parts         []*SessionPart `protobuf:"bytes,2,rep,name=parts,proto3" json:"parts,omitempty"`
+	Parts []*SessionPart `protobuf:"bytes,2,rep,name=parts,proto3" json:"parts,omitempty"`
+	// seq is the strictly monotonic sequence counter assigned to this turn.
+	Seq           int64 `protobuf:"varint,3,opt,name=seq,proto3" json:"seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -566,6 +568,13 @@ func (x *SessionTurn) GetParts() []*SessionPart {
 		return x.Parts
 	}
 	return nil
+}
+
+func (x *SessionTurn) GetSeq() int64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
 }
 
 // SessionPart represents one content component of a conversation turn (text or inline data).
@@ -3075,7 +3084,9 @@ type ToolCall struct {
 	ArgsSummary string `protobuf:"bytes,3,opt,name=args_summary,json=argsSummary,proto3" json:"args_summary,omitempty"`
 	// denied is true when the invocation was refused before execution (compaction/aside
 	// deny paths emit the same announce shape with denied=true and no update).
-	Denied        bool `protobuf:"varint,4,opt,name=denied,proto3" json:"denied,omitempty"`
+	Denied bool `protobuf:"varint,4,opt,name=denied,proto3" json:"denied,omitempty"`
+	// seq is the strictly monotonic sequence counter assigned to this tool call event.
+	Seq           int64 `protobuf:"varint,5,opt,name=seq,proto3" json:"seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3138,6 +3149,13 @@ func (x *ToolCall) GetDenied() bool {
 	return false
 }
 
+func (x *ToolCall) GetSeq() int64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
 // ToolCallUpdate reports the outcome of a previously announced ToolCall (the ACP
 // tool_call_update mirror). It carries byte-size + truncated head + a store/session
 // reference for the FULL result - never the full body on the wire.
@@ -3157,7 +3175,9 @@ type ToolCallUpdate struct {
 	ResultHead string `protobuf:"bytes,5,opt,name=result_head,json=resultHead,proto3" json:"result_head,omitempty"`
 	// result_ref is a store/session reference for the full result body (see journal
 	// stamping). May be empty when the result had no persisted body.
-	ResultRef     string `protobuf:"bytes,6,opt,name=result_ref,json=resultRef,proto3" json:"result_ref,omitempty"`
+	ResultRef string `protobuf:"bytes,6,opt,name=result_ref,json=resultRef,proto3" json:"result_ref,omitempty"`
+	// seq is the strictly monotonic sequence counter assigned to this tool call update event.
+	Seq           int64 `protobuf:"varint,7,opt,name=seq,proto3" json:"seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3232,6 +3252,13 @@ func (x *ToolCallUpdate) GetResultRef() string {
 		return x.ResultRef
 	}
 	return ""
+}
+
+func (x *ToolCallUpdate) GetSeq() int64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
 }
 
 // GenerateTurnStreamResponse is a single streamed slice of the assistant response text
@@ -4217,6 +4244,691 @@ func (x *TraceResponse) GetSteps() []*TraceStep {
 	return nil
 }
 
+// ReadSessionEventsRequest specifies parameters for polling session events.
+type ReadSessionEventsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose session events to read. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir string `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	// cursor specifies the starting point for reading events.
+	// If neither is set, defaults to replaying all surviving events (since_seq = 0).
+	//
+	// Types that are valid to be assigned to Cursor:
+	//
+	//	*ReadSessionEventsRequest_SinceSeq
+	//	*ReadSessionEventsRequest_LastN
+	//	*ReadSessionEventsRequest_HeadOnly
+	Cursor        isReadSessionEventsRequest_Cursor `protobuf_oneof:"cursor"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadSessionEventsRequest) Reset() {
+	*x = ReadSessionEventsRequest{}
+	mi := &file_agent_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadSessionEventsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadSessionEventsRequest) ProtoMessage() {}
+
+func (x *ReadSessionEventsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadSessionEventsRequest.ProtoReflect.Descriptor instead.
+func (*ReadSessionEventsRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *ReadSessionEventsRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *ReadSessionEventsRequest) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
+}
+
+func (x *ReadSessionEventsRequest) GetCursor() isReadSessionEventsRequest_Cursor {
+	if x != nil {
+		return x.Cursor
+	}
+	return nil
+}
+
+func (x *ReadSessionEventsRequest) GetSinceSeq() int64 {
+	if x != nil {
+		if x, ok := x.Cursor.(*ReadSessionEventsRequest_SinceSeq); ok {
+			return x.SinceSeq
+		}
+	}
+	return 0
+}
+
+func (x *ReadSessionEventsRequest) GetLastN() int32 {
+	if x != nil {
+		if x, ok := x.Cursor.(*ReadSessionEventsRequest_LastN); ok {
+			return x.LastN
+		}
+	}
+	return 0
+}
+
+func (x *ReadSessionEventsRequest) GetHeadOnly() bool {
+	if x != nil {
+		if x, ok := x.Cursor.(*ReadSessionEventsRequest_HeadOnly); ok {
+			return x.HeadOnly
+		}
+	}
+	return false
+}
+
+type isReadSessionEventsRequest_Cursor interface {
+	isReadSessionEventsRequest_Cursor()
+}
+
+type ReadSessionEventsRequest_SinceSeq struct {
+	// since_seq requests events with sequence number strictly greater than since_seq.
+	SinceSeq int64 `protobuf:"varint,3,opt,name=since_seq,json=sinceSeq,proto3,oneof"`
+}
+
+type ReadSessionEventsRequest_LastN struct {
+	// last_n requests the N most recent events (capped at server max).
+	LastN int32 `protobuf:"varint,4,opt,name=last_n,json=lastN,proto3,oneof"`
+}
+
+type ReadSessionEventsRequest_HeadOnly struct {
+	// head_only requests no events, returning only baseline_seq, latest_seq, and latest_turn_seq.
+	// Cheap metadata-only request for cold-starting consumers (e.g. wackydiscord) that should not replay past events.
+	HeadOnly bool `protobuf:"varint,5,opt,name=head_only,json=headOnly,proto3,oneof"`
+}
+
+func (*ReadSessionEventsRequest_SinceSeq) isReadSessionEventsRequest_Cursor() {}
+
+func (*ReadSessionEventsRequest_LastN) isReadSessionEventsRequest_Cursor() {}
+
+func (*ReadSessionEventsRequest_HeadOnly) isReadSessionEventsRequest_Cursor() {}
+
+// ReadSessionEventsResponse returns a batch of session events and stream cursor state.
+type ReadSessionEventsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// events contains the batch of session events in strictly increasing sequence order.
+	Events []*SessionEvent `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
+	// rewound indicates that the requested since_seq cursor was earlier than the earliest available
+	// sequence number in the session (e.g. because turns were compacted away into memory).
+	// When true, the consumer must reset its local cursor to baseline_seq.
+	Rewound bool `protobuf:"varint,2,opt,name=rewound,proto3" json:"rewound,omitempty"`
+	// baseline_seq is the earliest available sequence number for this agent's session.
+	BaselineSeq int64 `protobuf:"varint,3,opt,name=baseline_seq,json=baselineSeq,proto3" json:"baseline_seq,omitempty"`
+	// latest_seq is the highest sequence number currently assigned for this agent's session.
+	LatestSeq int64 `protobuf:"varint,4,opt,name=latest_seq,json=latestSeq,proto3" json:"latest_seq,omitempty"`
+	// latest_turn_seq is the sequence number of the most recent persisted turn in this agent's session (0 if none).
+	LatestTurnSeq int64 `protobuf:"varint,5,opt,name=latest_turn_seq,json=latestTurnSeq,proto3" json:"latest_turn_seq,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadSessionEventsResponse) Reset() {
+	*x = ReadSessionEventsResponse{}
+	mi := &file_agent_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadSessionEventsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadSessionEventsResponse) ProtoMessage() {}
+
+func (x *ReadSessionEventsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadSessionEventsResponse.ProtoReflect.Descriptor instead.
+func (*ReadSessionEventsResponse) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{60}
+}
+
+func (x *ReadSessionEventsResponse) GetEvents() []*SessionEvent {
+	if x != nil {
+		return x.Events
+	}
+	return nil
+}
+
+func (x *ReadSessionEventsResponse) GetRewound() bool {
+	if x != nil {
+		return x.Rewound
+	}
+	return false
+}
+
+func (x *ReadSessionEventsResponse) GetBaselineSeq() int64 {
+	if x != nil {
+		return x.BaselineSeq
+	}
+	return 0
+}
+
+func (x *ReadSessionEventsResponse) GetLatestSeq() int64 {
+	if x != nil {
+		return x.LatestSeq
+	}
+	return 0
+}
+
+func (x *ReadSessionEventsResponse) GetLatestTurnSeq() int64 {
+	if x != nil {
+		return x.LatestTurnSeq
+	}
+	return 0
+}
+
+// SubscribeSessionRequest specifies parameters for streaming session events.
+type SubscribeSessionRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// agent_id identifies the agent whose session events to watch. Required.
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// workspace_dir is the filesystem path to the workspace root containing the agent.
+	// When empty, the SDK's configured default workspace directory is used.
+	WorkspaceDir string `protobuf:"bytes,2,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	// cursor specifies the replay starting point before transitioning to live streaming.
+	// If neither is set, defaults to replaying all surviving events (since_seq = 0).
+	//
+	// Types that are valid to be assigned to Cursor:
+	//
+	//	*SubscribeSessionRequest_SinceSeq
+	//	*SubscribeSessionRequest_LastN
+	//	*SubscribeSessionRequest_LiveOnly
+	Cursor        isSubscribeSessionRequest_Cursor `protobuf_oneof:"cursor"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubscribeSessionRequest) Reset() {
+	*x = SubscribeSessionRequest{}
+	mi := &file_agent_proto_msgTypes[61]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubscribeSessionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubscribeSessionRequest) ProtoMessage() {}
+
+func (x *SubscribeSessionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[61]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubscribeSessionRequest.ProtoReflect.Descriptor instead.
+func (*SubscribeSessionRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{61}
+}
+
+func (x *SubscribeSessionRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *SubscribeSessionRequest) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
+}
+
+func (x *SubscribeSessionRequest) GetCursor() isSubscribeSessionRequest_Cursor {
+	if x != nil {
+		return x.Cursor
+	}
+	return nil
+}
+
+func (x *SubscribeSessionRequest) GetSinceSeq() int64 {
+	if x != nil {
+		if x, ok := x.Cursor.(*SubscribeSessionRequest_SinceSeq); ok {
+			return x.SinceSeq
+		}
+	}
+	return 0
+}
+
+func (x *SubscribeSessionRequest) GetLastN() int32 {
+	if x != nil {
+		if x, ok := x.Cursor.(*SubscribeSessionRequest_LastN); ok {
+			return x.LastN
+		}
+	}
+	return 0
+}
+
+func (x *SubscribeSessionRequest) GetLiveOnly() bool {
+	if x != nil {
+		if x, ok := x.Cursor.(*SubscribeSessionRequest_LiveOnly); ok {
+			return x.LiveOnly
+		}
+	}
+	return false
+}
+
+type isSubscribeSessionRequest_Cursor interface {
+	isSubscribeSessionRequest_Cursor()
+}
+
+type SubscribeSessionRequest_SinceSeq struct {
+	// since_seq requests replay of events with sequence number strictly greater than since_seq.
+	SinceSeq int64 `protobuf:"varint,3,opt,name=since_seq,json=sinceSeq,proto3,oneof"`
+}
+
+type SubscribeSessionRequest_LastN struct {
+	// last_n requests replay of the N most recent events before transitioning to live.
+	LastN int32 `protobuf:"varint,4,opt,name=last_n,json=lastN,proto3,oneof"`
+}
+
+type SubscribeSessionRequest_LiveOnly struct {
+	// live_only skips replay and starts streaming only new live events emitted after subscription.
+	LiveOnly bool `protobuf:"varint,5,opt,name=live_only,json=liveOnly,proto3,oneof"`
+}
+
+func (*SubscribeSessionRequest_SinceSeq) isSubscribeSessionRequest_Cursor() {}
+
+func (*SubscribeSessionRequest_LastN) isSubscribeSessionRequest_Cursor() {}
+
+func (*SubscribeSessionRequest_LiveOnly) isSubscribeSessionRequest_Cursor() {}
+
+// SubscribeSessionResponse is a streamed unit emitted by SubscribeSession.
+type SubscribeSessionResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// event is the next session event.
+	Event *SessionEvent `protobuf:"bytes,1,opt,name=event,proto3" json:"event,omitempty"`
+	// rewound indicates that the requested since_seq cursor was below baseline_seq due to compaction.
+	Rewound bool `protobuf:"varint,2,opt,name=rewound,proto3" json:"rewound,omitempty"`
+	// dropped_events indicates the count of live events dropped due to a full subscriber buffer.
+	// When non-zero, this frame acts as a drop notice before resuming event delivery.
+	DroppedEvents int64 `protobuf:"varint,3,opt,name=dropped_events,json=droppedEvents,proto3" json:"dropped_events,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubscribeSessionResponse) Reset() {
+	*x = SubscribeSessionResponse{}
+	mi := &file_agent_proto_msgTypes[62]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubscribeSessionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubscribeSessionResponse) ProtoMessage() {}
+
+func (x *SubscribeSessionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[62]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubscribeSessionResponse.ProtoReflect.Descriptor instead.
+func (*SubscribeSessionResponse) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{62}
+}
+
+func (x *SubscribeSessionResponse) GetEvent() *SessionEvent {
+	if x != nil {
+		return x.Event
+	}
+	return nil
+}
+
+func (x *SubscribeSessionResponse) GetRewound() bool {
+	if x != nil {
+		return x.Rewound
+	}
+	return false
+}
+
+func (x *SubscribeSessionResponse) GetDroppedEvents() int64 {
+	if x != nil {
+		return x.DroppedEvents
+	}
+	return 0
+}
+
+// CompactionEvent captures a session compaction lifecycle occurrence.
+// Durable and replayable.
+type CompactionEvent struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// baseline_seq is the earliest sequence number surviving in the session after compaction.
+	BaselineSeq int64 `protobuf:"varint,1,opt,name=baseline_seq,json=baselineSeq,proto3" json:"baseline_seq,omitempty"`
+	// summary is the compaction notice or summary text that replaced compacted turns.
+	Summary string `protobuf:"bytes,2,opt,name=summary,proto3" json:"summary,omitempty"`
+	// compacted_turns is the number of turns summarized and removed from session.jsonl.
+	CompactedTurns int32 `protobuf:"varint,3,opt,name=compacted_turns,json=compactedTurns,proto3" json:"compacted_turns,omitempty"`
+	// turn is the synthetic user turn representing the compaction notice in session.jsonl.
+	Turn          *SessionTurn `protobuf:"bytes,4,opt,name=turn,proto3" json:"turn,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CompactionEvent) Reset() {
+	*x = CompactionEvent{}
+	mi := &file_agent_proto_msgTypes[63]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompactionEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompactionEvent) ProtoMessage() {}
+
+func (x *CompactionEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[63]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompactionEvent.ProtoReflect.Descriptor instead.
+func (*CompactionEvent) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{63}
+}
+
+func (x *CompactionEvent) GetBaselineSeq() int64 {
+	if x != nil {
+		return x.BaselineSeq
+	}
+	return 0
+}
+
+func (x *CompactionEvent) GetSummary() string {
+	if x != nil {
+		return x.Summary
+	}
+	return ""
+}
+
+func (x *CompactionEvent) GetCompactedTurns() int32 {
+	if x != nil {
+		return x.CompactedTurns
+	}
+	return 0
+}
+
+func (x *CompactionEvent) GetTurn() *SessionTurn {
+	if x != nil {
+		return x.Turn
+	}
+	return nil
+}
+
+// SessionEvent represents a unified session observation record.
+//
+// Event Classes & Durability Contract (Colin / archon):
+// - Durable / replayable events:
+//   - turn (persisted turns from session.jsonl)
+//   - tool_call (pre-execution tool invocation announce)
+//   - tool_call_update (tool execution outcome)
+//   - compaction (session compaction notice/rewrite)
+//     These events are preserved in the on-disk logs (session.jsonl, tool-journal.jsonl)
+//     and are always available for replay to offline consumers, late joiners, or cache sync.
+//
+// - Live-only events:
+//   - token_delta (in-flight text chunk as model generates)
+//   - progress (in-flight execution progress indication)
+//   - usage (turn token consumption frame at generation close)
+//     These events exist only on the live stream during active turn execution and are NOT
+//     persisted to disk. A consumer that was offline gets the persisted turn, not the live
+//     deltas it missed. That contract is an intentional architectural design, not a limitation.
+type SessionEvent struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// seq is the strictly monotonic sequence counter assigned under the session lock.
+	// Guaranteed unique and strictly increasing per agent.
+	Seq int64 `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
+	// timestamp is when the event occurred.
+	Timestamp *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	// raw is the byte-identical JSONL line as persisted on disk (for durable events),
+	// allowing CLI --raw to preserve exact tail -f output byte-for-byte.
+	Raw string `protobuf:"bytes,3,opt,name=raw,proto3" json:"raw,omitempty"`
+	// event payload
+	//
+	// Types that are valid to be assigned to Event:
+	//
+	//	*SessionEvent_Turn
+	//	*SessionEvent_ToolCall
+	//	*SessionEvent_ToolCallUpdate
+	//	*SessionEvent_Compaction
+	//	*SessionEvent_TokenDelta
+	//	*SessionEvent_Progress
+	//	*SessionEvent_Usage
+	Event         isSessionEvent_Event `protobuf_oneof:"event"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SessionEvent) Reset() {
+	*x = SessionEvent{}
+	mi := &file_agent_proto_msgTypes[64]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionEvent) ProtoMessage() {}
+
+func (x *SessionEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[64]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionEvent.ProtoReflect.Descriptor instead.
+func (*SessionEvent) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{64}
+}
+
+func (x *SessionEvent) GetSeq() int64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *SessionEvent) GetTimestamp() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Timestamp
+	}
+	return nil
+}
+
+func (x *SessionEvent) GetRaw() string {
+	if x != nil {
+		return x.Raw
+	}
+	return ""
+}
+
+func (x *SessionEvent) GetEvent() isSessionEvent_Event {
+	if x != nil {
+		return x.Event
+	}
+	return nil
+}
+
+func (x *SessionEvent) GetTurn() *SessionTurn {
+	if x != nil {
+		if x, ok := x.Event.(*SessionEvent_Turn); ok {
+			return x.Turn
+		}
+	}
+	return nil
+}
+
+func (x *SessionEvent) GetToolCall() *ToolCall {
+	if x != nil {
+		if x, ok := x.Event.(*SessionEvent_ToolCall); ok {
+			return x.ToolCall
+		}
+	}
+	return nil
+}
+
+func (x *SessionEvent) GetToolCallUpdate() *ToolCallUpdate {
+	if x != nil {
+		if x, ok := x.Event.(*SessionEvent_ToolCallUpdate); ok {
+			return x.ToolCallUpdate
+		}
+	}
+	return nil
+}
+
+func (x *SessionEvent) GetCompaction() *CompactionEvent {
+	if x != nil {
+		if x, ok := x.Event.(*SessionEvent_Compaction); ok {
+			return x.Compaction
+		}
+	}
+	return nil
+}
+
+func (x *SessionEvent) GetTokenDelta() string {
+	if x != nil {
+		if x, ok := x.Event.(*SessionEvent_TokenDelta); ok {
+			return x.TokenDelta
+		}
+	}
+	return ""
+}
+
+func (x *SessionEvent) GetProgress() string {
+	if x != nil {
+		if x, ok := x.Event.(*SessionEvent_Progress); ok {
+			return x.Progress
+		}
+	}
+	return ""
+}
+
+func (x *SessionEvent) GetUsage() *TurnUsage {
+	if x != nil {
+		if x, ok := x.Event.(*SessionEvent_Usage); ok {
+			return x.Usage
+		}
+	}
+	return nil
+}
+
+type isSessionEvent_Event interface {
+	isSessionEvent_Event()
+}
+
+type SessionEvent_Turn struct {
+	// Durable events:
+	Turn *SessionTurn `protobuf:"bytes,4,opt,name=turn,proto3,oneof"`
+}
+
+type SessionEvent_ToolCall struct {
+	ToolCall *ToolCall `protobuf:"bytes,5,opt,name=tool_call,json=toolCall,proto3,oneof"`
+}
+
+type SessionEvent_ToolCallUpdate struct {
+	ToolCallUpdate *ToolCallUpdate `protobuf:"bytes,6,opt,name=tool_call_update,json=toolCallUpdate,proto3,oneof"`
+}
+
+type SessionEvent_Compaction struct {
+	Compaction *CompactionEvent `protobuf:"bytes,7,opt,name=compaction,proto3,oneof"`
+}
+
+type SessionEvent_TokenDelta struct {
+	// Live-only events:
+	TokenDelta string `protobuf:"bytes,8,opt,name=token_delta,json=tokenDelta,proto3,oneof"`
+}
+
+type SessionEvent_Progress struct {
+	Progress string `protobuf:"bytes,9,opt,name=progress,proto3,oneof"`
+}
+
+type SessionEvent_Usage struct {
+	Usage *TurnUsage `protobuf:"bytes,10,opt,name=usage,proto3,oneof"`
+}
+
+func (*SessionEvent_Turn) isSessionEvent_Event() {}
+
+func (*SessionEvent_ToolCall) isSessionEvent_Event() {}
+
+func (*SessionEvent_ToolCallUpdate) isSessionEvent_Event() {}
+
+func (*SessionEvent_Compaction) isSessionEvent_Event() {}
+
+func (*SessionEvent_TokenDelta) isSessionEvent_Event() {}
+
+func (*SessionEvent_Progress) isSessionEvent_Event() {}
+
+func (*SessionEvent_Usage) isSessionEvent_Event() {}
+
 var File_agent_proto protoreflect.FileDescriptor
 
 const file_agent_proto_rawDesc = "" +
@@ -4257,10 +4969,11 @@ const file_agent_proto_rawDesc = "" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
 	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\"K\n" +
 	"\x13ReadSessionResponse\x124\n" +
-	"\x05turns\x18\x01 \x03(\v2\x1e.wackypub.agent.v1.SessionTurnR\x05turns\"W\n" +
+	"\x05turns\x18\x01 \x03(\v2\x1e.wackypub.agent.v1.SessionTurnR\x05turns\"i\n" +
 	"\vSessionTurn\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x124\n" +
-	"\x05parts\x18\x02 \x03(\v2\x1e.wackypub.agent.v1.SessionPartR\x05parts\"_\n" +
+	"\x05parts\x18\x02 \x03(\v2\x1e.wackypub.agent.v1.SessionPartR\x05parts\x12\x10\n" +
+	"\x03seq\x18\x03 \x01(\x03R\x03seq\"_\n" +
 	"\vSessionPart\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x1f\n" +
 	"\vinline_data\x18\x02 \x01(\fR\n" +
@@ -4439,12 +5152,13 @@ const file_agent_proto_rawDesc = "" +
 	"\rprompt_tokens\x18\x01 \x01(\x03R\fpromptTokens\x12+\n" +
 	"\x11completion_tokens\x18\x02 \x01(\x03R\x10completionTokens\x12!\n" +
 	"\ftotal_tokens\x18\x03 \x01(\x03R\vtotalTokens\x12\x18\n" +
-	"\abackend\x18\x04 \x01(\tR\abackend\"{\n" +
+	"\abackend\x18\x04 \x01(\tR\abackend\"\x8d\x01\n" +
 	"\bToolCall\x12\x17\n" +
 	"\acall_id\x18\x01 \x01(\tR\x06callId\x12\x1b\n" +
 	"\ttool_name\x18\x02 \x01(\tR\btoolName\x12!\n" +
 	"\fargs_summary\x18\x03 \x01(\tR\vargsSummary\x12\x16\n" +
-	"\x06denied\x18\x04 \x01(\bR\x06denied\"\xc1\x01\n" +
+	"\x06denied\x18\x04 \x01(\bR\x06denied\x12\x10\n" +
+	"\x03seq\x18\x05 \x01(\x03R\x03seq\"\xd3\x01\n" +
 	"\x0eToolCallUpdate\x12\x17\n" +
 	"\acall_id\x18\x01 \x01(\tR\x06callId\x12\x1b\n" +
 	"\ttool_name\x18\x02 \x01(\tR\btoolName\x12\x16\n" +
@@ -4453,7 +5167,8 @@ const file_agent_proto_rawDesc = "" +
 	"\vresult_head\x18\x05 \x01(\tR\n" +
 	"resultHead\x12\x1d\n" +
 	"\n" +
-	"result_ref\x18\x06 \x01(\tR\tresultRef\"\xeb\x01\n" +
+	"result_ref\x18\x06 \x01(\tR\tresultRef\x12\x10\n" +
+	"\x03seq\x18\a \x01(\x03R\x03seq\"\xeb\x01\n" +
 	"\x1aGenerateTurnStreamResponse\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x122\n" +
 	"\x05usage\x18\x02 \x01(\v2\x1c.wackypub.agent.v1.TurnUsageR\x05usage\x128\n" +
@@ -4526,7 +5241,53 @@ const file_agent_proto_rawDesc = "" +
 	"\x0ftarget_agent_id\x18\x01 \x01(\tR\rtargetAgentId\x12#\n" +
 	"\rtarget_commit\x18\x02 \x01(\tR\ftargetCommit\x12\x19\n" +
 	"\btrace_id\x18\x03 \x01(\tR\atraceId\x122\n" +
-	"\x05steps\x18\x04 \x03(\v2\x1c.wackypub.agent.v1.TraceStepR\x05steps2\xd3\x13\n" +
+	"\x05steps\x18\x04 \x03(\v2\x1c.wackypub.agent.v1.TraceStepR\x05steps\"\xbb\x01\n" +
+	"\x18ReadSessionEventsRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
+	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\x12\x1d\n" +
+	"\tsince_seq\x18\x03 \x01(\x03H\x00R\bsinceSeq\x12\x17\n" +
+	"\x06last_n\x18\x04 \x01(\x05H\x00R\x05lastN\x12\x1d\n" +
+	"\thead_only\x18\x05 \x01(\bH\x00R\bheadOnlyB\b\n" +
+	"\x06cursor\"\xd8\x01\n" +
+	"\x19ReadSessionEventsResponse\x127\n" +
+	"\x06events\x18\x01 \x03(\v2\x1f.wackypub.agent.v1.SessionEventR\x06events\x12\x18\n" +
+	"\arewound\x18\x02 \x01(\bR\arewound\x12!\n" +
+	"\fbaseline_seq\x18\x03 \x01(\x03R\vbaselineSeq\x12\x1d\n" +
+	"\n" +
+	"latest_seq\x18\x04 \x01(\x03R\tlatestSeq\x12&\n" +
+	"\x0flatest_turn_seq\x18\x05 \x01(\x03R\rlatestTurnSeq\"\xba\x01\n" +
+	"\x17SubscribeSessionRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
+	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\x12\x1d\n" +
+	"\tsince_seq\x18\x03 \x01(\x03H\x00R\bsinceSeq\x12\x17\n" +
+	"\x06last_n\x18\x04 \x01(\x05H\x00R\x05lastN\x12\x1d\n" +
+	"\tlive_only\x18\x05 \x01(\bH\x00R\bliveOnlyB\b\n" +
+	"\x06cursor\"\x92\x01\n" +
+	"\x18SubscribeSessionResponse\x125\n" +
+	"\x05event\x18\x01 \x01(\v2\x1f.wackypub.agent.v1.SessionEventR\x05event\x12\x18\n" +
+	"\arewound\x18\x02 \x01(\bR\arewound\x12%\n" +
+	"\x0edropped_events\x18\x03 \x01(\x03R\rdroppedEvents\"\xab\x01\n" +
+	"\x0fCompactionEvent\x12!\n" +
+	"\fbaseline_seq\x18\x01 \x01(\x03R\vbaselineSeq\x12\x18\n" +
+	"\asummary\x18\x02 \x01(\tR\asummary\x12'\n" +
+	"\x0fcompacted_turns\x18\x03 \x01(\x05R\x0ecompactedTurns\x122\n" +
+	"\x04turn\x18\x04 \x01(\v2\x1e.wackypub.agent.v1.SessionTurnR\x04turn\"\xf3\x03\n" +
+	"\fSessionEvent\x12\x10\n" +
+	"\x03seq\x18\x01 \x01(\x03R\x03seq\x128\n" +
+	"\ttimestamp\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x12\x10\n" +
+	"\x03raw\x18\x03 \x01(\tR\x03raw\x124\n" +
+	"\x04turn\x18\x04 \x01(\v2\x1e.wackypub.agent.v1.SessionTurnH\x00R\x04turn\x12:\n" +
+	"\ttool_call\x18\x05 \x01(\v2\x1b.wackypub.agent.v1.ToolCallH\x00R\btoolCall\x12M\n" +
+	"\x10tool_call_update\x18\x06 \x01(\v2!.wackypub.agent.v1.ToolCallUpdateH\x00R\x0etoolCallUpdate\x12D\n" +
+	"\n" +
+	"compaction\x18\a \x01(\v2\".wackypub.agent.v1.CompactionEventH\x00R\n" +
+	"compaction\x12!\n" +
+	"\vtoken_delta\x18\b \x01(\tH\x00R\n" +
+	"tokenDelta\x12\x1c\n" +
+	"\bprogress\x18\t \x01(\tH\x00R\bprogress\x124\n" +
+	"\x05usage\x18\n" +
+	" \x01(\v2\x1c.wackypub.agent.v1.TurnUsageH\x00R\x05usageB\a\n" +
+	"\x05event2\xb2\x15\n" +
 	"\fAgentService\x12Y\n" +
 	"\n" +
 	"ListAgents\x12$.wackypub.agent.v1.ListAgentsRequest\x1a%.wackypub.agent.v1.ListAgentsResponse\x12_\n" +
@@ -4554,7 +5315,9 @@ const file_agent_proto_rawDesc = "" +
 	"\x18AddAndGenerateTurnStream\x122.wackypub.agent.v1.AddAndGenerateTurnStreamRequest\x1a3.wackypub.agent.v1.AddAndGenerateTurnStreamResponse0\x01\x12q\n" +
 	"\x12AddAndGenerateTurn\x12,.wackypub.agent.v1.AddAndGenerateTurnRequest\x1a-.wackypub.agent.v1.AddAndGenerateTurnResponse\x12b\n" +
 	"\rAsideQuestion\x12'.wackypub.agent.v1.AsideQuestionRequest\x1a(.wackypub.agent.v1.AsideQuestionResponse\x12J\n" +
-	"\x05Trace\x12\x1f.wackypub.agent.v1.TraceRequest\x1a .wackypub.agent.v1.TraceResponseB7Z5github.com/colinrgodsey/wackypub/pkg/agent/v1;agentv1b\x06proto3"
+	"\x05Trace\x12\x1f.wackypub.agent.v1.TraceRequest\x1a .wackypub.agent.v1.TraceResponse\x12n\n" +
+	"\x11ReadSessionEvents\x12+.wackypub.agent.v1.ReadSessionEventsRequest\x1a,.wackypub.agent.v1.ReadSessionEventsResponse\x12m\n" +
+	"\x10SubscribeSession\x12*.wackypub.agent.v1.SubscribeSessionRequest\x1a+.wackypub.agent.v1.SubscribeSessionResponse0\x01B7Z5github.com/colinrgodsey/wackypub/pkg/agent/v1;agentv1b\x06proto3"
 
 var (
 	file_agent_proto_rawDescOnce sync.Once
@@ -4568,7 +5331,7 @@ func file_agent_proto_rawDescGZIP() []byte {
 	return file_agent_proto_rawDescData
 }
 
-var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 60)
+var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 66)
 var file_agent_proto_goTypes = []any{
 	(*ListAgentsRequest)(nil),                // 0: wackypub.agent.v1.ListAgentsRequest
 	(*ListAgentsResponse)(nil),               // 1: wackypub.agent.v1.ListAgentsResponse
@@ -4629,15 +5392,21 @@ var file_agent_proto_goTypes = []any{
 	(*TraceStep)(nil),                        // 56: wackypub.agent.v1.TraceStep
 	(*TraceRequest)(nil),                     // 57: wackypub.agent.v1.TraceRequest
 	(*TraceResponse)(nil),                    // 58: wackypub.agent.v1.TraceResponse
-	nil,                                      // 59: wackypub.agent.v1.A2AMetadata.MetadataEntry
-	(*timestamppb.Timestamp)(nil),            // 60: google.protobuf.Timestamp
+	(*ReadSessionEventsRequest)(nil),         // 59: wackypub.agent.v1.ReadSessionEventsRequest
+	(*ReadSessionEventsResponse)(nil),        // 60: wackypub.agent.v1.ReadSessionEventsResponse
+	(*SubscribeSessionRequest)(nil),          // 61: wackypub.agent.v1.SubscribeSessionRequest
+	(*SubscribeSessionResponse)(nil),         // 62: wackypub.agent.v1.SubscribeSessionResponse
+	(*CompactionEvent)(nil),                  // 63: wackypub.agent.v1.CompactionEvent
+	(*SessionEvent)(nil),                     // 64: wackypub.agent.v1.SessionEvent
+	nil,                                      // 65: wackypub.agent.v1.A2AMetadata.MetadataEntry
+	(*timestamppb.Timestamp)(nil),            // 66: google.protobuf.Timestamp
 }
 var file_agent_proto_depIdxs = []int32{
 	6,  // 0: wackypub.agent.v1.ReadSessionResponse.turns:type_name -> wackypub.agent.v1.SessionTurn
 	7,  // 1: wackypub.agent.v1.SessionTurn.parts:type_name -> wackypub.agent.v1.SessionPart
 	16, // 2: wackypub.agent.v1.InspectAgentLocksResponse.observations:type_name -> wackypub.agent.v1.AgentLockObservation
-	60, // 3: wackypub.agent.v1.AgentLockObservation.lock_held_since:type_name -> google.protobuf.Timestamp
-	60, // 4: wackypub.agent.v1.AgentLockObservation.last_write:type_name -> google.protobuf.Timestamp
+	66, // 3: wackypub.agent.v1.AgentLockObservation.lock_held_since:type_name -> google.protobuf.Timestamp
+	66, // 4: wackypub.agent.v1.AgentLockObservation.last_write:type_name -> google.protobuf.Timestamp
 	6,  // 5: wackypub.agent.v1.AddUserTurnResponse.turn:type_name -> wackypub.agent.v1.SessionTurn
 	43, // 6: wackypub.agent.v1.AddUserTurnResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
 	6,  // 7: wackypub.agent.v1.AddMediaResponse.turn:type_name -> wackypub.agent.v1.SessionTurn
@@ -4654,63 +5423,76 @@ var file_agent_proto_depIdxs = []int32{
 	45, // 18: wackypub.agent.v1.AddAndGenerateTurnStreamResponse.tool_call_update:type_name -> wackypub.agent.v1.ToolCallUpdate
 	43, // 19: wackypub.agent.v1.AddAndGenerateTurnResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
 	43, // 20: wackypub.agent.v1.AsideQuestionResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
-	59, // 21: wackypub.agent.v1.A2AMetadata.metadata:type_name -> wackypub.agent.v1.A2AMetadata.MetadataEntry
+	65, // 21: wackypub.agent.v1.A2AMetadata.metadata:type_name -> wackypub.agent.v1.A2AMetadata.MetadataEntry
 	55, // 22: wackypub.agent.v1.TraceStep.a2a_metadata:type_name -> wackypub.agent.v1.A2AMetadata
 	6,  // 23: wackypub.agent.v1.TraceStep.turn_contents:type_name -> wackypub.agent.v1.SessionTurn
 	56, // 24: wackypub.agent.v1.TraceResponse.steps:type_name -> wackypub.agent.v1.TraceStep
-	0,  // 25: wackypub.agent.v1.AgentService.ListAgents:input_type -> wackypub.agent.v1.ListAgentsRequest
-	2,  // 26: wackypub.agent.v1.AgentService.InspectAgent:input_type -> wackypub.agent.v1.InspectAgentRequest
-	4,  // 27: wackypub.agent.v1.AgentService.ReadSession:input_type -> wackypub.agent.v1.ReadSessionRequest
-	8,  // 28: wackypub.agent.v1.AgentService.ReadMemory:input_type -> wackypub.agent.v1.ReadMemoryRequest
-	10, // 29: wackypub.agent.v1.AgentService.RenderSystemPrompt:input_type -> wackypub.agent.v1.RenderSystemPromptRequest
-	12, // 30: wackypub.agent.v1.AgentService.InspectSessionContext:input_type -> wackypub.agent.v1.InspectSessionContextRequest
-	14, // 31: wackypub.agent.v1.AgentService.InspectAgentLocks:input_type -> wackypub.agent.v1.InspectAgentLocksRequest
-	17, // 32: wackypub.agent.v1.AgentService.AddUserTurn:input_type -> wackypub.agent.v1.AddUserTurnRequest
-	19, // 33: wackypub.agent.v1.AgentService.AddMedia:input_type -> wackypub.agent.v1.AddMediaRequest
-	21, // 34: wackypub.agent.v1.AgentService.CancelTurn:input_type -> wackypub.agent.v1.CancelTurnRequest
-	23, // 35: wackypub.agent.v1.AgentService.StripSignatures:input_type -> wackypub.agent.v1.StripSignaturesRequest
-	25, // 36: wackypub.agent.v1.AgentService.CompactSession:input_type -> wackypub.agent.v1.CompactSessionRequest
-	28, // 37: wackypub.agent.v1.AgentService.CreateScratchpad:input_type -> wackypub.agent.v1.CreateScratchpadRequest
-	31, // 38: wackypub.agent.v1.AgentService.GetScratchpad:input_type -> wackypub.agent.v1.GetScratchpadRequest
-	33, // 39: wackypub.agent.v1.AgentService.ListScratchpads:input_type -> wackypub.agent.v1.ListScratchpadsRequest
-	35, // 40: wackypub.agent.v1.AgentService.SearchScratchpad:input_type -> wackypub.agent.v1.SearchScratchpadRequest
-	38, // 41: wackypub.agent.v1.AgentService.DiffScratchpadEntries:input_type -> wackypub.agent.v1.DiffScratchpadEntriesRequest
-	40, // 42: wackypub.agent.v1.AgentService.DeleteScratchpad:input_type -> wackypub.agent.v1.DeleteScratchpadRequest
-	42, // 43: wackypub.agent.v1.AgentService.GenerateTurnStream:input_type -> wackypub.agent.v1.GenerateTurnStreamRequest
-	47, // 44: wackypub.agent.v1.AgentService.GenerateTurn:input_type -> wackypub.agent.v1.GenerateTurnRequest
-	49, // 45: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:input_type -> wackypub.agent.v1.AddAndGenerateTurnStreamRequest
-	51, // 46: wackypub.agent.v1.AgentService.AddAndGenerateTurn:input_type -> wackypub.agent.v1.AddAndGenerateTurnRequest
-	53, // 47: wackypub.agent.v1.AgentService.AsideQuestion:input_type -> wackypub.agent.v1.AsideQuestionRequest
-	57, // 48: wackypub.agent.v1.AgentService.Trace:input_type -> wackypub.agent.v1.TraceRequest
-	1,  // 49: wackypub.agent.v1.AgentService.ListAgents:output_type -> wackypub.agent.v1.ListAgentsResponse
-	3,  // 50: wackypub.agent.v1.AgentService.InspectAgent:output_type -> wackypub.agent.v1.InspectAgentResponse
-	5,  // 51: wackypub.agent.v1.AgentService.ReadSession:output_type -> wackypub.agent.v1.ReadSessionResponse
-	9,  // 52: wackypub.agent.v1.AgentService.ReadMemory:output_type -> wackypub.agent.v1.ReadMemoryResponse
-	11, // 53: wackypub.agent.v1.AgentService.RenderSystemPrompt:output_type -> wackypub.agent.v1.RenderSystemPromptResponse
-	13, // 54: wackypub.agent.v1.AgentService.InspectSessionContext:output_type -> wackypub.agent.v1.InspectSessionContextResponse
-	15, // 55: wackypub.agent.v1.AgentService.InspectAgentLocks:output_type -> wackypub.agent.v1.InspectAgentLocksResponse
-	18, // 56: wackypub.agent.v1.AgentService.AddUserTurn:output_type -> wackypub.agent.v1.AddUserTurnResponse
-	20, // 57: wackypub.agent.v1.AgentService.AddMedia:output_type -> wackypub.agent.v1.AddMediaResponse
-	22, // 58: wackypub.agent.v1.AgentService.CancelTurn:output_type -> wackypub.agent.v1.CancelTurnResponse
-	24, // 59: wackypub.agent.v1.AgentService.StripSignatures:output_type -> wackypub.agent.v1.StripSignaturesResponse
-	27, // 60: wackypub.agent.v1.AgentService.CompactSession:output_type -> wackypub.agent.v1.CompactSessionResponse
-	29, // 61: wackypub.agent.v1.AgentService.CreateScratchpad:output_type -> wackypub.agent.v1.CreateScratchpadResponse
-	32, // 62: wackypub.agent.v1.AgentService.GetScratchpad:output_type -> wackypub.agent.v1.GetScratchpadResponse
-	34, // 63: wackypub.agent.v1.AgentService.ListScratchpads:output_type -> wackypub.agent.v1.ListScratchpadsResponse
-	36, // 64: wackypub.agent.v1.AgentService.SearchScratchpad:output_type -> wackypub.agent.v1.SearchScratchpadResponse
-	39, // 65: wackypub.agent.v1.AgentService.DiffScratchpadEntries:output_type -> wackypub.agent.v1.DiffScratchpadEntriesResponse
-	41, // 66: wackypub.agent.v1.AgentService.DeleteScratchpad:output_type -> wackypub.agent.v1.DeleteScratchpadResponse
-	46, // 67: wackypub.agent.v1.AgentService.GenerateTurnStream:output_type -> wackypub.agent.v1.GenerateTurnStreamResponse
-	48, // 68: wackypub.agent.v1.AgentService.GenerateTurn:output_type -> wackypub.agent.v1.GenerateTurnResponse
-	50, // 69: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:output_type -> wackypub.agent.v1.AddAndGenerateTurnStreamResponse
-	52, // 70: wackypub.agent.v1.AgentService.AddAndGenerateTurn:output_type -> wackypub.agent.v1.AddAndGenerateTurnResponse
-	54, // 71: wackypub.agent.v1.AgentService.AsideQuestion:output_type -> wackypub.agent.v1.AsideQuestionResponse
-	58, // 72: wackypub.agent.v1.AgentService.Trace:output_type -> wackypub.agent.v1.TraceResponse
-	49, // [49:73] is the sub-list for method output_type
-	25, // [25:49] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	64, // 25: wackypub.agent.v1.ReadSessionEventsResponse.events:type_name -> wackypub.agent.v1.SessionEvent
+	64, // 26: wackypub.agent.v1.SubscribeSessionResponse.event:type_name -> wackypub.agent.v1.SessionEvent
+	6,  // 27: wackypub.agent.v1.CompactionEvent.turn:type_name -> wackypub.agent.v1.SessionTurn
+	66, // 28: wackypub.agent.v1.SessionEvent.timestamp:type_name -> google.protobuf.Timestamp
+	6,  // 29: wackypub.agent.v1.SessionEvent.turn:type_name -> wackypub.agent.v1.SessionTurn
+	44, // 30: wackypub.agent.v1.SessionEvent.tool_call:type_name -> wackypub.agent.v1.ToolCall
+	45, // 31: wackypub.agent.v1.SessionEvent.tool_call_update:type_name -> wackypub.agent.v1.ToolCallUpdate
+	63, // 32: wackypub.agent.v1.SessionEvent.compaction:type_name -> wackypub.agent.v1.CompactionEvent
+	43, // 33: wackypub.agent.v1.SessionEvent.usage:type_name -> wackypub.agent.v1.TurnUsage
+	0,  // 34: wackypub.agent.v1.AgentService.ListAgents:input_type -> wackypub.agent.v1.ListAgentsRequest
+	2,  // 35: wackypub.agent.v1.AgentService.InspectAgent:input_type -> wackypub.agent.v1.InspectAgentRequest
+	4,  // 36: wackypub.agent.v1.AgentService.ReadSession:input_type -> wackypub.agent.v1.ReadSessionRequest
+	8,  // 37: wackypub.agent.v1.AgentService.ReadMemory:input_type -> wackypub.agent.v1.ReadMemoryRequest
+	10, // 38: wackypub.agent.v1.AgentService.RenderSystemPrompt:input_type -> wackypub.agent.v1.RenderSystemPromptRequest
+	12, // 39: wackypub.agent.v1.AgentService.InspectSessionContext:input_type -> wackypub.agent.v1.InspectSessionContextRequest
+	14, // 40: wackypub.agent.v1.AgentService.InspectAgentLocks:input_type -> wackypub.agent.v1.InspectAgentLocksRequest
+	17, // 41: wackypub.agent.v1.AgentService.AddUserTurn:input_type -> wackypub.agent.v1.AddUserTurnRequest
+	19, // 42: wackypub.agent.v1.AgentService.AddMedia:input_type -> wackypub.agent.v1.AddMediaRequest
+	21, // 43: wackypub.agent.v1.AgentService.CancelTurn:input_type -> wackypub.agent.v1.CancelTurnRequest
+	23, // 44: wackypub.agent.v1.AgentService.StripSignatures:input_type -> wackypub.agent.v1.StripSignaturesRequest
+	25, // 45: wackypub.agent.v1.AgentService.CompactSession:input_type -> wackypub.agent.v1.CompactSessionRequest
+	28, // 46: wackypub.agent.v1.AgentService.CreateScratchpad:input_type -> wackypub.agent.v1.CreateScratchpadRequest
+	31, // 47: wackypub.agent.v1.AgentService.GetScratchpad:input_type -> wackypub.agent.v1.GetScratchpadRequest
+	33, // 48: wackypub.agent.v1.AgentService.ListScratchpads:input_type -> wackypub.agent.v1.ListScratchpadsRequest
+	35, // 49: wackypub.agent.v1.AgentService.SearchScratchpad:input_type -> wackypub.agent.v1.SearchScratchpadRequest
+	38, // 50: wackypub.agent.v1.AgentService.DiffScratchpadEntries:input_type -> wackypub.agent.v1.DiffScratchpadEntriesRequest
+	40, // 51: wackypub.agent.v1.AgentService.DeleteScratchpad:input_type -> wackypub.agent.v1.DeleteScratchpadRequest
+	42, // 52: wackypub.agent.v1.AgentService.GenerateTurnStream:input_type -> wackypub.agent.v1.GenerateTurnStreamRequest
+	47, // 53: wackypub.agent.v1.AgentService.GenerateTurn:input_type -> wackypub.agent.v1.GenerateTurnRequest
+	49, // 54: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:input_type -> wackypub.agent.v1.AddAndGenerateTurnStreamRequest
+	51, // 55: wackypub.agent.v1.AgentService.AddAndGenerateTurn:input_type -> wackypub.agent.v1.AddAndGenerateTurnRequest
+	53, // 56: wackypub.agent.v1.AgentService.AsideQuestion:input_type -> wackypub.agent.v1.AsideQuestionRequest
+	57, // 57: wackypub.agent.v1.AgentService.Trace:input_type -> wackypub.agent.v1.TraceRequest
+	59, // 58: wackypub.agent.v1.AgentService.ReadSessionEvents:input_type -> wackypub.agent.v1.ReadSessionEventsRequest
+	61, // 59: wackypub.agent.v1.AgentService.SubscribeSession:input_type -> wackypub.agent.v1.SubscribeSessionRequest
+	1,  // 60: wackypub.agent.v1.AgentService.ListAgents:output_type -> wackypub.agent.v1.ListAgentsResponse
+	3,  // 61: wackypub.agent.v1.AgentService.InspectAgent:output_type -> wackypub.agent.v1.InspectAgentResponse
+	5,  // 62: wackypub.agent.v1.AgentService.ReadSession:output_type -> wackypub.agent.v1.ReadSessionResponse
+	9,  // 63: wackypub.agent.v1.AgentService.ReadMemory:output_type -> wackypub.agent.v1.ReadMemoryResponse
+	11, // 64: wackypub.agent.v1.AgentService.RenderSystemPrompt:output_type -> wackypub.agent.v1.RenderSystemPromptResponse
+	13, // 65: wackypub.agent.v1.AgentService.InspectSessionContext:output_type -> wackypub.agent.v1.InspectSessionContextResponse
+	15, // 66: wackypub.agent.v1.AgentService.InspectAgentLocks:output_type -> wackypub.agent.v1.InspectAgentLocksResponse
+	18, // 67: wackypub.agent.v1.AgentService.AddUserTurn:output_type -> wackypub.agent.v1.AddUserTurnResponse
+	20, // 68: wackypub.agent.v1.AgentService.AddMedia:output_type -> wackypub.agent.v1.AddMediaResponse
+	22, // 69: wackypub.agent.v1.AgentService.CancelTurn:output_type -> wackypub.agent.v1.CancelTurnResponse
+	24, // 70: wackypub.agent.v1.AgentService.StripSignatures:output_type -> wackypub.agent.v1.StripSignaturesResponse
+	27, // 71: wackypub.agent.v1.AgentService.CompactSession:output_type -> wackypub.agent.v1.CompactSessionResponse
+	29, // 72: wackypub.agent.v1.AgentService.CreateScratchpad:output_type -> wackypub.agent.v1.CreateScratchpadResponse
+	32, // 73: wackypub.agent.v1.AgentService.GetScratchpad:output_type -> wackypub.agent.v1.GetScratchpadResponse
+	34, // 74: wackypub.agent.v1.AgentService.ListScratchpads:output_type -> wackypub.agent.v1.ListScratchpadsResponse
+	36, // 75: wackypub.agent.v1.AgentService.SearchScratchpad:output_type -> wackypub.agent.v1.SearchScratchpadResponse
+	39, // 76: wackypub.agent.v1.AgentService.DiffScratchpadEntries:output_type -> wackypub.agent.v1.DiffScratchpadEntriesResponse
+	41, // 77: wackypub.agent.v1.AgentService.DeleteScratchpad:output_type -> wackypub.agent.v1.DeleteScratchpadResponse
+	46, // 78: wackypub.agent.v1.AgentService.GenerateTurnStream:output_type -> wackypub.agent.v1.GenerateTurnStreamResponse
+	48, // 79: wackypub.agent.v1.AgentService.GenerateTurn:output_type -> wackypub.agent.v1.GenerateTurnResponse
+	50, // 80: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:output_type -> wackypub.agent.v1.AddAndGenerateTurnStreamResponse
+	52, // 81: wackypub.agent.v1.AgentService.AddAndGenerateTurn:output_type -> wackypub.agent.v1.AddAndGenerateTurnResponse
+	54, // 82: wackypub.agent.v1.AgentService.AsideQuestion:output_type -> wackypub.agent.v1.AsideQuestionResponse
+	58, // 83: wackypub.agent.v1.AgentService.Trace:output_type -> wackypub.agent.v1.TraceResponse
+	60, // 84: wackypub.agent.v1.AgentService.ReadSessionEvents:output_type -> wackypub.agent.v1.ReadSessionEventsResponse
+	62, // 85: wackypub.agent.v1.AgentService.SubscribeSession:output_type -> wackypub.agent.v1.SubscribeSessionResponse
+	60, // [60:86] is the sub-list for method output_type
+	34, // [34:60] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_agent_proto_init() }
@@ -4724,13 +5506,32 @@ func file_agent_proto_init() {
 		(*TraceRequest_CommitSpec)(nil),
 		(*TraceRequest_TraceId)(nil),
 	}
+	file_agent_proto_msgTypes[59].OneofWrappers = []any{
+		(*ReadSessionEventsRequest_SinceSeq)(nil),
+		(*ReadSessionEventsRequest_LastN)(nil),
+		(*ReadSessionEventsRequest_HeadOnly)(nil),
+	}
+	file_agent_proto_msgTypes[61].OneofWrappers = []any{
+		(*SubscribeSessionRequest_SinceSeq)(nil),
+		(*SubscribeSessionRequest_LastN)(nil),
+		(*SubscribeSessionRequest_LiveOnly)(nil),
+	}
+	file_agent_proto_msgTypes[64].OneofWrappers = []any{
+		(*SessionEvent_Turn)(nil),
+		(*SessionEvent_ToolCall)(nil),
+		(*SessionEvent_ToolCallUpdate)(nil),
+		(*SessionEvent_Compaction)(nil),
+		(*SessionEvent_TokenDelta)(nil),
+		(*SessionEvent_Progress)(nil),
+		(*SessionEvent_Usage)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   60,
+			NumMessages:   66,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

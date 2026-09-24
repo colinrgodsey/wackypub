@@ -421,7 +421,7 @@ func TestAppendSessionContent_TruncationPreservesSmallParts(t *testing.T) {
 	smallText := "This is a normal user turn with reasonable length."
 	content := genai.NewContentFromText(smallText, "user")
 
-	expectedData, err := json.Marshal(content)
+	expectedData, err := json.Marshal(&PersistedTurn{Role: "user", Parts: content.Parts, Seq: 1})
 	if err != nil {
 		t.Fatalf("json.Marshal failed: %v", err)
 	}

@@ -1358,6 +1358,12 @@ func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 			return agentCancelCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "context" {
 			return agentContextCmd.RunE(cmd, []string{agentID})
+		} else if subCmd == "watch" {
+			remainingArgs := []string{agentID}
+			if len(args) > 2 {
+				remainingArgs = append(remainingArgs, args[2:]...)
+			}
+			return agentWatchCmd.RunE(cmd, remainingArgs)
 		} else if subCmd == "scratchpad" {
 			if len(args) < 3 {
 				return scratchpadCmd.Help()
@@ -1431,6 +1437,15 @@ func init() {
 	agentContextCmd.Flags().BoolVar(&agentContextJSONFlag, "json", false, "Output report as JSON")
 	agentCmd.AddCommand(agentContextCmd)
 
+	agentWatchCmd.Flags().BoolVar(&watchRawFlag, "raw", false, "Emit JSONL-identical lines byte-for-byte")
+	agentWatchCmd.Flags().Int64Var(&watchSinceSeqFlag, "since-seq", 0, "Resume streaming strictly after sequence number N")
+	agentWatchCmd.Flags().Int32Var(&watchLastFlag, "last", 0, "Replay the last N events before live streaming")
+
+	agentCmd.Flags().BoolVar(&watchRawFlag, "raw", false, "Emit JSONL-identical lines byte-for-byte")
+	agentCmd.Flags().Int64Var(&watchSinceSeqFlag, "since-seq", 0, "Resume streaming strictly after sequence number N")
+	agentCmd.Flags().Int32Var(&watchLastFlag, "last", 0, "Replay the last N events before live streaming")
+	agentCmd.AddCommand(agentWatchCmd)
+
 	RootCmd.AddCommand(agentCmd)
 }
 
@@ -1491,4 +1506,136 @@ var agentContextCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+var (
+	watchRawFlag      bool
+	watchSinceSeqFlag int64
+	watchLastFlag     int32
+)
+
+var agentWatchCmd = &cobra.Command{
+	Use:   "watch [agent_id]",
+	Short: "Stream or poll session events for an agent (turns, tool calls, compaction)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer func() {
+			watchRawFlag = false
+			watchSinceSeqFlag = 0
+			watchLastFlag = 0
+		}()
+
+		var agentID string
+		if len(args) > 0 {
+			agentID = args[0]
+		}
+		if agentID == "" {
+			return fmt.Errorf("agent_id required")
+		}
+
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
+
+		ctx, cancel := signal.NotifyContext(cmdCtx(cmd), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+
+		client, cleanup, err := adkAgent.ResolveAgentClient(ctx, sdk, agentID)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		req := &agentv1.SubscribeSessionRequest{
+			AgentId:      agentID,
+			WorkspaceDir: wsDir,
+		}
+		if watchSinceSeqFlag > 0 {
+			req.Cursor = &agentv1.SubscribeSessionRequest_SinceSeq{SinceSeq: watchSinceSeqFlag}
+		} else if watchLastFlag > 0 {
+			req.Cursor = &agentv1.SubscribeSessionRequest_LastN{LastN: watchLastFlag}
+		}
+
+		stream, err := client.SubscribeSession(ctx, req)
+		if err != nil {
+			return err
+		}
+
+		for {
+			resp, err := stream.Recv()
+			if err != nil {
+				if err == io.EOF || ctx.Err() != nil {
+					return nil
+				}
+				return err
+			}
+
+			if resp.GetDroppedEvents() > 0 {
+				if !watchRawFlag {
+					fmt.Fprintf(os.Stderr, "[Notice: %d events dropped due to slow consumer]\n", resp.GetDroppedEvents())
+				}
+			}
+
+			ev := resp.GetEvent()
+			if ev == nil {
+				continue
+			}
+
+			if watchRawFlag {
+				if ev.GetRaw() != "" {
+					fmt.Println(ev.GetRaw())
+				}
+			} else {
+				renderHumanEvent(ev)
+			}
+		}
+	},
+}
+
+func renderHumanEvent(ev *agentv1.SessionEvent) {
+	if ev == nil {
+		return
+	}
+	switch e := ev.GetEvent().(type) {
+	case *agentv1.SessionEvent_Turn:
+		turn := e.Turn
+		var textParts []string
+		for _, p := range turn.GetParts() {
+			if p.GetText() != "" {
+				textParts = append(textParts, p.GetText())
+			}
+		}
+		text := strings.Join(textParts, " ")
+		fmt.Printf("[Turn #%d %s] %s\n", ev.GetSeq(), turn.GetRole(), strings.TrimSpace(text))
+
+	case *agentv1.SessionEvent_ToolCall:
+		tc := e.ToolCall
+		if tc.GetDenied() {
+			fmt.Printf("[Tool #%d DENIED] %s(%s)\n", ev.GetSeq(), tc.GetToolName(), tc.GetArgsSummary())
+		} else {
+			fmt.Printf("[Tool #%d] %s(%s) [call_id=%s]\n", ev.GetSeq(), tc.GetToolName(), tc.GetArgsSummary(), tc.GetCallId())
+		}
+
+	case *agentv1.SessionEvent_ToolCallUpdate:
+		tcu := e.ToolCallUpdate
+		head := tcu.GetResultHead()
+		if len(head) > 80 {
+			head = head[:77] + "..."
+		}
+		fmt.Printf("[Tool #%d %s] %s (bytes=%d) [call_id=%s]\n", ev.GetSeq(), strings.ToUpper(tcu.GetStatus()), head, tcu.GetResultBytes(), tcu.GetCallId())
+
+	case *agentv1.SessionEvent_Compaction:
+		comp := e.Compaction
+		fmt.Printf("[Compaction #%d] %s\n", ev.GetSeq(), strings.TrimSpace(comp.GetSummary()))
+
+	case *agentv1.SessionEvent_TokenDelta:
+		fmt.Print(e.TokenDelta)
+
+	case *agentv1.SessionEvent_Progress:
+		fmt.Printf("[Progress #%d] %s\n", ev.GetSeq(), e.Progress)
+
+	case *agentv1.SessionEvent_Usage:
+		fmt.Printf("[Usage #%d] prompt=%d completion=%d total=%d\n", ev.GetSeq(), e.Usage.GetPromptTokens(), e.Usage.GetCompletionTokens(), e.Usage.GetTotalTokens())
+	}
 }
