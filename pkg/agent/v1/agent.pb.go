@@ -2323,6 +2323,13 @@ func (x *GetScratchpadRequest) GetWorkspaceDir() string {
 type GetScratchpadResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// text contains the retrieved scratchpad content (or requested line range).
+	//
+	// NOTE: binary entries (created via CreateScratchpadRequest.data) CANNOT be
+	// read back through this RPC - the response has no data field, and the
+	// store rejects reading a binary entry as text. Binary scratchpad creation
+	// is intentionally write-only over the protocol (wackydiscord's
+	// attachment path uses it that way); metadata (is_binary, mime_type, size)
+	// is available via ListScratchpads.
 	Text          string `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

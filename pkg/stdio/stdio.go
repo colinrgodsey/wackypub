@@ -1,7 +1,9 @@
 // Package stdio adapts process stdin/stdout (both directions) to net.Conn so
 // gRPC can frame messages over stdio. It is the shared substrate for wackypub's
-// stdio service mode, wackyacp's bridge, and the bridge client inside
-// pkg/agent - one Conn/listener implementation instead of three copies.
+// stdio service mode and the bridge client inside pkg/agent. wackyacp's bridge
+// previously carried a third local copy of this machinery; the consolidation
+// onto this package lands in wackyacp PR #20 (one Conn/listener implementation
+// instead of three once that merges).
 //
 // Two roles share the package:
 //
@@ -21,6 +23,7 @@ package stdio
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os/exec"
@@ -159,7 +162,16 @@ func reap(cmd *exec.Cmd, waitDelay time.Duration) error {
 		return err
 	case <-time.After(waitDelay):
 		signal(syscall.SIGKILL)
-		return <-waitDone
+	}
+	// Bound the post-SIGKILL wait too: a child wedged in uninterruptible sleep
+	// (e.g. stuck on a hung NFS or D-state FUSE fd) will not die even on SIGKILL,
+	// and Close must not hang the caller (the bot holds a per-agent is_generating
+	// reset that assumes Close returns).
+	select {
+	case err := <-waitDone:
+		return err
+	case <-time.After(waitDelay):
+		return fmt.Errorf("stdio child pid %d did not exit after SIGKILL within %s", cmd.Process.Pid, waitDelay)
 	}
 }
 

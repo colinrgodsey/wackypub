@@ -676,6 +676,13 @@ message GetScratchpadRequest {
 // GetScratchpadResponse returns the retrieved scratchpad content.
 message GetScratchpadResponse {
   // text contains the retrieved scratchpad content (or requested line range).
+  //
+  // NOTE: binary entries (created via CreateScratchpadRequest.data) CANNOT be
+  // read back through this RPC - the response has no data field, and the
+  // store rejects reading a binary entry as text. Binary scratchpad creation
+  // is intentionally write-only over the protocol (wackydiscord's
+  // attachment path uses it that way); metadata (is_binary, mime_type, size)
+  // is available via ListScratchpads.
   string text = 1;
 }
 

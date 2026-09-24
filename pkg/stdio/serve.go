@@ -72,17 +72,32 @@ func ServeContext(ctx context.Context, grpcServer *grpc.Server, conn net.Conn) e
 	// Serve returns (a plain GracefulStop does NOT unblock a Serve blocked in
 	// Accept - verified empirically). GracefulStop first to flush in-flight
 	// responses, then the listener close releases the Accept loop.
+	//
+	// If the caller supplied its own onEOF hook, COMPOSE with it: the EOF
+	// shutdown is a property of the server side of this package (package doc),
+	// so a consumer hook must not silently disable the auto-exit.
 	var stopOnce sync.Once
-	if c, ok := conn.(*Conn); ok && c.onEOF == nil {
-		c.onEOF = func() {
-			stopOnce.Do(func() {
-				// Close the listener FIRST: that is what unblocks grpcServer.Serve
-				// (blocked in Accept). GracefulStop after, to drain anything already
-				// in flight; it runs in a goroutine so a server with no active RPCs
-				// cannot wedge this path.
-				_ = lis.Close()
-				go grpcServer.GracefulStop()
-			})
+	stopFn := func() {
+		stopOnce.Do(func() {
+			// Close the listener FIRST: that is what unblocks grpcServer.Serve
+			// (blocked in Accept). GracefulStop after, to drain anything already
+			// in flight; it runs in a goroutine so a server with no active RPCs
+			// cannot wedge this path.
+			_ = lis.Close()
+			go grpcServer.GracefulStop()
+		})
+	}
+	if c, ok := conn.(*Conn); ok {
+		if c.onEOF == nil {
+			c.onEOF = stopFn
+		} else {
+			// fireEOF runs the hook exactly once; compose in the existing hook so
+			// both it and the shutdown run on the same EOF signal.
+			existing := c.onEOF
+			c.onEOF = func() {
+				existing()
+				stopFn()
+			}
 		}
 	}
 
