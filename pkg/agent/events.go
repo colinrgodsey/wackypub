@@ -65,10 +65,18 @@ func NotifySessionActivity(agentDir string) {
 	globalBroker.notify(agentDir)
 }
 
+const maxSubscriberBuffer = 64
+
+// testHookPreSnapshotRead is invoked immediately after broker registration and before reading the initial snapshot.
+// Used in tests to verify that broker registration before snapshot read eliminates the race window.
+var testHookPreSnapshotRead func()
+
 // ReadSessionEventsFromDisk reads and merges all durable events from session.jsonl and tool-journal.jsonl.
 func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64, int64, int64, error) {
 	var events []*agentv1.SessionEvent
 	var latestTurnSeq int64
+	var sessionBaselineSeq int64
+	var hasCompaction bool
 
 	// 1. Read session.jsonl
 	sessionPath := filepath.Join(agentDir, SessionFileName)
@@ -115,12 +123,20 @@ func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64,
 				st.Parts = append(st.Parts, sp)
 				if strings.Contains(p.Text, "<COMPACTION_NOTICE>") {
 					isCompaction = true
+					hasCompaction = true
 					compactionText = p.Text
 				}
 			}
 
-			if !isCompaction && seq > latestTurnSeq {
-				latestTurnSeq = seq
+			if !isCompaction {
+				if sessionBaselineSeq == 0 || seq < sessionBaselineSeq {
+					sessionBaselineSeq = seq
+				}
+				if seq > latestTurnSeq {
+					latestTurnSeq = seq
+				}
+			} else if sessionBaselineSeq == 0 {
+				sessionBaselineSeq = seq
 			}
 
 			sev := &agentv1.SessionEvent{
@@ -141,7 +157,13 @@ func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64,
 			}
 			events = append(events, sev)
 		}
+		if err := scanner.Err(); err != nil {
+			_ = f.Close()
+			return nil, 0, 0, 0, fmt.Errorf("reading %s: %w", SessionFileName, err)
+		}
 		_ = f.Close()
+	} else if !os.IsNotExist(err) {
+		return nil, 0, 0, 0, fmt.Errorf("opening %s: %w", SessionFileName, err)
 	}
 
 	// 2. Read tool-journal.jsonl
@@ -168,6 +190,7 @@ func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64,
 			}
 
 			if te.ToolName == "compaction" {
+				hasCompaction = true
 				sev.Event = &agentv1.SessionEvent_Compaction{
 					Compaction: &agentv1.CompactionEvent{
 						Summary: te.ArgsSummary,
@@ -198,7 +221,13 @@ func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64,
 			}
 			events = append(events, sev)
 		}
+		if err := scanner.Err(); err != nil {
+			_ = f.Close()
+			return nil, 0, 0, 0, fmt.Errorf("reading tool journal: %w", err)
+		}
 		_ = f.Close()
+	} else if !os.IsNotExist(err) {
+		return nil, 0, 0, 0, fmt.Errorf("opening tool journal: %w", err)
 	}
 
 	// Sort strictly by sequence number
@@ -208,8 +237,21 @@ func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64,
 
 	var baselineSeq int64
 	var latestSeq int64
-	if len(events) > 0 {
+	if hasCompaction && sessionBaselineSeq > 0 {
+		// When compaction has occurred, session baseline from session stream defines the rewind boundary.
+		// Older tool journal entries from compacted turns are dropped so they do not drag baseline backward.
+		filtered := events[:0]
+		for _, ev := range events {
+			if ev.Seq >= sessionBaselineSeq {
+				filtered = append(filtered, ev)
+			}
+		}
+		events = filtered
+		baselineSeq = sessionBaselineSeq
+	} else if len(events) > 0 {
 		baselineSeq = events[0].Seq
+	}
+	if len(events) > 0 {
 		latestSeq = events[len(events)-1].Seq
 	}
 	cur, _ := CurrentSeq(agentDir)
@@ -257,11 +299,17 @@ func (s *AgentSDK) ReadSessionEvents(ctx context.Context, req *agentv1.ReadSessi
 
 	var filtered []*agentv1.SessionEvent
 	rewound := false
+	rolledBack := false
 
 	if req != nil && req.GetSinceSeq() > 0 {
 		since := req.GetSinceSeq()
 		if since < baselineSeq {
 			rewound = true
+			filtered = events
+		} else if latestSeq < since {
+			// Rollback or restored directory: client cursor is ahead of current session head!
+			rewound = true
+			rolledBack = true
 			filtered = events
 		} else {
 			for _, ev := range events {
@@ -292,6 +340,7 @@ func (s *AgentSDK) ReadSessionEvents(ctx context.Context, req *agentv1.ReadSessi
 		BaselineSeq:   baselineSeq,
 		LatestSeq:     latestSeq,
 		LatestTurnSeq: latestTurnSeq,
+		RolledBack:    rolledBack,
 	}, nil
 }
 
@@ -320,6 +369,10 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 	wakeCh, cleanup := globalBroker.register(agentDir)
 	defer cleanup()
 
+	if testHookPreSnapshotRead != nil {
+		testHookPreSnapshotRead()
+	}
+
 	// 1. Initial snapshot & replay
 	events, baselineSeq, latestSeq, _, err := ReadSessionEventsFromDisk(agentDir)
 	if err != nil {
@@ -329,6 +382,7 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 	var replay []*agentv1.SessionEvent
 	var lastEmittedSeq int64
 	rewound := false
+	rolledBack := false
 
 	if req != nil && req.GetLiveOnly() {
 		// Cold start / live only: do not replay history, start streaming from latestSeq
@@ -337,6 +391,10 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 		since := req.GetSinceSeq()
 		if since < baselineSeq {
 			rewound = true
+			replay = events
+		} else if latestSeq < since {
+			rewound = true
+			rolledBack = true
 			replay = events
 		} else {
 			for _, ev := range events {
@@ -360,7 +418,7 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 	}
 
 	if rewound {
-		if err := stream.Send(&agentv1.SubscribeSessionResponse{Rewound: true}); err != nil {
+		if err := stream.Send(&agentv1.SubscribeSessionResponse{Rewound: true, RolledBack: rolledBack}); err != nil {
 			return err
 		}
 	}
@@ -394,19 +452,28 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 			continue
 		}
 
+		var pending []*agentv1.SessionEvent
 		for _, ev := range newEvents {
-			if ev.Seq <= lastEmittedSeq {
-				continue
+			if ev.Seq > lastEmittedSeq {
+				pending = append(pending, ev)
 			}
+		}
 
-			// Emit drop notice if any were previously dropped
-			if droppedCount > 0 {
-				if err := stream.Send(&agentv1.SubscribeSessionResponse{DroppedEvents: droppedCount}); err != nil {
-					return err
-				}
-				droppedCount = 0
+		if len(pending) > maxSubscriberBuffer {
+			dropped := int64(len(pending) - maxSubscriberBuffer)
+			droppedCount += dropped
+			pending = pending[len(pending)-maxSubscriberBuffer:]
+		}
+
+		// Emit drop notice if any were previously dropped
+		if droppedCount > 0 {
+			if err := stream.Send(&agentv1.SubscribeSessionResponse{DroppedEvents: droppedCount}); err != nil {
+				return err
 			}
+			droppedCount = 0
+		}
 
+		for _, ev := range pending {
 			if err := stream.Send(&agentv1.SubscribeSessionResponse{Event: ev}); err != nil {
 				return err
 			}

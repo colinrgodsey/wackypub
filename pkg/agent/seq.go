@@ -122,7 +122,13 @@ func RecoverSeq(agentDir string) (int64, error) {
 				}
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			_ = f.Close()
+			return 0, fmt.Errorf("reading %s: %w", SessionFileName, err)
+		}
 		_ = f.Close()
+	} else if !os.IsNotExist(err) {
+		return 0, fmt.Errorf("opening %s: %w", SessionFileName, err)
 	}
 
 	// 2. Scan tool-journal.jsonl
@@ -142,7 +148,13 @@ func RecoverSeq(agentDir string) (int64, error) {
 				maxSeq = rec.Seq
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			_ = f.Close()
+			return 0, fmt.Errorf("reading tool journal: %w", err)
+		}
 		_ = f.Close()
+	} else if !os.IsNotExist(err) {
+		return 0, fmt.Errorf("opening tool journal: %w", err)
 	}
 
 	// If there were unsequenced turns (from prior sessions before seq stamping),

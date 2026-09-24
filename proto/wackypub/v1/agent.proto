@@ -1110,9 +1110,9 @@ message ReadSessionEventsResponse {
   // events contains the batch of session events in strictly increasing sequence order.
   repeated SessionEvent events = 1;
 
-  // rewound indicates that the requested since_seq cursor was earlier than the earliest available
-  // sequence number in the session (e.g. because turns were compacted away into memory).
-  // When true, the consumer must reset its local cursor to baseline_seq.
+  // rewound indicates that the requested since_seq cursor is invalid against current session history:
+  // either since_seq < baseline_seq (compacted away) or since_seq > latest_seq (rollback / restored directory).
+  // When true, the consumer must reset its local cursor to baseline_seq (or latest_seq).
   bool rewound = 2;
 
   // baseline_seq is the earliest available sequence number for this agent's session.
@@ -1123,6 +1123,10 @@ message ReadSessionEventsResponse {
 
   // latest_turn_seq is the sequence number of the most recent persisted turn in this agent's session (0 if none).
   int64 latest_turn_seq = 5;
+
+  // rolled_back indicates that since_seq was strictly greater than latest_seq,
+  // signalling that the session shrank or was restored from an earlier checkpoint.
+  bool rolled_back = 6;
 }
 
 // SubscribeSessionRequest specifies parameters for streaming session events.
@@ -1153,12 +1157,15 @@ message SubscribeSessionResponse {
   // event is the next session event.
   SessionEvent event = 1;
 
-  // rewound indicates that the requested since_seq cursor was below baseline_seq due to compaction.
+  // rewound indicates that the requested since_seq cursor was invalid (below baseline_seq or above latest_seq).
   bool rewound = 2;
 
   // dropped_events indicates the count of live events dropped due to a full subscriber buffer.
   // When non-zero, this frame acts as a drop notice before resuming event delivery.
   int64 dropped_events = 3;
+
+  // rolled_back indicates that since_seq was strictly greater than latest_seq.
+  bool rolled_back = 4;
 }
 
 // CompactionEvent captures a session compaction lifecycle occurrence.
@@ -1178,6 +1185,14 @@ message CompactionEvent {
 }
 
 // SessionEvent represents a unified session observation record.
+//
+// Caveats for Consumers:
+// 1. Two-file interleaving: The stream interleaves lines from TWO underlying files
+//    (session.jsonl for turns and tool-journal.jsonl for tool lifecycle events)
+//    ordered strictly by seq. It represents the unified agent activity log rather
+//    than session.jsonl alone.
+// 2. Trailing newlines: In raw mode, each line contains the verbatim persisted JSONL
+//    record with normalized newline termination.
 //
 // Event Classes & Durability Contract (Colin / archon):
 // - Durable / replayable events:

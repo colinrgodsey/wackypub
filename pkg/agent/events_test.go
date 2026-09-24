@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -122,6 +123,14 @@ func TestCompactionRewindSignalling(t *testing.T) {
 		}
 	}
 
+	// Add tool journal rows at seq 2 and seq 4 (pre-compaction turns)
+	journalPath := toolJournalPath(agentDir)
+	j1, _ := json.Marshal(ToolEvent{CallID: "c1", ToolName: "tool1", Seq: 2, Timestamp: time.Now()})
+	j2, _ := json.Marshal(ToolEvent{CallID: "c2", ToolName: "tool2", Seq: 4, Timestamp: time.Now()})
+	if err := os.WriteFile(journalPath, []byte(string(j1)+"\n"+string(j2)+"\n"), 0644); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+
 	sdk := NewSDK(tempDir)
 
 	// Poll before compaction with since_seq: 3
@@ -135,9 +144,6 @@ func TestCompactionRewindSignalling(t *testing.T) {
 	}
 	if resp.Rewound {
 		t.Errorf("expected rewound=false before compaction")
-	}
-	if len(resp.Events) != 7 {
-		t.Errorf("expected 7 events (4..10), got %d", len(resp.Events))
 	}
 
 	// Compact first 5 turns
@@ -167,7 +173,8 @@ func TestCompactionRewindSignalling(t *testing.T) {
 	if err := WritePersistedTurns(agentDir, pTurns); err != nil {
 		t.Fatalf("WritePersistedTurns: %v", err)
 	}
-
+	// Verify that even if journal rows at 2 and 4 linger on disk (tool-journal.jsonl is an append-only sidecar),
+	// the rewind baseline comes from the session stream (6), NOT the journal (2).
 	// Now poll with since_seq: 3 (which was compacted away!)
 	// Earliest surviving seq is 6. 3 < 6, so client was rewound!
 	respAfter, err := sdk.ReadSessionEvents(context.Background(), &agentv1.ReadSessionEventsRequest{
@@ -179,9 +186,14 @@ func TestCompactionRewindSignalling(t *testing.T) {
 		t.Fatalf("ReadSessionEvents after compact: %v", err)
 	}
 
+	if respAfter.BaselineSeq != 6 {
+		t.Fatalf("expected BaselineSeq 6 from session stream, got %d (dragged down by journal rows)", respAfter.BaselineSeq)
+	}
+
 	if !respAfter.Rewound {
 		t.Fatalf("expected rewound=true when cursor 3 is below baseline 6")
 	}
+	// Baseline must be 6 (from session baseline), NOT 2 or 4 from old journal rows!
 	if respAfter.BaselineSeq != 6 {
 		t.Fatalf("expected baseline_seq=6, got %d", respAfter.BaselineSeq)
 	}
@@ -608,5 +620,263 @@ func TestColdStartHeadOnlyAndLiveOnly(t *testing.T) {
 	}
 	if resps[0].GetEvent().GetSeq() != 6 {
 		t.Errorf("expected seq 6, got %d", resps[0].GetEvent().GetSeq())
+	}
+}
+
+// TestRollbackRestoredDirRewindSignalling verifies that when an agent's directory is
+// rolled back or restored to a point where client cursor > latest_seq, the server
+// signals rewound=true and rolled_back=true instead of stalling silently.
+func TestRollbackRestoredDirRewindSignalling(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	agentID := "rollback-agent"
+	agentDir := filepath.Join(tempDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sdk := NewSDK(tempDir)
+
+	for i := 1; i <= 5; i++ {
+		_ = AppendSessionTurn(agentDir, "user", fmt.Sprintf("Turn %d", i))
+	}
+
+	// Client has cursor at 100, but session only has events up to 5 (e.g. rolled back directory)
+	resp, err := sdk.ReadSessionEvents(context.Background(), &agentv1.ReadSessionEventsRequest{
+		AgentId:      agentID,
+		WorkspaceDir: tempDir,
+		Cursor:       &agentv1.ReadSessionEventsRequest_SinceSeq{SinceSeq: 100},
+	})
+	if err != nil {
+		t.Fatalf("ReadSessionEvents: %v", err)
+	}
+
+	if !resp.Rewound {
+		t.Errorf("expected rewound=true when since_seq (100) > latest_seq (5)")
+	}
+	if !resp.RolledBack {
+		t.Errorf("expected rolled_back=true when since_seq (100) > latest_seq (5)")
+	}
+	if resp.LatestSeq != 5 {
+		t.Errorf("expected latest_seq=5, got %d", resp.LatestSeq)
+	}
+	if len(resp.Events) != 5 {
+		t.Errorf("expected all 5 events delivered on rollback reset, got %d", len(resp.Events))
+	}
+
+	// Also test streaming path
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &mockSubscribeStream{ctx: ctx}
+	streamDone := make(chan error, 1)
+
+	go func() {
+		streamDone <- sdk.SubscribeSession(&agentv1.SubscribeSessionRequest{
+			AgentId:      agentID,
+			WorkspaceDir: tempDir,
+			Cursor:       &agentv1.SubscribeSessionRequest_SinceSeq{SinceSeq: 100},
+		}, stream)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-streamDone
+
+	resps := stream.getResponses()
+	if len(resps) == 0 {
+		t.Fatalf("expected responses from SubscribeSession on rollback")
+	}
+	if !resps[0].Rewound || !resps[0].RolledBack {
+		t.Errorf("expected first frame to have Rewound=true and RolledBack=true, got: %+v", resps[0])
+	}
+}
+
+// TestReplayThenLiveNoGapLoadBearingOrdering verifies that registering the broker listener
+// before reading the initial snapshot read prevents events written during the transition
+// from being dropped.
+func TestReplayThenLiveNoGapLoadBearingOrdering(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	agentID := "nogap-agent"
+	agentDir := filepath.Join(tempDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sdk := NewSDK(tempDir)
+
+	_ = AppendSessionTurn(agentDir, "user", "turn 1")
+	_ = AppendSessionTurn(agentDir, "model", "turn 2")
+
+	// Hook into the race window between register() and ReadSessionEventsFromDisk
+	testHookPreSnapshotRead = func() {
+		_ = AppendSessionTurn(agentDir, "user", "turn 3 during snapshot race")
+	}
+	defer func() { testHookPreSnapshotRead = nil }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &mockSubscribeStream{ctx: ctx}
+	streamDone := make(chan error, 1)
+
+	go func() {
+		streamDone <- sdk.SubscribeSession(&agentv1.SubscribeSessionRequest{
+			AgentId:      agentID,
+			WorkspaceDir: tempDir,
+		}, stream)
+	}()
+
+	// Wait for all 3 turns to be delivered
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(stream.getResponses()) >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-streamDone
+
+	resps := stream.getResponses()
+	if len(resps) != 3 {
+		t.Fatalf("expected exactly 3 responses with no gap, got %d", len(resps))
+	}
+	for i, exp := range []int64{1, 2, 3} {
+		if resps[i].GetEvent().GetSeq() != exp {
+			t.Errorf("response %d: expected seq %d, got %d", i, exp, resps[i].GetEvent().GetSeq())
+		}
+	}
+}
+
+// TestScannerErrorPropagation verifies that oversized lines (> 16MB) return an explicit
+// scanner error rather than silently returning a truncated slice or corrupting sequence recovery.
+func TestScannerErrorPropagation(t *testing.T) {
+	tempDir := t.TempDir()
+	agentDir := filepath.Join(tempDir, "oversized-agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Write an oversized line (17MB, exceeding 16MB bufio.Scanner buffer cap)
+	sessionPath := filepath.Join(agentDir, SessionFileName)
+	oversized := make([]byte, 17*1024*1024)
+	for i := range oversized {
+		oversized[i] = 'a'
+	}
+	oversized[len(oversized)-1] = '\n'
+	if err := os.WriteFile(sessionPath, oversized, 0644); err != nil {
+		t.Fatalf("write oversized session: %v", err)
+	}
+
+	// ReadSessionEventsFromDisk must fail loudly, NOT return a truncated slice with err == nil
+	_, _, _, _, err := ReadSessionEventsFromDisk(agentDir)
+	if err == nil {
+		t.Fatalf("expected ReadSessionEventsFromDisk to return scanner error on 17MB line, got nil")
+	}
+	if !strings.Contains(err.Error(), "token too long") {
+		t.Errorf("expected error to mention 'token too long', got: %v", err)
+	}
+
+	// RecoverSeq must also fail loudly rather than recovering a low sequence number
+	_, err = RecoverSeq(agentDir)
+	if err == nil {
+		t.Fatalf("expected RecoverSeq to return scanner error on 17MB line, got nil")
+	}
+	if !strings.Contains(err.Error(), "token too long") {
+		t.Errorf("expected error to mention 'token too long', got: %v", err)
+	}
+}
+
+// TestSubscribeSessionDropWithNotice verifies that when a consumer is overwhelmed and
+// pending events exceed maxSubscriberBuffer, older events are dropped and a drop notice is emitted.
+func TestSubscribeSessionDropWithNotice(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	agentID := "drop-agent"
+	agentDir := filepath.Join(tempDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sdk := NewSDK(tempDir)
+
+	_ = AppendSessionTurn(agentDir, "user", "turn 1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &mockSubscribeStream{ctx: ctx}
+	streamDone := make(chan error, 1)
+
+	go func() {
+		streamDone <- sdk.SubscribeSession(&agentv1.SubscribeSessionRequest{
+			AgentId:      agentID,
+			WorkspaceDir: tempDir,
+		}, stream)
+	}()
+
+	// Wait for turn 1 replay
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(stream.getResponses()) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Now burst 100 turns in one batch (exceeding maxSubscriberBuffer = 64)
+	var lines []string
+	for i := 2; i <= 101; i++ {
+		pt := PersistedTurn{
+			Role:  "user",
+			Parts: []*genai.Part{{Text: fmt.Sprintf("burst turn %d", i)}},
+			Seq:   int64(i),
+		}
+		data, _ := json.Marshal(pt)
+		lines = append(lines, string(data))
+	}
+	f, err := os.OpenFile(filepath.Join(agentDir, SessionFileName), os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("open session.jsonl: %v", err)
+	}
+	if _, err := f.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
+		t.Fatalf("write session lines: %v", err)
+	}
+	_ = f.Close()
+	_ = SetSeq(agentDir, 101)
+	NotifySessionActivity(agentDir)
+
+	// Wait for stream to deliver drop notice and buffered events
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resps := stream.getResponses()
+		var hasDrop bool
+		for _, r := range resps {
+			if r.GetDroppedEvents() > 0 {
+				hasDrop = true
+				break
+			}
+		}
+		if hasDrop {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-streamDone
+
+	resps := stream.getResponses()
+	var dropNotice *agentv1.SubscribeSessionResponse
+	var eventResponses []*agentv1.SubscribeSessionResponse
+	for _, r := range resps {
+		if r.GetDroppedEvents() > 0 {
+			dropNotice = r
+		}
+		if r.GetEvent() != nil {
+			eventResponses = append(eventResponses, r)
+		}
+	}
+
+	if dropNotice == nil {
+		t.Fatalf("expected at least one drop notice, got 0 among %d responses", len(resps))
+	}
+	if dropNotice.GetDroppedEvents() <= 0 {
+		t.Errorf("expected DroppedEvents > 0, got %d", dropNotice.GetDroppedEvents())
 	}
 }

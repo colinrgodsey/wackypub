@@ -353,3 +353,45 @@ func redactSecretValues(s string) string {
 	}
 	return s
 }
+
+// PruneToolJournal rewrites <agentDir>/tool-journal.jsonl, removing entries whose sequence
+// number is strictly less than minSeq. Called during session compaction to ensure compacted
+// tool history is pruned along with compacted turns.
+func PruneToolJournal(agentDir string, minSeq int64) error {
+	path := toolJournalPath(agentDir)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading tool journal for prune: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var surviving []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		var te ToolEvent
+		if err := json.Unmarshal([]byte(trimmed), &te); err != nil {
+			// Preserve unparseable lines rather than silently dropping
+			surviving = append(surviving, trimmed)
+			continue
+		}
+		if te.Seq >= minSeq {
+			surviving = append(surviving, trimmed)
+		}
+	}
+
+	tmpPath := path + ".tmp"
+	var outContent string
+	if len(surviving) > 0 {
+		outContent = strings.Join(surviving, "\n") + "\n"
+	}
+	if err := os.WriteFile(tmpPath, []byte(outContent), 0644); err != nil {
+		return fmt.Errorf("writing pruned tool journal: %w", err)
+	}
+	return os.Rename(tmpPath, path)
+}
