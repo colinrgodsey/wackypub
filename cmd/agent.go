@@ -1483,11 +1483,19 @@ var agentContextCmd = &cobra.Command{
 		fmt.Printf("Breakdown:   %d turns tokens + %d prompt tokens + %d memory tokens\n",
 			report.GetSessionTurnsTokens(), report.GetPromptTokensEstimate(), report.GetMemoryTokensEstimate())
 		fmt.Printf("Session:     %d turns\n", report.GetTurnCount())
+		if report.GetLastTotalTokens() > 0 {
+			// Compaction no longer zeroes the provider readings, so a compacted session
+			// still shows the numbers that drove the decision, labelled by when they were
+			// taken rather than reported as reset.
+			label := "Last Call:   "
+			if report.GetCompacted() {
+				label = "Pre-compact: "
+			}
+			fmt.Printf("%s%d prompt + %d candidates = %d total tokens\n",
+				label, report.GetLastPromptTokens(), report.GetLastCandidatesTokens(), report.GetLastTotalTokens())
+		}
 		if report.GetCompacted() {
-			fmt.Printf("Compacted:   yes (session compacted, provider tokens reset)\n")
-		} else if report.GetLastTotalTokens() > 0 {
-			fmt.Printf("Last Call:   %d prompt + %d candidates = %d total tokens\n",
-				report.GetLastPromptTokens(), report.GetLastCandidatesTokens(), report.GetLastTotalTokens())
+			fmt.Printf("Compacted:   yes (provider readings above are pre-compaction)\n")
 		}
 		return nil
 	},

@@ -150,3 +150,46 @@ func TestExceedsBudget_ZeroBudgetMeansNoHeadroom(t *testing.T) {
 		t.Fatal("100 is over a 100 budget")
 	}
 }
+
+func TestEstimateCalibrationFactorCoversTheMeasuredBand(t *testing.T) {
+	// The band is the 2026-09-19 measurement of how far EstimateTokens under-reads
+	// provider prompt tokens. Pinned at the values measured so that editing the band
+	// down to justify a lower factor fails here instead of in production.
+	if MeasuredEstimatorDriftLow != 1.35 || MeasuredEstimatorDriftHigh != 1.65 {
+		t.Fatalf("measured drift band changed: got %v-%v, want 1.35-1.65",
+			MeasuredEstimatorDriftLow, MeasuredEstimatorDriftHigh)
+	}
+	if EstimateCalibrationFactor < MeasuredEstimatorDriftHigh {
+		t.Fatalf("calibration factor %v is below the worst drift ever measured (%v), so the stop can fire after the window is gone",
+			EstimateCalibrationFactor, MeasuredEstimatorDriftHigh)
+	}
+}
+
+func TestEstimateCalibrationKeepsRealUsageInsideTheWindow(t *testing.T) {
+	// Worst case on a large window: a session whose estimate sits just under the
+	// stop, whose true drift is at the top of the measured band, and whose real
+	// usage therefore must still be inside the window rather than rejected.
+	const window = 200000
+	budget := contextBudget(window, DefaultMaxOutputReserveTokens, 20)
+	if exceedsBudget(int64(budget-1), budget) {
+		t.Fatal("one below the budget must not trip the stop")
+	}
+
+	quietest := int64(math.Ceil(float64(budget)/EstimateCalibrationFactor)) - 1
+	if exceedsBudget(quietest, budget) {
+		t.Fatalf("the quietest estimate (%d) must not trip a %d budget", quietest, budget)
+	}
+	if realTop := float64(quietest) * MeasuredEstimatorDriftHigh; realTop >= float64(window) {
+		t.Fatalf("at drift %v a session reaches %.0f provider-real tokens against a %d window",
+			MeasuredEstimatorDriftHigh, realTop, window)
+	}
+
+	// The guard has to bite. The midpoint that stood here before fails the same
+	// arithmetic, which is exactly why the factor moved to the band's upper bound.
+	midpoint := 1.5
+	midQuiet := int64(math.Ceil(float64(budget)/midpoint)) - 1
+	if midReal := float64(midQuiet) * MeasuredEstimatorDriftHigh; midReal < float64(window) {
+		t.Fatalf("expected the %v midpoint to overshoot a %d window at drift %v, but it computed %.0f",
+			midpoint, window, MeasuredEstimatorDriftHigh, midReal)
+	}
+}

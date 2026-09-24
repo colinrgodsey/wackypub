@@ -28,11 +28,25 @@ const (
 	// DefaultCompactionSafetyMarginTokens absorbs estimator jitter near the ceiling.
 	DefaultCompactionSafetyMarginTokens = 2048
 
-	// EstimateCalibrationFactor corrects EstimateTokens, which measures low against
-	// provider-reported prompt tokens: live drift measured 1.35x to 1.65x across
-	// agents on 2026-09-19. The midpoint is used so an unmeasured session errs
-	// toward stopping early rather than into the provider's hard limit.
-	EstimateCalibrationFactor = 1.5
+	// MeasuredEstimatorDriftLow and MeasuredEstimatorDriftHigh bracket how far
+	// EstimateTokens under-reads provider-reported prompt tokens, measured on live
+	// agent sessions on 2026-09-19. These are measurements, not tunables: the
+	// calibration factor is derived from the top of the band.
+	MeasuredEstimatorDriftLow  = 1.35
+	MeasuredEstimatorDriftHigh = 1.65
+
+	// EstimateCalibrationFactor corrects EstimateTokens for the drift above, and is
+	// set to the top of the band rather than its midpoint because the two failure
+	// directions are not equal: stopping early costs one round of latency, while
+	// stopping late means the provider rejects the request outright. A factor has to
+	// cover the worst case ever measured, not the average one.
+	//
+	// The midpoint fails that test. On a 200k window with a 12k reserve and the 2048
+	// margin the budget is 185,952, and at 1.5 the stop would fire only once a
+	// 1.65x session had reached 204,547 provider-real tokens, which is 4,547 past
+	// the window. A fixed safety margin cannot absorb a ten percent residual at that
+	// scale, so the factor carries the band instead.
+	EstimateCalibrationFactor = MeasuredEstimatorDriftHigh
 
 	// UsageSourceProvider marks a count reported by the model provider.
 	UsageSourceProvider = "provider"

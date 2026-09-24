@@ -453,6 +453,12 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		// can face the provider's real ceiling; running it through this gate would
 		// silently compact every session earlier, which is a policy change rather
 		// than part of making the warning truthful.
+		//
+		// Note for any future caller passing force: false. This gate's ceiling moved
+		// with the shared budget and is now stricter about what it lets through - on a
+		// 500k window the trigger rose from 400,000 tokens to 485,952, because the
+		// reserve and margin replace the flat 20% share. Production always sends
+		// force: true, so nothing depends on this today.
 		budget := contextBudget(runtimeCfg.ContextWindow, runtimeCfg.MaxOutputReserve, compactCfg.CompactOverheadPct)
 		if EstimateTokens(turns, runtimeCfg.PreserveThinking) < budget {
 			return false, nil
