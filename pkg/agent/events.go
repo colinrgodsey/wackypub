@@ -241,7 +241,8 @@ func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64,
 	var latestSeq int64
 	if hasCompaction && sessionBaselineSeq > 0 {
 		// When compaction has occurred, session baseline from session stream defines the rewind boundary.
-		// Older tool journal entries from compacted turns are dropped so they do not drag baseline backward.
+		// Older tool journal entries from compacted turns are filtered out (hidden at read) so they do not
+		// drag baseline backward; tool-journal.jsonl on disk remains an untouched audit sidecar.
 		filtered := events[:0]
 		for _, ev := range events {
 			if ev.Seq >= sessionBaselineSeq {
