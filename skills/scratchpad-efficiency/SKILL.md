@@ -153,6 +153,27 @@ The server recognizes `<<.../>>` and emits the inner single-tag form. No macro e
 
 **Why doubled-token and not backslash:** the older form using a leading backslash before the macro was buggy -- it consumed the backslash and emitted a re-expandable token. The doubled form is shape-distinct (it can never be confused with a real macro) and survives intact through any further pass that scans for scratchpad references.
 
+
+### Reach for these macros by default
+
+The `args`/`stdin` macros are the most efficient hand-off primitive in the system, and it is easy to overlook them in favour of the CLI deposit in section 1. Both are server-side and cost no generation tokens, but the macro route has properties the CLI route does not:
+
+- **Nothing is re-emitted.** A 100 KB entry travels for zero output tokens - you never print, copy, or paraphrase it.
+- **Slices, not whole entries.** `skip_lines`/`num_lines` hand exactly the section that matters.
+- **No cross-agent plumbing.** Expansion happens inside *your* `run_command` process, so it needs no target-side scratchpad write, no `WACKYPUB_ALLOWED_AGENTS` entry for scratchpad verbs, and no target session lock.
+- **It works where the CLI route cannot.** ACP-bridged agents currently return `Unimplemented` for `CreateScratchpad`, so a macro into an `agent prompt` invocation is the ONLY way to hand a bridged agent an artifact.
+- **Cap:** expanded positional arguments over ~500,000 bytes fail fast (the `E2BIG` guard), so slice rather than sending everything.
+
+Choose by where the content should *land*:
+
+| Route | Lands in | Cost | Constraint |
+|---|---|---|---|
+| Macro into a dispatch (`agent prompt`, `wackyproc run`, ...) | the target's session / context | the target's tokens, but guaranteed read | ~500 KB expanded-arg cap |
+| CLI scratchpad write (section 1) | the target's scratchpad | zero until they read it; pageable | needs the target's session lock; unavailable over ACP |
+
+Canonical cases: handing a review to a **busy or bridged** agent wants the macro route; feeding a **large dataset** to an **idle native** agent for selective study wants the CLI deposit.
+
+
 ---
 
 ## 5. Iterative Search & Slice Navigation
