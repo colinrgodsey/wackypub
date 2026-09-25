@@ -598,7 +598,9 @@ message CreateScratchpadRequest {
   // agent_id identifies the agent whose scratchpad store will receive the entry. Required.
   string agent_id = 1;
 
-  // text contains the content to store in the scratchpad entry. Required.
+  // text contains the content to store in the scratchpad entry. Required unless
+  // data is set (text and data are mutually exclusive: a text entry stores a
+  // string; a data entry stores raw bytes as a binary scratchpad per D48).
   string text = 2;
 
   // created_by identifies the author or tool that created the entry (e.g. "cli"). Defaults to "cli".
@@ -607,6 +609,16 @@ message CreateScratchpadRequest {
   // workspace_dir is the filesystem path to the workspace root containing the agent.
   // When empty, the SDK's configured default workspace directory is used.
   string workspace_dir = 4;
+
+  // data holds raw bytes for a BINARY scratchpad entry (D48). When set, the
+  // entry is stored as a .dat binary blob and text must be empty. This is the
+  // protocol surface wackydiscord uses to replace the old in-process
+  // CreateBinaryScratchpad helper.
+  bytes data = 5;
+
+  // mime_type is the content type for binary data entries. When empty, it is
+  // sniffed from the data (DetectMediaType). Ignored for text entries.
+  string mime_type = 6;
 }
 
 // CreateScratchpadResponse returns metadata for the newly created scratchpad entry.
@@ -664,6 +676,13 @@ message GetScratchpadRequest {
 // GetScratchpadResponse returns the retrieved scratchpad content.
 message GetScratchpadResponse {
   // text contains the retrieved scratchpad content (or requested line range).
+  //
+  // NOTE: binary entries (created via CreateScratchpadRequest.data) CANNOT be
+  // read back through this RPC - the response has no data field, and the
+  // store rejects reading a binary entry as text. Binary scratchpad creation
+  // is intentionally write-only over the protocol (wackydiscord's
+  // attachment path uses it that way); metadata (is_binary, mime_type, size)
+  // is available via ListScratchpads.
   string text = 1;
 }
 

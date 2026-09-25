@@ -181,4 +181,5 @@ func init() {
 	RootCmd.PersistentFlags().IntVar(&maxToolTurns, "max-tool-turns", adkAgent.DefaultMaxToolTurns, "Maximum consecutive tool-call turns allowed per generation")
 	RootCmd.PersistentFlags().IntVar(&commandTimeoutSeconds, "command-timeout-seconds", adkAgent.DefaultCommandTimeoutSeconds, "Maximum execution timeout in seconds for tool commands (-1 to disable)")
 	RootCmd.AddCommand(skillCmd)
+	RootCmd.AddCommand(stdioServeCmd)
 }

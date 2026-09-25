@@ -204,11 +204,22 @@ func (c *RuntimeConfig) FallbackChain() []*RuntimeConfig {
 // timeout, DNS), 429-after-retries, and 5xx server errors. Explicitly NOT qualifying: 401/403
 // auth failures (fallback would repeat them or mask credential rot - fail loud) and empty
 // model output (a quality judgment, not an availability signal).
+// urlRegex matches a quoted URL inside an error message so status-code
+// substrings inside it (scheme, host, ephemeral port) cannot misclassify the
+// error as another status (bug: httptest ports containing "401"/"403" were
+// rejecting qualifying 429/503 fallback errors).
+var urlRegex = regexp.MustCompile(`\"https?://[^\"]+\"`)
+
 func IsQualifyingFallbackError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
+
+	// Strip quoted URLs before numeric checks: httptest picks ephemeral ports that
+	// can contain the digits of another status code (e.g. :44017 -> "401"), which
+	// would otherwise misclassify a genuinely qualifying transport/429/5xx error.
+	msg = urlRegex.ReplaceAllString(msg, " ")
 
 	// Non-qualifying checks first so a message containing both "401" and "connection"
 	// (e.g. a proxy 401 wrapping a dial failure) never flips.
