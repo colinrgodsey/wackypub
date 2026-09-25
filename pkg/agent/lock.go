@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -13,6 +14,27 @@ import (
 // SessionLock provides process-level exclusive locking for an agent session.
 type SessionLock struct {
 	file *os.File
+	dir  string
+}
+
+var (
+	heldLocksMu sync.Mutex
+	heldLocks   = make(map[string]int)
+)
+
+func cleanLockDir(agentDir string) string {
+	abs, err := filepath.Abs(agentDir)
+	if err == nil {
+		return abs
+	}
+	return filepath.Clean(agentDir)
+}
+
+// IsSessionLockedByCurrentProcess reports whether the current process holds a SessionLock on agentDir.
+func IsSessionLockedByCurrentProcess(agentDir string) bool {
+	heldLocksMu.Lock()
+	defer heldLocksMu.Unlock()
+	return heldLocks[cleanLockDir(agentDir)] > 0
 }
 
 // AcquireSessionLock acquires an exclusive POSIX lock (flock) on <agent_dir>/session.lock
@@ -80,12 +102,26 @@ func AcquireSessionLockContext(ctx context.Context, agentDir string) (*SessionLo
 	_, _ = file.WriteString(fmt.Sprintf("%d\n", os.Getpid()))
 	_ = file.Sync()
 
-	return &SessionLock{file: file}, nil
+	clean := cleanLockDir(agentDir)
+	heldLocksMu.Lock()
+	heldLocks[clean]++
+	heldLocksMu.Unlock()
+
+	return &SessionLock{file: file, dir: agentDir}, nil
 }
 
 // Release unlocks and closes the session lock file.
 func (l *SessionLock) Release() {
 	if l != nil && l.file != nil {
+		clean := cleanLockDir(l.dir)
+		heldLocksMu.Lock()
+		if heldLocks[clean] > 1 {
+			heldLocks[clean]--
+		} else {
+			delete(heldLocks, clean)
+		}
+		heldLocksMu.Unlock()
+
 		_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
 		_ = l.file.Close()
 		l.file = nil

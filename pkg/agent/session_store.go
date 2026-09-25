@@ -195,7 +195,10 @@ func sanitizeContentForPersistWithSeq(content *genai.Content, seq int64) ([]byte
 // AppendSessionContent appends a genai.Content turn to <agent_dir>/session.jsonl,
 // allocating a new strictly monotonic sequence number stamped on the persisted turn.
 func AppendSessionContent(agentDir string, content *genai.Content) error {
-	seq, _ := NextSeq(agentDir)
+	seq, err := NextSeq(agentDir)
+	if err != nil {
+		return fmt.Errorf("allocating sequence number for turn: %w", err)
+	}
 	return AppendSessionContentWithSeq(agentDir, content, seq)
 }
 

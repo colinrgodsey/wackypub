@@ -65,6 +65,8 @@ func NotifySessionActivity(agentDir string) {
 	globalBroker.notify(agentDir)
 }
 
+var subscribeTickerInterval = 50 * time.Millisecond
+
 const maxSubscriberBuffer = 64
 
 // testHookPreSnapshotRead is invoked immediately after broker registration and before reading the initial snapshot.
@@ -248,8 +250,13 @@ func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64,
 		}
 		events = filtered
 		baselineSeq = sessionBaselineSeq
-	} else if len(events) > 0 {
-		baselineSeq = events[0].Seq
+	} else {
+		for _, ev := range events {
+			if ev.Seq > 0 {
+				baselineSeq = ev.Seq
+				break
+			}
+		}
 	}
 	if len(events) > 0 {
 		latestSeq = events[len(events)-1].Seq
@@ -432,19 +439,22 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 		}
 	}
 
-	// 2. Live streaming loop with bounded buffer and drop-with-notice
-	ticker := time.NewTicker(50 * time.Millisecond)
+	// 2. Live streaming loop with bounded buffer
+	ticker := time.NewTicker(subscribeTickerInterval)
 	defer ticker.Stop()
 
-	var droppedCount int64
+	var hasMore bool
 
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-wakeCh:
-		case <-ticker.C:
+		if !hasMore {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-wakeCh:
+			case <-ticker.C:
+			}
 		}
+		hasMore = false
 
 		// Check for newly committed events on disk
 		newEvents, _, _, _, err := ReadSessionEventsFromDisk(agentDir)
@@ -460,17 +470,8 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 		}
 
 		if len(pending) > maxSubscriberBuffer {
-			dropped := int64(len(pending) - maxSubscriberBuffer)
-			droppedCount += dropped
-			pending = pending[len(pending)-maxSubscriberBuffer:]
-		}
-
-		// Emit drop notice if any were previously dropped
-		if droppedCount > 0 {
-			if err := stream.Send(&agentv1.SubscribeSessionResponse{DroppedEvents: droppedCount}); err != nil {
-				return err
-			}
-			droppedCount = 0
+			pending = pending[:maxSubscriberBuffer]
+			hasMore = true
 		}
 
 		for _, ev := range pending {

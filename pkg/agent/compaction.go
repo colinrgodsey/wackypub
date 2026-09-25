@@ -649,7 +649,10 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		baselineSeq = survivingTurns[0].Seq
 	}
 
-	summarySeq, _ := NextSeq(agentDir)
+	summarySeq, err := NextSeq(agentDir)
+	if err != nil {
+		return fail("next-seq", fmt.Errorf("allocating sequence number for compaction: %w", err))
+	}
 	if baselineSeq == 0 {
 		baselineSeq = summarySeq
 	}

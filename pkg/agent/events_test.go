@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -690,13 +693,13 @@ func TestRollbackRestoredDirRewindSignalling(t *testing.T) {
 	}
 }
 
-// TestReplayThenLiveNoGapLoadBearingOrdering verifies that registering the broker listener
-// before reading the initial snapshot read prevents events written during the transition
-// from being dropped.
-func TestReplayThenLiveNoGapLoadBearingOrdering(t *testing.T) {
+// TestReplayThenLivePromptWakeOrdering verifies that registering the broker listener
+// before reading the initial snapshot read enables prompt in-process wake notification
+// without waiting for the 50ms polling fallback ticker.
+func TestReplayThenLivePromptWakeOrdering(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
-	agentID := "nogap-agent"
+	agentID := "prompt-wake-agent"
 	agentDir := filepath.Join(tempDir, agentID)
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -705,6 +708,11 @@ func TestReplayThenLiveNoGapLoadBearingOrdering(t *testing.T) {
 
 	_ = AppendSessionTurn(agentDir, "user", "turn 1")
 	_ = AppendSessionTurn(agentDir, "model", "turn 2")
+
+	// Set fallback ticker to 5 seconds so prompt delivery relies strictly on the broker wake path.
+	origTicker := subscribeTickerInterval
+	subscribeTickerInterval = 5 * time.Second
+	defer func() { subscribeTickerInterval = origTicker }()
 
 	// Hook into the race window between register() and ReadSessionEventsFromDisk
 	testHookPreSnapshotRead = func() {
@@ -724,8 +732,8 @@ func TestReplayThenLiveNoGapLoadBearingOrdering(t *testing.T) {
 		}, stream)
 	}()
 
-	// Wait for all 3 turns to be delivered
-	deadline := time.Now().Add(2 * time.Second)
+	// Wait for all 3 turns to be delivered via prompt wake (far before the 5-second ticker)
+	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if len(stream.getResponses()) >= 3 {
 			break
@@ -737,7 +745,7 @@ func TestReplayThenLiveNoGapLoadBearingOrdering(t *testing.T) {
 
 	resps := stream.getResponses()
 	if len(resps) != 3 {
-		t.Fatalf("expected exactly 3 responses with no gap, got %d", len(resps))
+		t.Fatalf("expected exactly 3 responses via prompt wake, got %d", len(resps))
 	}
 	for i, exp := range []int64{1, 2, 3} {
 		if resps[i].GetEvent().GetSeq() != exp {
@@ -785,12 +793,13 @@ func TestScannerErrorPropagation(t *testing.T) {
 	}
 }
 
-// TestSubscribeSessionDropWithNotice verifies that when a consumer is overwhelmed and
-// pending events exceed maxSubscriberBuffer, older events are dropped and a drop notice is emitted.
-func TestSubscribeSessionDropWithNotice(t *testing.T) {
+// TestSubscribeSessionBurstDeliveryWithoutLoss verifies that when a burst of events
+// exceeds maxSubscriberBuffer (64), head trimming preserves the oldest events and all
+// durable events are delivered across chunked passes without data loss.
+func TestSubscribeSessionBurstDeliveryWithoutLoss(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
-	agentID := "drop-agent"
+	agentID := "burst-agent"
 	agentDir := filepath.Join(tempDir, agentID)
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -842,18 +851,10 @@ func TestSubscribeSessionDropWithNotice(t *testing.T) {
 	_ = SetSeq(agentDir, 101)
 	NotifySessionActivity(agentDir)
 
-	// Wait for stream to deliver drop notice and buffered events
+	// Wait for stream to deliver all 101 buffered events without loss
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		resps := stream.getResponses()
-		var hasDrop bool
-		for _, r := range resps {
-			if r.GetDroppedEvents() > 0 {
-				hasDrop = true
-				break
-			}
-		}
-		if hasDrop {
+		if len(stream.getResponses()) >= 101 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -862,21 +863,189 @@ func TestSubscribeSessionDropWithNotice(t *testing.T) {
 	<-streamDone
 
 	resps := stream.getResponses()
-	var dropNotice *agentv1.SubscribeSessionResponse
-	var eventResponses []*agentv1.SubscribeSessionResponse
-	for _, r := range resps {
-		if r.GetDroppedEvents() > 0 {
-			dropNotice = r
+	if len(resps) != 101 {
+		t.Fatalf("expected all 101 responses delivered without loss, got %d", len(resps))
+	}
+
+	for i, r := range resps {
+		expectedSeq := int64(i + 1)
+		if r.GetEvent().GetSeq() != expectedSeq {
+			t.Errorf("event %d: expected seq %d, got %d", i, expectedSeq, r.GetEvent().GetSeq())
 		}
-		if r.GetEvent() != nil {
-			eventResponses = append(eventResponses, r)
+	}
+}
+
+// TestSeqCrossProcessWorker is invoked as a subprocess by TestSeqMonotonicityCrossProcessWriters.
+func TestSeqCrossProcessWorker(t *testing.T) {
+	agentDir := os.Getenv("TEST_SEQ_WORKER_AGENT_DIR")
+	if agentDir == "" {
+		return
+	}
+	attemptsStr := os.Getenv("TEST_SEQ_WORKER_ATTEMPTS")
+	attempts, _ := strconv.Atoi(attemptsStr)
+	if attempts <= 0 {
+		attempts = 25
+	}
+	for i := 0; i < attempts; i++ {
+		seq, err := NextSeq(agentDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "worker error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("ALLOCATED_SEQ:%d\n", seq)
+	}
+	os.Exit(0)
+}
+
+// TestSeqMonotonicityCrossProcessWriters verifies that sequence numbers allocated across
+// multiple independent OS processes are strictly monotonic, unique, and free of temp-file collisions.
+func TestSeqMonotonicityCrossProcessWriters(t *testing.T) {
+	tempDir := t.TempDir()
+	agentDir := filepath.Join(tempDir, "cross-proc-agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	numProcesses := 5
+	attemptsPerProcess := 25
+	totalAllocations := numProcesses * attemptsPerProcess
+
+	type workerResult struct {
+		output string
+		err    error
+	}
+	results := make(chan workerResult, numProcesses)
+
+	for p := 0; p < numProcesses; p++ {
+		go func(workerID int) {
+			cmd := exec.Command(os.Args[0], "-test.run=TestSeqCrossProcessWorker", "--")
+			cmd.Env = append(os.Environ(),
+				"TEST_SEQ_WORKER_AGENT_DIR="+agentDir,
+				fmt.Sprintf("TEST_SEQ_WORKER_ATTEMPTS=%d", attemptsPerProcess),
+			)
+			out, err := cmd.CombinedOutput()
+			results <- workerResult{output: string(out), err: err}
+		}(p)
+	}
+
+	var allSeqs []int64
+	for p := 0; p < numProcesses; p++ {
+		res := <-results
+		if res.err != nil {
+			t.Fatalf("worker failed: %v, output:\n%s", res.err, res.output)
+		}
+		lines := strings.Split(res.output, "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "ALLOCATED_SEQ:") {
+				valStr := strings.TrimPrefix(line, "ALLOCATED_SEQ:")
+				seq, err := strconv.ParseInt(strings.TrimSpace(valStr), 10, 64)
+				if err != nil {
+					t.Fatalf("invalid allocated seq %q: %v", valStr, err)
+				}
+				allSeqs = append(allSeqs, seq)
+			}
 		}
 	}
 
-	if dropNotice == nil {
-		t.Fatalf("expected at least one drop notice, got 0 among %d responses", len(resps))
+	if len(allSeqs) != totalAllocations {
+		t.Fatalf("expected %d total allocations, got %d", totalAllocations, len(allSeqs))
 	}
-	if dropNotice.GetDroppedEvents() <= 0 {
-		t.Errorf("expected DroppedEvents > 0, got %d", dropNotice.GetDroppedEvents())
+
+	sort.Slice(allSeqs, func(i, j int) bool { return allSeqs[i] < allSeqs[j] })
+
+	seen := make(map[int64]bool)
+	for i, s := range allSeqs {
+		if seen[s] {
+			t.Fatalf("duplicate sequence number %d found across processes", s)
+		}
+		seen[s] = true
+		expected := int64(i + 1)
+		if s != expected {
+			t.Errorf("gap or jump at index %d: expected seq %d, got %d", i, expected, s)
+		}
+	}
+
+	cur, err := CurrentSeq(agentDir)
+	if err != nil {
+		t.Fatalf("CurrentSeq: %v", err)
+	}
+	if cur != int64(totalAllocations) {
+		t.Errorf("expected CurrentSeq=%d, got %d", totalAllocations, cur)
+	}
+}
+
+// TestCorruptedSeqFileRecovery verifies that a corrupted session.seq file is automatically
+// recovered using RecoverSeq rather than permanently bricking sequence number allocation.
+func TestCorruptedSeqFileRecovery(t *testing.T) {
+	tempDir := t.TempDir()
+	agentDir := filepath.Join(tempDir, "corrupted-seq-agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Add 3 turns to session.jsonl with seq 1, 2, 3
+	for i := 1; i <= 3; i++ {
+		_ = AppendSessionTurn(agentDir, "user", fmt.Sprintf("Turn %d", i))
+	}
+
+	// Corrupt session.seq with garbage text
+	seqPath := filepath.Join(agentDir, SeqFileName)
+	if err := os.WriteFile(seqPath, []byte("garbage_not_a_number\n"), 0644); err != nil {
+		t.Fatalf("write corrupt seq: %v", err)
+	}
+
+	// NextSeq must not fail permanently; it must recover from session.jsonl and yield 4
+	seq, err := NextSeq(agentDir)
+	if err != nil {
+		t.Fatalf("NextSeq failed on corrupt session.seq: %v", err)
+	}
+	if seq != 4 {
+		t.Errorf("expected recovered seq=4, got %d", seq)
+	}
+
+	// Verify session.seq on disk is now healed
+	cur, err := CurrentSeq(agentDir)
+	if err != nil {
+		t.Fatalf("CurrentSeq failed after heal: %v", err)
+	}
+	if cur != 4 {
+		t.Errorf("expected CurrentSeq=4, got %d", cur)
+	}
+}
+
+// TestZeroSeqJournalRowRewindSignalling verifies that a journal row with seq <= 0 does not
+// yield baseline=0 and disable the since == 0 && baseline > 1 rewind rule.
+func TestZeroSeqJournalRowRewindSignalling(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	agentDir := filepath.Join(tempDir, "zeroseq-agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sdk := NewSDK(tempDir)
+
+	// Turn at seq 5
+	_ = AppendSessionContentWithSeq(agentDir, genai.NewContentFromText("turn 5", "user"), 5)
+
+	// Journal row with seq 0 (legacy or unsequenced)
+	jPath := toolJournalPath(agentDir)
+	jData, _ := json.Marshal(ToolEvent{CallID: "c0", ToolName: "tool0", Seq: 0, Timestamp: time.Now()})
+	_ = os.WriteFile(jPath, []byte(string(jData)+"\n"), 0644)
+
+	// Poll with since_seq == 0
+	resp, err := sdk.ReadSessionEvents(context.Background(), &agentv1.ReadSessionEventsRequest{
+		AgentId:      "zeroseq-agent",
+		WorkspaceDir: tempDir,
+		Cursor:       &agentv1.ReadSessionEventsRequest_SinceSeq{SinceSeq: 0},
+	})
+	if err != nil {
+		t.Fatalf("ReadSessionEvents: %v", err)
+	}
+
+	if resp.BaselineSeq <= 0 {
+		t.Fatalf("expected baselineSeq > 0, got %d", resp.BaselineSeq)
+	}
+	if !resp.Rewound {
+		t.Errorf("expected rewound=true when baselineSeq (%d) > 1 and since_seq=0", resp.BaselineSeq)
 	}
 }

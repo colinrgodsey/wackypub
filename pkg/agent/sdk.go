@@ -503,7 +503,10 @@ func (s *AgentSDK) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, st
 	}
 	sink := NewToolEventSinkWithJournal(toolJournalPath(s.AgentDir(agentID)))
 	sink.SetSeqAlloc(func() int64 {
-		seq, _ := NextSeq(s.AgentDir(agentID))
+		seq, err := NextSeq(s.AgentDir(agentID))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to allocate sequence number for tool event (agent %s): %v\n", agentID, err)
+		}
 		return seq
 	})
 	ctx, cancel := context.WithCancel(stream.Context())
@@ -942,7 +945,10 @@ func (s *AgentSDK) AddAndGenerateTurnStream(req *agentv1.AddAndGenerateTurnStrea
 	}
 	sink := NewToolEventSinkWithJournal(toolJournalPath(s.AgentDir(agentID)))
 	sink.SetSeqAlloc(func() int64 {
-		seq, _ := NextSeq(s.AgentDir(agentID))
+		seq, err := NextSeq(s.AgentDir(agentID))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to allocate sequence number for tool event (agent %s): %v\n", agentID, err)
+		}
 		return seq
 	})
 	ctx, cancel := context.WithCancel(stream.Context())

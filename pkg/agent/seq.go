@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,15 +16,31 @@ const SeqFileName = "session.seq"
 
 var seqMu sync.Mutex
 
+func isCorruptSeqErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, strconv.ErrSyntax) || strings.Contains(err.Error(), "invalid sequence number")
+}
+
 // NextSeq returns the next strictly monotonic sequence number for the agent in agentDir.
-// Callers must hold the agent's session lock for multi-writer safety across processes.
+// It acquires the cross-process session lock flock (if not already held by the current process)
+// and serializes in-process calls via seqMu.
 func NextSeq(agentDir string) (int64, error) {
 	seqMu.Lock()
 	defer seqMu.Unlock()
 
+	if !IsSessionLockedByCurrentProcess(agentDir) {
+		lock, err := AcquireSessionLock(agentDir)
+		if err != nil {
+			return 0, fmt.Errorf("acquiring session lock for seq: %w", err)
+		}
+		defer lock.Release()
+	}
+
 	cur, err := readSeqFile(agentDir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) || isCorruptSeqErr(err) {
 			cur, err = RecoverSeq(agentDir)
 			if err != nil {
 				return 0, err
@@ -45,9 +62,17 @@ func CurrentSeq(agentDir string) (int64, error) {
 	seqMu.Lock()
 	defer seqMu.Unlock()
 
+	if !IsSessionLockedByCurrentProcess(agentDir) {
+		lock, err := AcquireSessionLock(agentDir)
+		if err != nil {
+			return 0, fmt.Errorf("acquiring session lock for seq: %w", err)
+		}
+		defer lock.Release()
+	}
+
 	cur, err := readSeqFile(agentDir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) || isCorruptSeqErr(err) {
 			return RecoverSeq(agentDir)
 		}
 		return 0, err
@@ -59,6 +84,14 @@ func CurrentSeq(agentDir string) (int64, error) {
 func SetSeq(agentDir string, seq int64) error {
 	seqMu.Lock()
 	defer seqMu.Unlock()
+
+	if !IsSessionLockedByCurrentProcess(agentDir) {
+		lock, err := AcquireSessionLock(agentDir)
+		if err != nil {
+			return fmt.Errorf("acquiring session lock for seq: %w", err)
+		}
+		defer lock.Release()
+	}
 	return writeSeqFile(agentDir, seq)
 }
 
@@ -81,14 +114,29 @@ func readSeqFile(agentDir string) (int64, error) {
 
 func writeSeqFile(agentDir string, seq int64) error {
 	p := filepath.Join(agentDir, SeqFileName)
-	tmp := p + ".tmp"
-	data := []byte(fmt.Sprintf("%d\n", seq))
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return fmt.Errorf("writing %s: %w", tmp, err)
+	tmpFile, err := os.CreateTemp(agentDir, "session.seq.*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp file in %s: %w", agentDir, err)
 	}
-	if err := os.Rename(tmp, p); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("renaming %s to %s: %w", tmp, p, err)
+	tmpPath := tmpFile.Name()
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
+
+	data := []byte(fmt.Sprintf("%d\n", seq))
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("writing %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("syncing %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, p); err != nil {
+		return fmt.Errorf("renaming %s to %s: %w", tmpPath, p, err)
 	}
 	return nil
 }
