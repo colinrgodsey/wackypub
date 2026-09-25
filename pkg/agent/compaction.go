@@ -638,9 +638,8 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 			seq = existing[idx].Seq
 		}
 		survivingTurns = append(survivingTurns, PersistedTurn{
-			Role:  t.Role,
-			Parts: t.Parts,
-			Seq:   seq,
+			Content: genai.Content{Role: t.Role, Parts: t.Parts},
+			Seq:     seq,
 		})
 	}
 
@@ -661,9 +660,8 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 	if len(remainingTurns) > 0 && notice != "" {
 		noticeTurn := genai.NewContentFromText(FormatCompactionNotice(notice), "user")
 		pTurns = append(pTurns, PersistedTurn{
-			Role:  "user",
-			Parts: noticeTurn.Parts,
-			Seq:   summarySeq,
+			Content: genai.Content{Role: "user", Parts: noticeTurn.Parts},
+			Seq:     summarySeq,
 		})
 	} else if notice == "" {
 		// Emit compaction event to tool-journal.jsonl if notice was opted out

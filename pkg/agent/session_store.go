@@ -88,11 +88,14 @@ func truncatePersistTextPart(text string) string {
 	return head + banner + tail
 }
 
-// PersistedTurn represents a serialized turn in session.jsonl with an optional monotonic sequence number.
+// PersistedTurn represents a serialized turn in session.jsonl with an optional
+// monotonic sequence number. genai.Content is embedded rather than mirrored: the
+// wire shape stays byte-identical for both shapes a reader can meet, a turn
+// written before sequence numbers existed loads straight into a genai.Content, and
+// no field-by-field translation layer is needed to move between the two.
 type PersistedTurn struct {
-	Role  string        `json:"role,omitempty"`
-	Parts []*genai.Part `json:"parts,omitempty"`
-	Seq   int64         `json:"seq,omitempty"`
+	genai.Content
+	Seq int64 `json:"seq,omitempty"`
 }
 
 // sanitizeContentForPersist caps oversized text parts and enforces the MaxPersistTurnBytes
@@ -122,7 +125,7 @@ func sanitizeContentForPersistWithSeq(content *genai.Content, seq int64) ([]byte
 
 	marshalTurn := func(role string, parts []*genai.Part) ([]byte, error) {
 		if seq > 0 {
-			return json.Marshal(&PersistedTurn{Role: role, Parts: parts, Seq: seq})
+			return json.Marshal(&PersistedTurn{Content: genai.Content{Role: role, Parts: parts}, Seq: seq})
 		}
 		return json.Marshal(&genai.Content{Role: role, Parts: parts})
 	}
@@ -331,9 +334,8 @@ func WriteSessionTurns(agentDir string, turns []*genai.Content) error {
 			seq = existing[i].Seq
 		}
 		pTurns = append(pTurns, PersistedTurn{
-			Role:  t.Role,
-			Parts: t.Parts,
-			Seq:   seq,
+			Content: genai.Content{Role: t.Role, Parts: t.Parts},
+			Seq:     seq,
 		})
 	}
 	return WritePersistedTurns(agentDir, pTurns)
