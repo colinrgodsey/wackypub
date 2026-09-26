@@ -44,12 +44,6 @@ type AgentSDK struct {
 	CommandTimeoutSeconds int
 	lastHookEnvMu         sync.Mutex
 	lastHookEnv           map[string]map[string]string
-
-	// failedUntil maps a backend identity (endpoint + "/" + model) to the time at which a
-	// usage-limit failure is expected to reset. Managed by the fallback machinery in
-	// runTurnWithRuntimeFallback; in-memory per process for v1 (persisted nothing).
-	failedUntilMu sync.Mutex
-	failedUntil   map[string]time.Time
 }
 
 var _ agentv1.AgentServiceServer = (*AgentSDK)(nil)
@@ -64,7 +58,6 @@ func NewSDK(workspaceDir string) *AgentSDK {
 		MaxToolTurns:          DefaultMaxToolTurns,
 		CommandTimeoutSeconds: DefaultCommandTimeoutSeconds,
 		lastHookEnv:           make(map[string]map[string]string),
-		failedUntil:           make(map[string]time.Time),
 	}
 }
 
@@ -318,31 +311,52 @@ func backendIdentity(cfg *RuntimeConfig) string {
 	return cfg.Endpoint + "/" + cfg.Model
 }
 
-// markFailedUntil records a backend as failed until the given reset time. In-memory per
-// process (v1 scope - nothing persisted); a later turn in this process will start at the
-// first fallback instead of retrying a backend that is provably down until reset.
-func (s *AgentSDK) markFailedUntil(cfg *RuntimeConfig, resetAt time.Time) {
-	s.failedUntilMu.Lock()
-	defer s.failedUntilMu.Unlock()
-	s.failedUntil[backendIdentity(cfg)] = resetAt
+// The failed-until window is process-wide (v1 scope per the original comment: nothing
+// persisted, shared across the turn and compaction fallback paths). Compaction runs from
+// FolderAgent methods with no SDK handle, so the state must be reachable from package
+// functions, not only SDK methods.
+
+var (
+	backendFailedUntilMu sync.Mutex
+	backendFailedUntil   map[string]time.Time
+)
+
+func markBackendFailedUntil(cfg *RuntimeConfig, resetAt time.Time) {
+	backendFailedUntilMu.Lock()
+	defer backendFailedUntilMu.Unlock()
+	if backendFailedUntil == nil {
+		backendFailedUntil = make(map[string]time.Time)
+	}
+	backendFailedUntil[backendIdentity(cfg)] = resetAt
 }
 
-// backendFailedUntilReset reports whether cfg is currently inside its failed-until window.
-func (s *AgentSDK) backendFailedUntilReset(cfg *RuntimeConfig) bool {
-	s.failedUntilMu.Lock()
-	resetAt, ok := s.failedUntil[backendIdentity(cfg)]
-	s.failedUntilMu.Unlock()
+func backendFailedUntilReset(cfg *RuntimeConfig) bool {
+	backendFailedUntilMu.Lock()
+	resetAt, ok := backendFailedUntil[backendIdentity(cfg)]
+	backendFailedUntilMu.Unlock()
 	if !ok {
 		return false
 	}
 	if time.Now().After(resetAt) {
 		// Window closed; drop the stale entry so we don't leak map entries per outage.
-		s.failedUntilMu.Lock()
-		delete(s.failedUntil, backendIdentity(cfg))
-		s.failedUntilMu.Unlock()
+		backendFailedUntilMu.Lock()
+		delete(backendFailedUntil, backendIdentity(cfg))
+		backendFailedUntilMu.Unlock()
 		return false
 	}
 	return true
+}
+
+// markFailedUntil records a backend as failed until the given reset time. In-memory per
+// process (v1 scope - nothing persisted); a later turn in this process will start at the
+// first fallback instead of retrying a backend that is provably down until reset.
+func (s *AgentSDK) markFailedUntil(cfg *RuntimeConfig, resetAt time.Time) {
+	markBackendFailedUntil(cfg, resetAt)
+}
+
+// backendFailedUntilReset reports whether cfg is currently inside its failed-until window.
+func (s *AgentSDK) backendFailedUntilReset(cfg *RuntimeConfig) bool {
+	return backendFailedUntilReset(cfg)
 }
 
 // runTurnWithRuntimeFallback walks the runtime fallback chain at turn setup: it attempts
@@ -906,33 +920,103 @@ func asideInternal(s *AgentSDK, ctx context.Context, workspaceDir, agentID, ques
 		return err
 	}
 
-	r, err := runner.New(runner.Config{
-		AppName:        "wackypub",
-		Agent:          asideAgent,
-		SessionService: sessionSvc,
-	})
-	if err != nil {
-		yield("", fmt.Errorf("failed to create aside runner: %w", err))
-		return err
+	// Runtime fallback chain walk, same semantics as turns and compaction: attempt the
+	// primary level first (the asideAgent just built); descend on a qualifying error ONLY
+	// before any text was yielded (frankenstein guard - an aside that already streamed a
+	// partial answer must not swap providers mid-answer). Failed-until-reset backends are
+	// skipped, quota-reset hints are recorded, and the level that served determines the
+	// usage/tool-denial figures reported in asideResult.
+	asideLoader := func(cfg *RuntimeConfig) (agent.Agent, *int64, error) {
+		if cfg == nil || cfg == fa.RuntimeConfig {
+			return asideAgent, &denials, nil
+		}
+		fallbackModel, err := NewModelForRuntime(ctx, cfg, agentID)
+		if err != nil {
+			return nil, nil, err
+		}
+		var fbDenials int64
+		fb, err := BuildADKAgentWithConfigAndTrackerForCompactionWithSink(fa.AgentID, fa.SystemPrompt, fa.MaxToolTurns, cfg, fallbackModel, fa.AgentDir, tracker, &fbDenials, asideSink, fa.Tools...)
+		if err != nil {
+			return nil, nil, err
+		}
+		return fb, &fbDenials, nil
 	}
 
-	for event, err := range r.Run(ctx, "user", asideSessionID, nil, agent.RunConfig{}) {
-		if err != nil {
-			yield("", fmt.Errorf("aside generation failed: %w", err))
-			return err
-		}
-		if event == nil {
+	// asideSink is shared across levels: the drain below reflects the serving level's
+	// events only (only that level's runner runs after a descend completes).
+	var yieldedText bool
+	var servedDenials *int64 = &denials
+	asideChain := []*RuntimeConfig{fa.RuntimeConfig}
+	if fa.RuntimeConfig != nil {
+		asideChain = fa.RuntimeConfig.FallbackChain()
+	}
+	for level, levelCfg := range asideChain {
+		if backendFailedUntilReset(levelCfg) {
+			for _, fn := range onWarning {
+				if fn != nil {
+					fn(fmt.Sprintf("skipping backend %s/%s for aside: usage limit not yet reset", levelCfg.Endpoint, levelCfg.Model))
+				}
+			}
+			if level+1 == len(asideChain) {
+				yield("", fmt.Errorf("all aside backends were skipped as failed-until-reset"))
+				return err
+			}
 			continue
 		}
-		if text := ExtractTextFromEvent(event); text != "" {
-			if !yield(text, nil) {
-				return nil
+		levelAgent, denialsPtr, err := asideLoader(levelCfg)
+		if err != nil {
+			yield("", fmt.Errorf("failed to build aside agent for level %q: %w", levelCfg.Model, err))
+			return err
+		}
+		servedDenials = denialsPtr
+		r, err := runner.New(runner.Config{
+			AppName:        "wackypub",
+			Agent:          levelAgent,
+			SessionService: sessionSvc,
+		})
+		if err != nil {
+			yield("", fmt.Errorf("failed to create aside runner: %w", err))
+			return err
+		}
+
+		for event, err := range r.Run(ctx, "user", asideSessionID, nil, agent.RunConfig{}) {
+			if err != nil {
+				if resetAt, ok := ParseQuotaResetHint(err); ok {
+					markBackendFailedUntil(levelCfg, resetAt)
+				}
+				if !yieldedText && IsQualifyingFallbackError(err) && level+1 < len(asideChain) {
+					for _, fn := range onWarning {
+						if fn != nil {
+							fn(fmt.Sprintf("aside backend %s/%s failed: %v; falling back to %s/%s", levelCfg.Endpoint, levelCfg.Model, err, asideChain[level+1].Endpoint, asideChain[level+1].Model))
+						}
+					}
+					break
+				}
+				yield("", fmt.Errorf("aside generation failed: %w", err))
+				return err
+			}
+			if event == nil {
+				continue
+			}
+			if text := ExtractTextFromEvent(event); text != "" {
+				yieldedText = true
+				if !yield(text, nil) {
+					return nil
+				}
 			}
 		}
+		if ctx.Err() != nil {
+			yield("", ctx.Err())
+			return ctx.Err()
+		}
+		// Success (or text was produced): the current level served the answer.
+		break
 	}
 	if asideResult != nil {
 		asideResult.ToolEvents = asideSink.Drain()
-		asideResult.ToolDenials = atomic.LoadInt64(&denials)
+		if servedDenials != nil {
+			asideResult.ToolDenials = atomic.LoadInt64(servedDenials)
+		}
 		tracker.mu.Lock()
 		asideResult.Usage.PromptTokens = tracker.LastPromptTokens
 		asideResult.Usage.CandidatesTokens = tracker.LastCandidatesTokens
@@ -1405,7 +1489,7 @@ func (s *AgentSDK) CompactSession(ctx context.Context, req *agentv1.CompactSessi
 		if err != nil {
 			return nil, err
 		}
-		compacted, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, force, cfgOverride, fa.CompactionToolDenials)
+		compacted, err = CheckAndCompactSessionWithFallback(ctx, fa.AgentDir, fa.RuntimeConfig, fa.compactionAgentLoader(wsDir), force, cfgOverride)
 		if err != nil {
 			return nil, err
 		}
@@ -1440,7 +1524,23 @@ func (s *AgentSDK) CompactSession(ctx context.Context, req *agentv1.CompactSessi
 			return nil, fmt.Errorf("failed to build disposable ADK agent for compaction of %s: %w", agentID, err)
 		}
 
-		compacted, err = CheckAndCompactSession(ctx, agentDir, overrideRuntimeCfg, adkAgent, force, cfgOverride, nil)
+		loadCompactionAgent := func(cfg *RuntimeConfig) (agent.Agent, *int64, error) {
+			if cfg == overrideRuntimeCfg {
+				return adkAgent, nil, nil
+			}
+			// Fallback levels of an explicit runtime_path: build the same no-tools disposable
+			// compaction agent from that level's config so the chain walk works here too.
+			fallbackModel, err := NewModelForRuntime(ctx, cfg, agentID)
+			if err != nil {
+				return nil, nil, err
+			}
+			fallbackAgent, err := BuildADKAgentWithConfig(agentID, expandedPrompt, maxToolTurns, cfg, fallbackModel)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to build disposable ADK agent for compaction fallback of %s: %w", agentID, err)
+			}
+			return fallbackAgent, nil, nil
+		}
+		compacted, err = CheckAndCompactSessionWithFallback(ctx, agentDir, overrideRuntimeCfg, loadCompactionAgent, force, cfgOverride)
 		if err != nil {
 			return nil, err
 		}

@@ -407,7 +407,60 @@ func truncateTurnTextToBudget(text string, budgetChars int) string {
 // once covers all of them. pre-compact and compact-failed run synchronously and never alter
 // or abort compaction (hook failures are logged as warnings only); post-compact runs
 // asynchronously so a slow hook script never taxes the next turn.
+// CheckAndCompactSession checks if the session exceeds contextWindow and performs compaction,
+// preserving the exact session prefix to optimize prompt caching according to D38/D45.
+// force skips the contextWindow/token-estimate gate checks below (D44) - still
+// refuses on a genuinely empty session regardless, since forcing compaction with
+// nothing to compact isn't a testing use case, it's a no-op either way.
+//
+// adkAgent is the calling FolderAgent's real ADK agent (fa.ADKAgent) - already
+// carries the agent's system instruction and tool declarations, so routing the
+// compaction call through it (via a disposable in-memory session + one
+// runner.Run call, D45) sends a request whose shared prefix - system
+// instruction, tools, memory turn, the archived turns - is structurally
+// identical to a real generation call, unlike the hand-built request this
+// used to send directly to an *model.LLM (no Tools, system prompt glued into the
+// message - the cache-prefix identity fix).
+//
+// cfgOverride, when non-nil, replaces the agent's COMPACT.md configuration without
+// reading or modifying it on disk (D83). When nil, LoadCompactConfig(agentDir) is used.
+//
+// toolDenials, when non-nil, is the counter a compaction-scoped agent's BeforeToolCallback
+// increments per denied tool call (D50/CompactionToolDenials). CheckAndCompactSession owns
+// its full lifecycle for this run: reset before the compaction runner executes, read once
+// more for the post-compact hook payload. Pass nil for a no-tools compaction agent, where
+// denials are structurally impossible.
+//
+// Hook lifecycle (pre-compact/post-compact/compact-failed): this function is the single
+// choke point every compaction trigger - the natural token-threshold check, an explicit
+// force from a CLI/RPC call, and a mid-turn short-circuit - routes through, so hooking here
+// once covers all of them. pre-compact and compact-failed run synchronously and never alter
+// or abort compaction (hook failures are logged as warnings only); post-compact runs
+// asynchronously so a slow hook script never taxes the next turn.
+//
+// This is the LOW-LEVEL single-backend entry. The runtime fallback chain is walked by
+// CheckAndCompactSessionWithFallback; this wrapper keeps the pre-fallback API for direct
+// callers (tests, the runtime-path override in CompactSession) by loading one level agent
+// unconditionally.
 func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *RuntimeConfig, adkAgent agent.Agent, force bool, cfgOverride *CompactConfig, toolDenials *int64) (bool, error) {
+	loadCompactionAgent := func(cfg *RuntimeConfig) (agent.Agent, *int64, error) {
+		return adkAgent, toolDenials, nil
+	}
+	return CheckAndCompactSessionWithFallback(ctx, agentDir, runtimeCfg, loadCompactionAgent, force, cfgOverride)
+}
+
+// CheckAndCompactSessionWithFallback is CheckAndCompactSession with the runtime fallback
+// chain walk: it builds the compaction agent per level from each level's cfg/model (mirroring
+// runTurnWithRuntimeFallback's per-level rebuild for normal turns), descends on
+// IsQualifyingFallbackError when NO summary text has been produced yet, skips backends
+// marked failed-until-reset, records quota-reset hints, and reports the serving level's
+// model in the post-compact hook payload.
+//
+// loadCompactionAgent(cfg) must return the deny-tools compaction agent (and its denial
+// counter) for the given RuntimeConfig. The primary level is normally the caller's already-
+// built fa.CompactionAgent; fallback levels call loadFolderAgentFromRuntime (or the caller's
+// equivalent per-level loader) so the model constructor re-runs per provider.
+func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, runtimeCfg *RuntimeConfig, loadCompactionAgent func(cfg *RuntimeConfig) (agent.Agent, *int64, error), force bool, cfgOverride *CompactConfig) (bool, error) {
 	agentID := filepath.Base(agentDir)
 	sessionPath := filepath.Join(agentDir, SessionFileName)
 	trigger := "forced"
@@ -510,12 +563,10 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 	compactTurns := turns[:numToCompact]
 	remainingTurns := turns[numToCompact:]
 
-	// We have now committed to compacting. Reset the denial counter for this run and fire
-	// pre-compact before the compaction runner executes (observe-only - its return value is
-	// discarded, so nothing here can veto or alter what is about to happen).
-	if toolDenials != nil {
-		atomic.StoreInt64(toolDenials, 0)
-	}
+	// We have now committed to compacting. Fire pre-compact before the compaction runner
+	// executes (observe-only - its return value is discarded, so nothing here can veto or
+	// alter what is about to happen). The denial counter for whichever level actually runs
+	// is reset inside the chain loop below, when that level's agent is loaded.
 	runCompactionHookSync(ctx, agentDir, EventPreCompact, PreCompactPayload{
 		AgentID:       agentID,
 		SessionPath:   sessionPath,
@@ -572,27 +623,111 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		}
 	}
 
-	r, err := runner.New(runner.Config{
-		AppName:        "wackypub",
-		Agent:          adkAgent,
-		SessionService: sessionSvc,
-	})
-	if err != nil {
-		return fail("create-runner", fmt.Errorf("failed to create compaction runner: %w", err))
+	// Walk the runtime fallback chain EXACTLY like a normal turn: attempt the primary
+	// level first; on a qualifying error that arrives BEFORE any summary text was
+	// produced, descend to the next level by rebuilding the compaction-scoped agent from
+	// that level's config (the model constructor re-runs per provider, so a degraded
+	// primary cannot block compaction the way it could pre-fallback).
+	//
+	// Mid-stream rule (mirrors the turn path): once ANY summary text has been produced at
+	// a level, a later error is FATAL - descending after text would interleave two
+	// providers' summaries into the memory file (frankenstein memory). Compaction writes
+	// MEMORY.md exactly once, after the winning level completes.
+	//
+	// Backends marked failed-until-reset by a prior turn's 429 are skipped like normal
+	// turns skip them, and a 429 carrying a quota-reset hint records the window for the
+	// next attempt. The post-compact hook payload names the model of the level that
+	// actually served the summary.
+	var lastErr error
+	var servedModel string
+	var addendum string
+	// toolDenials is the denial counter of the level that ACTUALLY ran; the post-compact
+	// payload (below) reads it from the same pointer the deny callback incremented.
+	var servedDenials *int64
+	chain := []*RuntimeConfig{runtimeCfg}
+	if runtimeCfg != nil {
+		chain = runtimeCfg.FallbackChain()
 	}
-
 	directive := genai.NewContentFromText(compactCfg.Prompt, "user")
 
-	var addendum string
-	for event, err := range r.Run(ctx, "user", compactSessionID, directive, agent.RunConfig{}) {
-		if err != nil {
-			return fail("generation", fmt.Errorf("LLM compaction generation failed: %w", err))
+	for level, levelCfg := range chain {
+		if backendFailedUntilReset(levelCfg) {
+			fmt.Fprintf(os.Stderr, "Warning: skipping backend %s/%s for compaction: usage limit not yet reset\n", levelCfg.Endpoint, levelCfg.Model)
+			lastErr = fmt.Errorf("backend %s/%s skipped: usage limit not yet reset", levelCfg.Endpoint, levelCfg.Model)
+			continue
 		}
-		if event != nil {
-			if text := ExtractTextFromEvent(event); text != "" {
-				addendum = text
+
+		compactionAgent, denials, err := loadCompactionAgent(levelCfg)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to load compaction agent for %s/%s: %w", levelCfg.Endpoint, levelCfg.Model, err)
+			if level+1 < len(chain) {
+				fmt.Fprintf(os.Stderr, "Warning: backend %s/%s load failed: %v; falling back\n", levelCfg.Endpoint, levelCfg.Model, err)
+				continue
+			}
+			return fail("load-agent", lastErr)
+		}
+		if denials != nil {
+			atomic.StoreInt64(denials, 0)
+		}
+
+		r, err := runner.New(runner.Config{
+			AppName:        "wackypub",
+			Agent:          compactionAgent,
+			SessionService: sessionSvc,
+		})
+		if err != nil {
+			lastErr = fmt.Errorf("failed to create compaction runner for %s/%s: %w", levelCfg.Endpoint, levelCfg.Model, err)
+			if level+1 < len(chain) {
+				fmt.Fprintf(os.Stderr, "Warning: compaction runner for %s/%s failed: %v; falling back\n", levelCfg.Endpoint, levelCfg.Model, err)
+				continue
+			}
+			return fail("create-runner", lastErr)
+		}
+
+		var levelAddendum string
+		for event, err := range r.Run(ctx, "user", compactSessionID, directive, agent.RunConfig{}) {
+			if err != nil {
+				lastErr = err
+				if resetAt, ok := ParseQuotaResetHint(err); ok {
+					markBackendFailedUntil(levelCfg, resetAt)
+				}
+				if levelAddendum == "" && IsQualifyingFallbackError(err) && level+1 < len(chain) {
+					// Nothing emitted at this level: re-run the summary from scratch on the
+					// next backend is clean - no frankenstein memory risk.
+
+					fmt.Fprintf(os.Stderr, "Warning: compaction backend %s/%s failed: %v; falling back to %s/%s\n", levelCfg.Endpoint, levelCfg.Model, err, chain[level+1].Endpoint, chain[level+1].Model)
+					break
+				}
+				// Text already produced (or non-qualifying, or chain exhausted): fatal.
+				return fail("generation", fmt.Errorf("LLM compaction generation failed on %s/%s: %w", levelCfg.Endpoint, levelCfg.Model, err))
+			}
+			if event != nil {
+				if text := ExtractTextFromEvent(event); text != "" {
+					levelAddendum = text
+				}
 			}
 		}
+		if ctx.Err() != nil {
+			return fail("generation", ctx.Err())
+		}
+		if levelAddendum != "" {
+			// This level succeeded; it is the one whose model we report.
+			addendum = levelAddendum
+			servedModel = levelCfg.Model
+			servedDenials = denials
+			break
+		}
+		// levelAddendum == "" without an error: the level produced nothing (empty response).
+		// Treat as a qualifying failure ONLY if a fallback exists; otherwise fall through.
+		if level+1 == len(chain) {
+			return fail("generation", fmt.Errorf("compaction backend %s/%s returned an empty summary", levelCfg.Endpoint, levelCfg.Model))
+		}
+	}
+	if addendum == "" && lastErr != nil {
+		return fail("generation", fmt.Errorf("LLM compaction generation failed: %w", lastErr))
+	}
+	if addendum == "" && servedModel == "" {
+		return fail("generation", fmt.Errorf("no runtime backend produced a compaction summary"))
 	}
 
 	addendum = strings.TrimSpace(addendum)
@@ -643,13 +778,12 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		fmt.Fprintf(os.Stderr, "Warning: failed to invalidate usage record after compaction for agent %s: %v\n", agentID, err)
 	}
 
-	compactionModel := ""
-	if runtimeCfg != nil {
-		compactionModel = runtimeCfg.Model
-	}
+	// Report the model that ACTUALLY served the summary: the fallback-level model once the
+	// chain walked, not always the primary (was runtimeCfg.Model pre-fallback).
+	compactionModel := servedModel
 	var denials int64
-	if toolDenials != nil {
-		denials = atomic.LoadInt64(toolDenials)
+	if servedDenials != nil {
+		denials = atomic.LoadInt64(servedDenials)
 	}
 	runPostCompactHookAsync(agentDir, PostCompactPayload{
 		AgentID:         agentID,
