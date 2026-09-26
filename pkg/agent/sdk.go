@@ -101,6 +101,16 @@ func (s *AgentSDK) popLastHookEnv(agentID string) map[string]string {
 }
 
 // AgentDir returns the absolute or relative path for an agent folder (<ws_dir>/<agent_id>).
+// agentDirFor returns the agent directory for a request, honoring an explicit
+// per-request workspace root override (stdio service mode); empty wsDir falls
+// back to the SDK's configured workspace.
+func agentDirFor(wsDir string, s *AgentSDK, agentID string) string {
+	if wsDir != "" {
+		return filepath.Join(wsDir, agentID)
+	}
+	return s.AgentDir(agentID)
+}
+
 func (s *AgentSDK) AgentDir(agentID string) string {
 	return filepath.Join(s.WorkspaceDir, agentID)
 }
@@ -451,7 +461,15 @@ func (s *AgentSDK) runTurnWithRuntimeFallback(
 
 // generateTurnStreamImpl loads the folder agent and generates the assistant turn yielding text chunks as they arrive.
 // Holds the session lock for the entire duration of the stream.
+//
+// workspaceDir, when non-empty, is the workspace root the turn runs against
+// (per-request override for the stdio service mode); empty defaults to the
+// SDK's configured workspace.
 func (s *AgentSDK) generateTurnStreamImpl(ctx context.Context, agentID string) iter.Seq2[string, error] {
+	return s.generateTurnStreamImplWorkspace(ctx, "", agentID)
+}
+
+func (s *AgentSDK) generateTurnStreamImplWorkspace(ctx context.Context, workspaceDir, agentID string) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		if agentID == "" {
 			yield("", fmt.Errorf("agentID cannot be empty"))
@@ -465,6 +483,9 @@ func (s *AgentSDK) generateTurnStreamImpl(ctx context.Context, agentID string) i
 		}
 
 		agentDir := s.AgentDir(agentID)
+		if workspaceDir != "" {
+			agentDir = filepath.Join(workspaceDir, agentID)
+		}
 		lock, err := AcquireSessionLockContext(ctx, agentDir)
 		if err != nil {
 			yield("", fmt.Errorf("failed to acquire session lock: %w", err))
@@ -475,8 +496,12 @@ func (s *AgentSDK) generateTurnStreamImpl(ctx context.Context, agentID string) i
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer registerInFlightTurn(agentID, cancel)()
 
+		wsDir := s.WorkspaceDir
+		if workspaceDir != "" {
+			wsDir = workspaceDir
+		}
 		hookEnv := s.popLastHookEnv(agentID)
-		primary, err := LoadFolderAgentWithHookEnvWithSink(s.WorkspaceDir, agentID, a2aMeta, hookEnv, s.MaxToolTurns, toolEventsFromCtx(turnCtx), s.CommandTimeoutSeconds)
+		primary, err := LoadFolderAgentWithHookEnvWithSink(wsDir, agentID, a2aMeta, hookEnv, s.MaxToolTurns, toolEventsFromCtx(turnCtx), s.CommandTimeoutSeconds)
 		if err != nil {
 			yield("", fmt.Errorf("failed to load agent %q: %w", agentID, err))
 			return
@@ -484,7 +509,7 @@ func (s *AgentSDK) generateTurnStreamImpl(ctx context.Context, agentID string) i
 		chain := primary.RuntimeConfig.FallbackChain()
 
 		load := func(cfg *RuntimeConfig) (*FolderAgent, error) {
-			return loadFolderAgentFromRuntime(primary.AgentDir, s.WorkspaceDir, agentID, a2aMeta, hookEnv, cfg, primary.DotEnv, s.MaxToolTurns, primary.ToolEvents, s.CommandTimeoutSeconds)
+			return loadFolderAgentFromRuntime(primary.AgentDir, wsDir, agentID, a2aMeta, hookEnv, cfg, primary.DotEnv, s.MaxToolTurns, primary.ToolEvents, s.CommandTimeoutSeconds)
 		}
 		s.runTurnWithRuntimeFallback(turnCtx, agentID, primary, chain, load,
 			func(fa *FolderAgent) iter.Seq2[string, error] { return fa.GenerateTurnStream(turnCtx) },
@@ -500,6 +525,10 @@ func (s *AgentSDK) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, st
 	agentID := ""
 	if req != nil {
 		agentID = req.GetAgentId()
+	}
+	wsDir := ""
+	if req != nil {
+		wsDir = req.GetWorkspaceDir()
 	}
 	sink := NewToolEventSink()
 	sink.SetSeqAlloc(func() int64 {
@@ -525,7 +554,7 @@ func (s *AgentSDK) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, st
 	items := make(chan genItem, 8)
 	go func() {
 		defer close(items)
-		for chunk, err := range s.generateTurnStreamImpl(ctx, agentID) {
+		for chunk, err := range s.generateTurnStreamImplWorkspace(ctx, wsDir, agentID) {
 			select {
 			case items <- genItem{chunk: chunk, err: err}:
 			case <-ctx.Done():
@@ -601,7 +630,11 @@ func (s *AgentSDK) GenerateTurn(ctx context.Context, req *agentv1.GenerateTurnRe
 	if req != nil {
 		agentID = req.GetAgentId()
 	}
-	text, err := s.generateTurnImpl(ctx, agentID)
+	wsDir := ""
+	if req != nil {
+		wsDir = req.GetWorkspaceDir()
+	}
+	text, err := s.generateTurnImplWorkspace(ctx, wsDir, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -611,8 +644,12 @@ func (s *AgentSDK) GenerateTurn(ctx context.Context, req *agentv1.GenerateTurnRe
 // generateTurnImpl loads the folder agent, checks for compaction, generates the next assistant turn,
 // and returns the full assistant text joined across chunks with \n\n.
 func (s *AgentSDK) generateTurnImpl(ctx context.Context, agentID string) (string, error) {
+	return s.generateTurnImplWorkspace(ctx, "", agentID)
+}
+
+func (s *AgentSDK) generateTurnImplWorkspace(ctx context.Context, workspaceDir, agentID string) (string, error) {
 	var chunks []string
-	for chunk, err := range s.generateTurnStreamImpl(ctx, agentID) {
+	for chunk, err := range s.generateTurnStreamImplWorkspace(ctx, workspaceDir, agentID) {
 		if err != nil {
 			return "", err
 		}
@@ -630,6 +667,12 @@ func (s *AgentSDK) generateTurnImpl(ctx context.Context, agentID string) (string
 // response chunks as they arrive under a single lock. Hook warnings are surfaced via the
 // optional onWarning callback(s) rather than emitted into the text stream.
 func (s *AgentSDK) addAndGenerateTurnStreamImpl(ctx context.Context, agentID string, userMessage string, onWarning ...func(string)) iter.Seq2[string, error] {
+	return s.addAndGenerateTurnStreamImplWorkspace(ctx, "", agentID, userMessage, onWarning...)
+}
+
+// addAndGenerateTurnStreamImplWorkspace is addAndGenerateTurnStreamImpl against an
+// explicit workspace root; empty workspaceDir falls back to the SDK default.
+func (s *AgentSDK) addAndGenerateTurnStreamImplWorkspace(ctx context.Context, workspaceDir, agentID, userMessage string, onWarning ...func(string)) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		if agentID == "" {
 			yield("", fmt.Errorf("agentID cannot be empty"))
@@ -647,6 +690,9 @@ func (s *AgentSDK) addAndGenerateTurnStreamImpl(ctx context.Context, agentID str
 		}
 
 		agentDir := s.AgentDir(agentID)
+		if workspaceDir != "" {
+			agentDir = filepath.Join(workspaceDir, agentID)
+		}
 		if err := os.MkdirAll(agentDir, 0755); err != nil {
 			yield("", fmt.Errorf("failed to create agent directory %s: %w", agentDir, err))
 			return
@@ -687,7 +733,11 @@ func (s *AgentSDK) addAndGenerateTurnStreamImpl(ctx context.Context, agentID str
 		// 2. Load Folder Agent & Stream Assistant Turn, walking the runtime fallback chain.
 		// The user turn is already appended above; fallback levels only re-run generation
 		// against the same session, never re-append the user message.
-		primary, err := LoadFolderAgentWithHookEnvWithSink(s.WorkspaceDir, agentID, a2aMeta, hookEnv, s.MaxToolTurns, toolEventsFromCtx(turnCtx), s.CommandTimeoutSeconds)
+		wsDir := s.WorkspaceDir
+		if workspaceDir != "" {
+			wsDir = workspaceDir
+		}
+		primary, err := LoadFolderAgentWithHookEnvWithSink(wsDir, agentID, a2aMeta, hookEnv, s.MaxToolTurns, toolEventsFromCtx(turnCtx), s.CommandTimeoutSeconds)
 		if err != nil {
 			yield("", fmt.Errorf("failed to load agent %q: %w", agentID, err))
 			return
@@ -695,7 +745,7 @@ func (s *AgentSDK) addAndGenerateTurnStreamImpl(ctx context.Context, agentID str
 		chain := primary.RuntimeConfig.FallbackChain()
 
 		load := func(cfg *RuntimeConfig) (*FolderAgent, error) {
-			return loadFolderAgentFromRuntime(primary.AgentDir, s.WorkspaceDir, agentID, a2aMeta, hookEnv, cfg, primary.DotEnv, s.MaxToolTurns, primary.ToolEvents, s.CommandTimeoutSeconds)
+			return loadFolderAgentFromRuntime(primary.AgentDir, wsDir, agentID, a2aMeta, hookEnv, cfg, primary.DotEnv, s.MaxToolTurns, primary.ToolEvents, s.CommandTimeoutSeconds)
 		}
 		s.runTurnWithRuntimeFallback(turnCtx, agentID, primary, chain, load,
 			func(fa *FolderAgent) iter.Seq2[string, error] { return fa.GenerateTurnStream(turnCtx) },
@@ -908,9 +958,13 @@ type GenerateTurnResult struct {
 // addAndGenerateTurnImpl atomically appends a user message and generates the assistant
 // response under a single lock. Hook warnings are collected and returned on GenerateTurnResult.
 func (s *AgentSDK) addAndGenerateTurnImpl(ctx context.Context, agentID string, userMessage string) (*GenerateTurnResult, error) {
+	return s.addAndGenerateTurnImplWorkspace(ctx, "", agentID, userMessage)
+}
+
+func (s *AgentSDK) addAndGenerateTurnImplWorkspace(ctx context.Context, workspaceDir, agentID, userMessage string) (*GenerateTurnResult, error) {
 	var warnings []string
 	var chunks []string
-	for chunk, err := range s.addAndGenerateTurnStreamImpl(ctx, agentID, userMessage, func(w string) {
+	for chunk, err := range s.addAndGenerateTurnStreamImplWorkspace(ctx, workspaceDir, agentID, userMessage, func(w string) {
 		warnings = append(warnings, w)
 	}) {
 		if err != nil {
@@ -942,6 +996,10 @@ func (s *AgentSDK) AddAndGenerateTurnStream(req *agentv1.AddAndGenerateTurnStrea
 	userMsg := ""
 	if req != nil {
 		userMsg = req.GetUserMessage()
+	}
+	wsDir := ""
+	if req != nil {
+		wsDir = req.GetWorkspaceDir()
 	}
 	sink := NewToolEventSink()
 	sink.SetSeqAlloc(func() int64 {
@@ -976,7 +1034,7 @@ func (s *AgentSDK) AddAndGenerateTurnStream(req *agentv1.AddAndGenerateTurnStrea
 			case <-ctx.Done():
 			}
 		}
-		for chunk, err := range s.addAndGenerateTurnStreamImpl(ctx, agentID, userMsg, onWarning) {
+		for chunk, err := range s.addAndGenerateTurnStreamImplWorkspace(ctx, wsDir, agentID, userMsg, onWarning) {
 			select {
 			case items <- aagItem{chunk: chunk, err: err}:
 			case <-ctx.Done():
@@ -1081,7 +1139,11 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, req *agentv1.AddAndGe
 	if req != nil {
 		userMsg = req.GetUserMessage()
 	}
-	result, err := s.addAndGenerateTurnImpl(ctx, agentID, userMsg)
+	wsDir := ""
+	if req != nil {
+		wsDir = req.GetWorkspaceDir()
+	}
+	result, err := s.addAndGenerateTurnImplWorkspace(ctx, wsDir, agentID, userMsg)
 	if err != nil {
 		return nil, err
 	}
@@ -1459,8 +1521,12 @@ func (s *AgentSDK) CreateScratchpad(ctx context.Context, req *agentv1.CreateScra
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
 	text := req.GetText()
-	if text == "" {
+	data := req.GetData()
+	if text == "" && len(data) == 0 {
 		return nil, fmt.Errorf("scratchpad content cannot be empty")
+	}
+	if text != "" && len(data) > 0 {
+		return nil, fmt.Errorf("scratchpad text and data are mutually exclusive")
 	}
 
 	if _, err := ValidateAgentTarget(agentID); err != nil {
@@ -1476,7 +1542,13 @@ func (s *AgentSDK) CreateScratchpad(ctx context.Context, req *agentv1.CreateScra
 	if createdBy == "" {
 		createdBy = "cli"
 	}
-	entry, err := CreateScratchpad(agentDir, text, createdBy)
+	var entry *ScratchpadEntry
+	var err error
+	if len(data) > 0 {
+		entry, err = CreateBinaryScratchpad(agentDir, data, createdBy, req.GetMimeType())
+	} else {
+		entry, err = CreateScratchpad(agentDir, text, createdBy)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1856,12 +1928,12 @@ func (s *AgentSDK) InspectSessionContext(ctx context.Context, req *agentv1.Inspe
 	}
 
 	if lastUsage, err := ReadLastUsage(agentDir); err == nil && lastUsage != nil {
+		// Compacted marks these as predating the last compaction. They stay visible so a
+		// test or an operator can see the reading a decision was actually made on.
 		resp.Compacted = lastUsage.Compacted
-		if !lastUsage.Compacted {
-			resp.LastPromptTokens = lastUsage.PromptTokens
-			resp.LastCandidatesTokens = lastUsage.CandidatesTokens
-			resp.LastTotalTokens = lastUsage.TotalTokens
-		}
+		resp.LastPromptTokens = lastUsage.PromptTokens
+		resp.LastCandidatesTokens = lastUsage.CandidatesTokens
+		resp.LastTotalTokens = lastUsage.TotalTokens
 	}
 
 	return resp, nil

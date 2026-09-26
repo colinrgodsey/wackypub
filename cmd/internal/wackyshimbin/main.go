@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -13,66 +12,9 @@ import (
 	"time"
 
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
+	"github.com/colinrgodsey/wackypub/pkg/stdio"
 	"google.golang.org/grpc"
 )
-
-type fixedConnListener struct {
-	conn net.Conn
-	used bool
-}
-
-func (l *fixedConnListener) Accept() (net.Conn, error) {
-	if l.used {
-		select {} // block forever
-	}
-	l.used = true
-	return l.conn, nil
-}
-
-func (l *fixedConnListener) Close() error   { return nil }
-func (l *fixedConnListener) Addr() net.Addr { return stdioAddr{} }
-
-type stdioAddr struct{}
-
-func (stdioAddr) Network() string { return "stdio" }
-func (stdioAddr) String() string  { return "stdio" }
-
-type serverStdioConn struct {
-	stdin    *os.File
-	stdout   *os.File
-	behavior string
-}
-
-func (c *serverStdioConn) Read(b []byte) (int, error) {
-	n, err := c.stdin.Read(b)
-	if err != nil && !strings.HasPrefix(c.behavior, "slow-exit=") {
-		go func() {
-			time.Sleep(20 * time.Millisecond)
-			os.Exit(0)
-		}()
-	}
-	return n, err
-}
-
-func (c *serverStdioConn) Write(b []byte) (int, error) { return c.stdout.Write(b) }
-
-func (c *serverStdioConn) Close() error {
-	_ = c.stdin.Close()
-	_ = c.stdout.Close()
-	if !strings.HasPrefix(c.behavior, "slow-exit=") {
-		go func() {
-			time.Sleep(20 * time.Millisecond)
-			os.Exit(0)
-		}()
-	}
-	return nil
-}
-
-func (c *serverStdioConn) LocalAddr() net.Addr                { return stdioAddr{} }
-func (c *serverStdioConn) RemoteAddr() net.Addr               { return stdioAddr{} }
-func (c *serverStdioConn) SetDeadline(t time.Time) error      { return nil }
-func (c *serverStdioConn) SetReadDeadline(t time.Time) error  { return c.stdin.SetReadDeadline(t) }
-func (c *serverStdioConn) SetWriteDeadline(t time.Time) error { return c.stdout.SetWriteDeadline(t) }
 
 type shimImpl struct {
 	agentv1.UnimplementedAgentServiceServer
@@ -173,12 +115,16 @@ func main() {
 		}()
 	}
 
-	conn := &serverStdioConn{stdin: os.Stdin, stdout: os.Stdout, behavior: *behavior}
 	srv := grpc.NewServer()
 	agentv1.RegisterAgentServiceServer(srv, &shimImpl{behavior: *behavior})
+	conn := stdio.NewConn(os.Stdin, os.Stdout)
 
-	if err := srv.Serve(&fixedConnListener{conn: conn}); err != nil {
-		fmt.Fprintf(os.Stderr, "shim server error: %v\n", err)
+	// ServeContext returns when the client closes stdin (EOF) or cancels; the
+	// shim then exits like the product stdio service mode (per-call lifecycle).
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := stdio.ServeContext(ctx, srv, conn); err != nil {
+		fmt.Fprintf(os.Stderr, "shim serve error: %v\n", err)
 		os.Exit(1)
 	}
 }

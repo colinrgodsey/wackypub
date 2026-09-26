@@ -735,48 +735,54 @@ func (fa *FolderAgent) appendDeferredImages(wsDir string, deferredScratchpadIDs 
 
 // checkPostTurnCompaction runs post-turn compaction if real token usage or estimated usage exceeds threshold (D68, D88).
 func (fa *FolderAgent) checkPostTurnCompaction(ctx context.Context, wsDir string) {
-	if fa.RuntimeConfig != nil && fa.RuntimeConfig.ContextWindow > 0 {
-		compactCfg, err := LoadCompactConfig(fa.AgentDir)
-		overheadPct := DefaultCompactionOverheadPct
-		if err == nil && compactCfg != nil {
-			if compactCfg.CompactOverheadPct >= 0 && compactCfg.CompactOverheadPct < 100 {
-				overheadPct = compactCfg.CompactOverheadPct
-			}
-		}
-		threshold := int(float64(fa.RuntimeConfig.ContextWindow) * (1.0 - (overheadPct / 100.0)))
+	if fa.RuntimeConfig == nil || fa.RuntimeConfig.ContextWindow <= 0 {
+		return
+	}
+	budget := contextBudget(fa.RuntimeConfig.ContextWindow, fa.RuntimeConfig.MaxOutputReserve, resolveOverheadPct(fa.AgentDir))
 
-		var usedTokens int
-		if fa.UsageTracker != nil && (fa.UsageTracker.LastTotalTokens > 0 || fa.UsageTracker.LastPromptTokens > 0) {
-			if fa.UsageTracker.LastTotalTokens > 0 {
-				usedTokens = int(fa.UsageTracker.LastTotalTokens)
-			} else {
-				usedTokens = int(fa.UsageTracker.LastPromptTokens)
-			}
-			// D93: Persist real turn usage for context inspection and cold-start compaction.
-			// A silent failure here makes the next process fall back to EstimateTokens, which runs
-			// 26-39% low, so the compaction warning fires late with no way to tell it happened.
-			if err := WriteLastUsage(fa.AgentDir, &LastUsageRecord{
-				PromptTokens:     fa.UsageTracker.LastPromptTokens,
-				CandidatesTokens: fa.UsageTracker.LastCandidatesTokens,
-				TotalTokens:      fa.UsageTracker.LastTotalTokens,
-				Timestamp:        time.Now(),
-			}); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to persist usage record for agent %s (compaction estimate will fall back to token estimation): %v\n", fa.AgentID, err)
-			}
+	// Same quantity as the mid-turn stop: provider prompt tokens when a fresh reading
+	// exists, calibrated estimate otherwise. This used to compare provider TOTAL
+	// tokens, which counts the reply as occupied context and made the stop and the
+	// compaction it triggers disagree about how full the window is.
+	var providerTokens int64
+	if fa.UsageTracker != nil && (fa.UsageTracker.LastTotalTokens > 0 || fa.UsageTracker.LastPromptTokens > 0) {
+		// D93: Persist real turn usage for context inspection and cold-start compaction.
+		// A silent failure here makes the next process fall back to EstimateTokens, which runs
+		// 26-39% low, so the compaction warning fires late with no way to tell it happened.
+		if err := WriteLastUsage(fa.AgentDir, &LastUsageRecord{
+			PromptTokens:     fa.UsageTracker.LastPromptTokens,
+			CandidatesTokens: fa.UsageTracker.LastCandidatesTokens,
+			TotalTokens:      fa.UsageTracker.LastTotalTokens,
+			Timestamp:        time.Now(),
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to persist usage record for agent %s (compaction estimate will fall back to token estimation): %v\n", fa.AgentID, err)
+		}
+		// Total, not prompt: this decision is about the NEXT call, whose input is
+		// roughly this call's prompt plus its reply. The mid-turn stop asks about the
+		// call in flight and so reads the prompt side. Different questions, one ceiling.
+		if fa.UsageTracker.LastTotalTokens > 0 {
+			providerTokens = int64(fa.UsageTracker.LastTotalTokens)
 		} else {
-			if curTurns, err := ReadSessionTurns(fa.AgentDir); err == nil {
-				usedTokens = EstimateTokens(curTurns, fa.RuntimeConfig.PreserveThinking)
-			}
+			providerTokens = int64(fa.UsageTracker.LastPromptTokens)
 		}
+	}
 
-		if usedTokens >= threshold {
-			if fa.UsageTracker != nil {
-				fa.UsageTracker.Reset()
-			}
-			_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: post-turn session compaction error: %v\n", err)
-			}
+	var measureTurns []*genai.Content
+	if providerTokens <= 0 {
+		curTurns, err := ReadSessionTurns(fa.AgentDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to read session turns for the post-turn compaction check for agent %s: %v\n", fa.AgentID, err)
+		}
+		measureTurns = curTurns
+	}
+	used, _ := contextUsed(providerTokens, measureTurns, fa.RuntimeConfig.PreserveThinking)
+
+	if exceedsBudget(used, budget) {
+		if fa.UsageTracker != nil {
+			fa.UsageTracker.Reset()
+		}
+		if _, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: post-turn session compaction error: %v\n", err)
 		}
 	}
 }
@@ -786,15 +792,9 @@ func (fa *FolderAgent) checkColdStartCompaction(ctx context.Context, turns []*ge
 	if fa.RuntimeConfig == nil || fa.RuntimeConfig.ContextWindow <= 0 {
 		return turns, lastMemory, nil
 	}
-	compactCfg, err := LoadCompactConfig(fa.AgentDir)
-	overheadPct := DefaultCompactionOverheadPct
-	if err == nil && compactCfg != nil {
-		if compactCfg.CompactOverheadPct >= 0 && compactCfg.CompactOverheadPct < 100 {
-			overheadPct = compactCfg.CompactOverheadPct
-		}
-	}
-	threshold := int(float64(fa.RuntimeConfig.ContextWindow) * (1.0 - (overheadPct / 100.0)))
-	if EstimateTokens(turns, fa.RuntimeConfig.PreserveThinking) >= threshold {
+	budget := contextBudget(fa.RuntimeConfig.ContextWindow, fa.RuntimeConfig.MaxOutputReserve, resolveOverheadPct(fa.AgentDir))
+	used, _ := contextUsed(0, turns, fa.RuntimeConfig.PreserveThinking)
+	if exceedsBudget(used, budget) {
 		compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: cold-start session compaction error: %v\n", err)
@@ -828,7 +828,8 @@ func (fa *FolderAgent) compactForContinuation(ctx context.Context, yield func(st
 		yield(fmt.Sprintf("\n\n[Auto-continuation aborted: failed to read session turns: %v - incomplete status.]", err), nil)
 		return false
 	}
-	tokensBefore := EstimateTokens(beforeTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
+	preserveThinking := fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking
+	usedBefore, sourceBefore := contextUsed(0, beforeTurns, preserveThinking)
 
 	if fa.UsageTracker != nil {
 		fa.UsageTracker.Reset()
@@ -845,15 +846,33 @@ func (fa *FolderAgent) compactForContinuation(ctx context.Context, yield func(st
 		yield(fmt.Sprintf("\n\n[Auto-continuation aborted: failed to read session turns: %v - incomplete status.]", err), nil)
 		return false
 	}
-	tokensAfter := EstimateTokens(afterTurns, fa.RuntimeConfig != nil && fa.RuntimeConfig.PreserveThinking)
+	usedAfter, _ := contextUsed(0, afterTurns, preserveThinking)
 
-	hasReduction := len(afterTurns) < len(beforeTurns) || tokensAfter < tokensBefore
+	hasReduction := len(afterTurns) < len(beforeTurns) || usedAfter < usedBefore
 	if !compacted || !hasReduction {
 		// Fail-safe abort: If a mid-turn bail occurs but compaction fails or produces no reduction,
 		// auto-continuation aborts with an incomplete status rather than re-tripping the context budget in an infinite loop.
+		// TODO(tasks/wackypub/compaction-warning-false-positive): this branch no longer
+		// has a dedicated end-to-end assertion. The D101 fixture that used to pin it
+		// turns out to reduce, just not enough to fit, so it now reports insufficiency.
+		// Rebuild a true no-reduction fixture when this branch is next touched.
 		fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction produced no reduction (session may exceed safe read limits)\n")
 		yield("\n\n[Auto-continuation aborted: session compaction produced no reduction - incomplete status.]", nil)
 		return false
+	}
+	// The session shrank, but shrinking is not the goal: it has to fit. Comparing
+	// against the same budget the stop used is what makes "stopped" and "recovered"
+	// agree instead of contradicting each other on the next turn.
+	if fa.RuntimeConfig != nil {
+		budget := contextBudget(fa.RuntimeConfig.ContextWindow, fa.RuntimeConfig.MaxOutputReserve, resolveOverheadPct(fa.AgentDir))
+		// Guarded on a positive budget on purpose, unlike the stop sites: a zero
+		// budget there means compact immediately, but here it would refuse every
+		// continuation in a toy-sized window that has no real ceiling to miss.
+		if budget > 0 && usedAfter >= int64(budget) {
+			fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction left the session at %d tokens (measured by %s) against a %d token budget\n", usedAfter, sourceBefore, budget)
+			yield(fmt.Sprintf("\n\n[Auto-continuation aborted: compaction insufficient - session still at %d tokens against a %d token budget.]", usedAfter, budget), nil)
+			return false
+		}
 	}
 	return true
 }

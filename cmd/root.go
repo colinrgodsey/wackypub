@@ -26,6 +26,9 @@ var (
 	BundledA2ASkill string
 	// BundledWSSkill holds embedded skills/wackypub-ws/SKILL.md text passed from main.go (D34).
 	BundledWSSkill string
+	// BundledScratchpadSkill holds embedded skills/scratchpad-efficiency/SKILL.md text
+	// passed from main.go, so that "wackypub skill scratchpad" resolves like the others.
+	BundledScratchpadSkill string
 )
 
 // bundledSkill pairs the short name accepted by "wackypub skill <name>" with the
@@ -47,13 +50,18 @@ func bundledSkills() ([]bundledSkill, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse bundled ws skill: %w", err)
 	}
+	scratchpad, err := adkAgent.ParseSkillContent(BundledScratchpadSkill, "scratchpad-efficiency")
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse bundled scratchpad skill: %w", err)
+	}
 	return []bundledSkill{
 		{ShortName: "a2a", Skill: a2a},
 		{ShortName: "ws", Skill: ws},
+		{ShortName: "scratchpad", Skill: scratchpad},
 	}, nil
 }
 
-// GetSkillContent resolves and returns skill guidance by name (a2a, ws).
+// GetSkillContent resolves and returns skill guidance by name (a2a, ws, scratchpad).
 func GetSkillContent(name string) (string, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	switch name {
@@ -61,17 +69,20 @@ func GetSkillContent(name string) (string, error) {
 		return BundledA2ASkill, nil
 	case "ws", "workspace", "wackypub-ws":
 		return BundledWSSkill, nil
+	case "scratchpad", "scratchpad-efficiency":
+		return BundledScratchpadSkill, nil
 	default:
-		return "", fmt.Errorf("unknown skill %q. Available skills: a2a, ws", name)
+		return "", fmt.Errorf("unknown skill %q. Available skills: a2a, ws, scratchpad", name)
 	}
 }
 
 var skillCmd = &cobra.Command{
-	Use:   "skill [a2a|ws]",
+	Use:   "skill [a2a|ws|scratchpad]",
 	Short: "List bundled WackyPub skills, or print one - if you're an agent, you'll want to load one of these",
 	Long: `With no argument, lists the bundled WackyPub skills (name and description) and exits.
-With a name (a2a or ws), prints that skill's full guidance (skills/wackypub-a2a/SKILL.md or
-skills/wackypub-ws/SKILL.md) directly to stdout.
+With a name (a2a, ws, or scratchpad), prints that skill's full guidance
+(skills/wackypub-a2a/SKILL.md, skills/wackypub-ws/SKILL.md, or
+skills/scratchpad-efficiency/SKILL.md) directly to stdout.
 
 If you're an agent driving this CLI cold, "wackypub skill" is a reasonable first move.`,
 	Args: cobra.MaximumNArgs(1),
@@ -83,7 +94,7 @@ If you're an agent driving this CLI cold, "wackypub skill" is a reasonable first
 			}
 			fmt.Println("Available skills:")
 			for _, sk := range skills {
-				fmt.Printf("  %-4s  %s\n", sk.ShortName, sk.Skill.Description)
+				fmt.Printf("  %-10s  %s\n", sk.ShortName, sk.Skill.Description)
 			}
 			fmt.Println(`Run "wackypub skill <name>" to print one.`)
 			return nil
@@ -181,4 +192,5 @@ func init() {
 	RootCmd.PersistentFlags().IntVar(&maxToolTurns, "max-tool-turns", adkAgent.DefaultMaxToolTurns, "Maximum consecutive tool-call turns allowed per generation")
 	RootCmd.PersistentFlags().IntVar(&commandTimeoutSeconds, "command-timeout-seconds", adkAgent.DefaultCommandTimeoutSeconds, "Maximum execution timeout in seconds for tool commands (-1 to disable)")
 	RootCmd.AddCommand(skillCmd)
+	RootCmd.AddCommand(stdioServeCmd)
 }

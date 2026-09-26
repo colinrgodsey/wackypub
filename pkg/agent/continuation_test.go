@@ -928,7 +928,7 @@ func TestD101_ErrorTransparency_CompactionError(t *testing.T) {
 	}
 }
 
-func TestD101_ErrorTransparency_NoReduction(t *testing.T) {
+func TestD101_ErrorTransparency_InsufficientReduction(t *testing.T) {
 	wsDir := t.TempDir()
 	agentID := "d101-no-reduction"
 	agentDir := filepath.Join(wsDir, agentID)
@@ -1017,11 +1017,18 @@ func TestD101_ErrorTransparency_NoReduction(t *testing.T) {
 		t.Fatalf("GenerateTurn failed: %v", err)
 	}
 
-	if !strings.Contains(stderrOut, "Warning: auto-continuation compaction produced no reduction (session may exceed safe read limits)") {
-		t.Errorf("expected stderr to contain 'Warning: auto-continuation compaction produced no reduction', got: %q", stderrOut)
+	// This scenario does shrink the session, just nowhere near enough to fit the
+	// budget. Under one shared ceiling that is reported as insufficiency instead of
+	// the generic no-reduction text, which reserved that wording for when nothing
+	// came off at all.
+	if !strings.Contains(stderrOut, "auto-continuation compaction left the session at") {
+		t.Errorf("expected the insufficient-compaction warning, got: %q", stderrOut)
 	}
-	if !strings.Contains(resp, "[Auto-continuation aborted: session compaction produced no reduction - incomplete status.]") {
-		t.Errorf("expected response to contain '[Auto-continuation aborted: session compaction produced no reduction - incomplete status.]', got: %q", resp)
+	if !strings.Contains(resp, "compaction insufficient - session still at") {
+		t.Errorf("expected the insufficient status, got: %q", resp)
+	}
+	if strings.Contains(resp, "produced no reduction") {
+		t.Errorf("this scenario does reduce, so no-reduction is the wrong diagnosis: %q", resp)
 	}
 }
 

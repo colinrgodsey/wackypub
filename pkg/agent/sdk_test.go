@@ -418,7 +418,12 @@ func TestD93_InspectSessionContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InspectSessionContext failed: %v", err)
 	}
-	if !rep4.GetCompacted() || rep4.GetLastTotalTokens() != 0 {
-		t.Errorf("expected compacted invalidation reflected: %+v", rep4)
+	// Compaction marks the record stale but keeps the reading. Hiding these behind
+	// the compacted flag is what made a compaction warning impossible to trace.
+	if !rep4.GetCompacted() {
+		t.Errorf("expected compacted marker: %+v", rep4)
+	}
+	if rep4.GetLastTotalTokens() != 1750 || rep4.GetLastPromptTokens() != 1500 {
+		t.Errorf("expected the deciding numbers preserved after invalidation: %+v", rep4)
 	}
 }

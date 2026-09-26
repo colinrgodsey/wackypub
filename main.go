@@ -13,6 +13,9 @@ var bundledA2ASkill string
 //go:embed skills/wackypub-ws/SKILL.md
 var bundledWSSkill string
 
+//go:embed skills/scratchpad-efficiency/SKILL.md
+var bundledScratchpadSkill string
+
 // bundledDefaultCompactMD is examples/compaction/COMPACT-append.md, the default
 // compaction directive shipped in the binary (D45). Assigned directly into pkg/agent's
 // own DefaultCompactMD var rather than staying at the cmd layer like the two
@@ -32,6 +35,7 @@ var bundledDefaultRuntimeJSON string
 func main() {
 	cmd.BundledA2ASkill = bundledA2ASkill
 	cmd.BundledWSSkill = bundledWSSkill
+	cmd.BundledScratchpadSkill = bundledScratchpadSkill
 	adkAgent.DefaultCompactMD = bundledDefaultCompactMD
 	adkAgent.DefaultRuntimeJSON = bundledDefaultRuntimeJSON
 	cmd.Execute()
