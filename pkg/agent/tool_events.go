@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -46,9 +44,6 @@ type ToolEvent struct {
 type ToolEventSink struct {
 	mu     sync.Mutex
 	events []ToolEvent
-	// journalPath, when set, appends every completed event to a JSONL tool journal on disk
-	// (stream announces; journal preserves the evidence trail).
-	journalPath string
 	// notify is a buffered(1) push signal fired on every record so stream handlers can wake
 	// and drain mid-tool (liveness): the announce becomes observable before tool completion.
 	notify chan struct{}
@@ -56,16 +51,9 @@ type ToolEventSink struct {
 	seqAlloc func() int64
 }
 
-// NewToolEventSink returns a sink with no journal backing.
+// NewToolEventSink returns an in-memory sink for tool lifecycle events.
 func NewToolEventSink() *ToolEventSink {
 	return &ToolEventSink{notify: make(chan struct{}, 1)}
-}
-
-// NewToolEventSinkWithJournal returns a sink that appends completed/denied events to a
-// JSONL journal at the given path (created on first write). Event ordering on the wire is
-// unchanged; the journal is a preservation side-effect.
-func NewToolEventSinkWithJournal(journalPath string) *ToolEventSink {
-	return &ToolEventSink{journalPath: journalPath, notify: make(chan struct{}, 1)}
 }
 
 // SetSeqAlloc configures the sequence number allocator for events recorded by this sink.
@@ -145,25 +133,6 @@ func (s *ToolEventSink) record(ev ToolEvent) {
 	case s.notify <- struct{}{}:
 	default:
 	}
-	if s.journalPath != "" {
-		s.appendJournal(ev)
-	}
-}
-
-// appendJournal persists the compact form. Best-effort: a failed journal write must never
-// fail the turn - the stream already carries the event.
-func (s *ToolEventSink) appendJournal(ev ToolEvent) {
-	data, err := json.Marshal(ev)
-	if err != nil {
-		return
-	}
-	f, err := os.OpenFile(s.journalPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.Write(append(data, '\n'))
-	NotifySessionActivity(filepath.Dir(s.journalPath))
 }
 
 // newToolCallID returns a short random identifier pairing announce with update.
@@ -279,25 +248,6 @@ func buildResultSummary(result map[string]any) (bytes int64, head string) {
 	return
 }
 
-// toolJournalPath returns the compact journal path for an agent directory.
-//
-// The journal is not a second copy of the session. Three things the replay surface
-// serves have no session equivalent: a compaction event recorded when the notice is
-// opted out (compaction.go), which by definition writes no turn; tool lifecycle for
-// turns that compaction later archives out of session.jsonl, kept here as rows that
-// are hidden at read rather than pruned; and the bounded projection itself, since a
-// journal row holds the redacted args and truncated result head that are safe to
-// hand a watcher while the session holds the raw untruncated parts. Serving tool
-// events straight from session turns would mean re-deriving that projection in the
-// read path and duplicating the redaction rules there.
-//
-// It exists to back the durable event replay in tasks/wackypub/retire-session-watch.
-// If that replay is ever rebuilt over session turns alone, this sidecar is dead
-// weight and should be removed with it.
-func toolJournalPath(agentDir string) string {
-	return filepath.Join(agentDir, "tool-journal.jsonl")
-}
-
 // toolEventsKey is the context key carrying the per-turn ToolEventSink (D112 tool-call
 // visibility). Stream handlers wrap their turn context; impls read it to attach the sink
 // to the loaded FolderAgent. Absent = no visibility events (legacy/non-streaming paths).
@@ -366,46 +316,4 @@ func redactSecretValues(s string) string {
 		s = re.ReplaceAllString(s, "[REDACTED]")
 	}
 	return s
-}
-
-// PruneToolJournal rewrites <agentDir>/tool-journal.jsonl, removing entries whose sequence
-// number is strictly less than minSeq. Called during session compaction to ensure compacted
-// tool history is pruned along with compacted turns.
-func PruneToolJournal(agentDir string, minSeq int64) error {
-	path := toolJournalPath(agentDir)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("reading tool journal for prune: %w", err)
-	}
-
-	lines := strings.Split(string(data), "\n")
-	var surviving []string
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		var te ToolEvent
-		if err := json.Unmarshal([]byte(trimmed), &te); err != nil {
-			// Preserve unparseable lines rather than silently dropping
-			surviving = append(surviving, trimmed)
-			continue
-		}
-		if te.Seq >= minSeq {
-			surviving = append(surviving, trimmed)
-		}
-	}
-
-	tmpPath := path + ".tmp"
-	var outContent string
-	if len(surviving) > 0 {
-		outContent = strings.Join(surviving, "\n") + "\n"
-	}
-	if err := os.WriteFile(tmpPath, []byte(outContent), 0644); err != nil {
-		return fmt.Errorf("writing pruned tool journal: %w", err)
-	}
-	return os.Rename(tmpPath, path)
 }

@@ -200,7 +200,7 @@ type AgentServiceClient interface {
 	Trace(ctx context.Context, in *TraceRequest, opts ...grpc.CallOption) (*TraceResponse, error)
 	// ReadSessionEvents polls and returns a batch of session events for an agent (D112 watch protocol).
 	// Callers specify either since_seq (to receive events strictly after since_seq) or last_n (to receive
-	// the most recent N events). Replays durable events from session.jsonl and tool-journal.jsonl. If
+	// the most recent N events). Replays durable events from session.jsonl. If
 	// the requested since_seq has been compacted away, rewound is set to true and baseline_seq indicates
 	// the new earliest available sequence number.
 	ReadSessionEvents(ctx context.Context, in *ReadSessionEventsRequest, opts ...grpc.CallOption) (*ReadSessionEventsResponse, error)
@@ -658,7 +658,7 @@ type AgentServiceServer interface {
 	Trace(context.Context, *TraceRequest) (*TraceResponse, error)
 	// ReadSessionEvents polls and returns a batch of session events for an agent (D112 watch protocol).
 	// Callers specify either since_seq (to receive events strictly after since_seq) or last_n (to receive
-	// the most recent N events). Replays durable events from session.jsonl and tool-journal.jsonl. If
+	// the most recent N events). Replays durable events from session.jsonl. If
 	// the requested since_seq has been compacted away, rewound is set to true and baseline_seq indicates
 	// the new earliest available sequence number.
 	ReadSessionEvents(context.Context, *ReadSessionEventsRequest) (*ReadSessionEventsResponse, error)

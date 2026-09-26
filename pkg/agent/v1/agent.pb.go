@@ -4739,7 +4739,7 @@ func (x *CompactionEvent) GetTurn() *SessionTurn {
 //
 // Caveats for Consumers:
 //  1. Two-file interleaving: The stream interleaves lines from TWO underlying files
-//     (session.jsonl for turns and tool-journal.jsonl for tool lifecycle events)
+//     (session.jsonl)
 //     ordered strictly by seq. It represents the unified agent activity log rather
 //     than session.jsonl alone.
 //  2. Trailing newlines: In raw mode, each line contains the verbatim persisted JSONL
@@ -4751,7 +4751,7 @@ func (x *CompactionEvent) GetTurn() *SessionTurn {
 //   - tool_call (pre-execution tool invocation announce)
 //   - tool_call_update (tool execution outcome)
 //   - compaction (session compaction notice/rewrite)
-//     These events are preserved in the on-disk logs (session.jsonl, tool-journal.jsonl)
+//     These events are preserved in the on-disk logs (session.jsonl)
 //     and are always available for replay to offline consumers, late joiners, or cache sync.
 //
 // - Live-only events:

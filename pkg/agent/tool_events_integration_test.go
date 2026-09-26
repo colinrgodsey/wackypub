@@ -3,8 +3,6 @@ package agent
 import (
 	"context"
 	"iter"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -172,55 +170,5 @@ func TestToolEventEmission_DeniedCompaction(t *testing.T) {
 	}
 	if denials != 1 {
 		t.Errorf("expected 1 denial count, got %d", denials)
-	}
-}
-
-// TestToolEventJournal_SurvivesCompaction pins workshop flag (a): result/store references
-// must survive compaction. The journal is a per-agent append-only JSONL sidecar that
-// compaction never rewrites - entries written before a compaction run remain readable and
-// the file itself is not deleted.
-func TestToolEventJournal_SurvivesCompaction(t *testing.T) {
-	tempDir := t.TempDir()
-	turns := []*genai.Content{
-		genai.NewContentFromText("user one", "user"),
-		genai.NewContentFromText("model one", "model"),
-	}
-	if err := WriteSessionTurns(tempDir, turns); err != nil {
-		t.Fatalf("write session: %v", err)
-	}
-	if err := WriteMemoryFile(tempDir, "Initial Memory"); err != nil {
-		t.Fatalf("write memory: %v", err)
-	}
-
-	// Seed a journal entry BEFORE compaction (simulating an earlier turn's tool call whose
-	// result ref must survive the archive pass).
-	journalPath := filepath.Join(tempDir, "tool-journal.jsonl")
-	if err := os.WriteFile(journalPath, []byte(`{"call_id":"pre-1","tool_name":"create_scratchpad","status":"completed","result_ref":"ref-pre-1"}`+string(rune(10))), 0644); err != nil {
-		t.Fatalf("seed journal: %v", err)
-	}
-
-	stub := &blockToolsStubModel{}
-	runtimeCfg := &RuntimeConfig{ContextWindow: 100000}
-	sink := NewToolEventSinkWithJournal(journalPath)
-	var denials int64
-	ca, err := BuildADKAgentWithConfigAndTrackerForCompactionWithSink("agent", "system", DefaultMaxToolTurns, runtimeCfg, stub, tempDir, nil, &denials, sink, visEchoTool(t))
-	if err != nil {
-		t.Fatalf("build compaction agent: %v", err)
-	}
-	if _, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, ca, true, nil, &denials); err != nil {
-		t.Fatalf("compact: %v", err)
-	}
-
-	// The denied event was journaled (append) and the pre-seeded line is still intact.
-	data, err := os.ReadFile(journalPath)
-	if err != nil {
-		t.Fatalf("read journal after compaction: %v", err)
-	}
-	content := string(data)
-	if !strings.Contains(content, "ref-pre-1") {
-		t.Errorf("pre-compaction journal entry lost after compaction: %s", content)
-	}
-	if !strings.Contains(content, "denied") {
-		t.Errorf("denied event not journaled: %s", content)
 	}
 }

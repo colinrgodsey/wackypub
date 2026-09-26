@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"time"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -662,16 +661,6 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		pTurns = append(pTurns, PersistedTurn{
 			Content: genai.Content{Role: "user", Parts: noticeTurn.Parts},
 			Seq:     summarySeq,
-		})
-	} else if notice == "" {
-		// Emit compaction event to tool-journal.jsonl if notice was opted out
-		sink := NewToolEventSinkWithJournal(toolJournalPath(agentDir))
-		sink.record(ToolEvent{
-			ToolName:    "compaction",
-			Status:      string(ToolEventStatusCompleted),
-			Timestamp:   time.Now(),
-			Seq:         summarySeq,
-			ArgsSummary: fmt.Sprintf("baseline_seq=%d compacted_turns=%d", baselineSeq, numCompacted),
 		})
 	}
 

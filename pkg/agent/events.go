@@ -14,7 +14,6 @@ import (
 
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // SessionBroker manages in-process notification for live session events.
@@ -73,7 +72,9 @@ const maxSubscriberBuffer = 64
 // Used in tests to verify that broker registration before snapshot read eliminates the race window.
 var testHookPreSnapshotRead func()
 
-// ReadSessionEventsFromDisk reads and merges all durable events from session.jsonl and tool-journal.jsonl.
+// ReadSessionEventsFromDisk reads the durable event stream from session.jsonl, the only
+// durable source. A tool attempt that never reached a persisted turn is not in it and
+// reaches consumers live instead.
 func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64, int64, int64, error) {
 	var events []*agentv1.SessionEvent
 	var latestTurnSeq int64
@@ -168,70 +169,6 @@ func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64,
 		return nil, 0, 0, 0, fmt.Errorf("opening %s: %w", SessionFileName, err)
 	}
 
-	// 2. Read tool-journal.jsonl
-	journalPath := toolJournalPath(agentDir)
-	if f, err := os.Open(journalPath); err == nil {
-		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
-		for scanner.Scan() {
-			lineBytes := scanner.Bytes()
-			if len(lineBytes) == 0 {
-				continue
-			}
-			rawLine := string(lineBytes)
-
-			var te ToolEvent
-			if err := json.Unmarshal(lineBytes, &te); err != nil {
-				continue
-			}
-
-			sev := &agentv1.SessionEvent{
-				Seq:       te.Seq,
-				Raw:       rawLine,
-				Timestamp: timestamppb.New(te.Timestamp),
-			}
-
-			if te.ToolName == "compaction" {
-				hasCompaction = true
-				sev.Event = &agentv1.SessionEvent_Compaction{
-					Compaction: &agentv1.CompactionEvent{
-						Summary: te.ArgsSummary,
-					},
-				}
-			} else if te.Status == "" && !te.Denied {
-				sev.Event = &agentv1.SessionEvent_ToolCall{
-					ToolCall: &agentv1.ToolCall{
-						CallId:      te.CallID,
-						ToolName:    te.ToolName,
-						ArgsSummary: te.ArgsSummary,
-						Denied:      te.Denied,
-						Seq:         te.Seq,
-					},
-				}
-			} else {
-				sev.Event = &agentv1.SessionEvent_ToolCallUpdate{
-					ToolCallUpdate: &agentv1.ToolCallUpdate{
-						CallId:      te.CallID,
-						ToolName:    te.ToolName,
-						Status:      te.Status,
-						ResultBytes: te.ResultBytes,
-						ResultHead:  te.ResultHead,
-						ResultRef:   te.ResultRef,
-						Seq:         te.Seq,
-					},
-				}
-			}
-			events = append(events, sev)
-		}
-		if err := scanner.Err(); err != nil {
-			_ = f.Close()
-			return nil, 0, 0, 0, fmt.Errorf("reading tool journal: %w", err)
-		}
-		_ = f.Close()
-	} else if !os.IsNotExist(err) {
-		return nil, 0, 0, 0, fmt.Errorf("opening tool journal: %w", err)
-	}
-
 	// Sort strictly by sequence number
 	sort.SliceStable(events, func(i, j int) bool {
 		return events[i].Seq < events[j].Seq
@@ -240,9 +177,8 @@ func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64,
 	var baselineSeq int64
 	var latestSeq int64
 	if hasCompaction && sessionBaselineSeq > 0 {
-		// When compaction has occurred, session baseline from session stream defines the rewind boundary.
-		// Older tool journal entries from compacted turns are filtered out (hidden at read) so they do not
-		// drag baseline backward; tool-journal.jsonl on disk remains an untouched audit sidecar.
+		// The session baseline defines the rewind boundary: events below it belonged to
+		// turns a consumer can no longer see, so they are dropped rather than replayed.
 		filtered := events[:0]
 		for _, ev := range events {
 			if ev.Seq >= sessionBaselineSeq {

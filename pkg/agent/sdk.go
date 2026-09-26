@@ -501,7 +501,7 @@ func (s *AgentSDK) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, st
 	if req != nil {
 		agentID = req.GetAgentId()
 	}
-	sink := NewToolEventSinkWithJournal(toolJournalPath(s.AgentDir(agentID)))
+	sink := NewToolEventSink()
 	sink.SetSeqAlloc(func() int64 {
 		seq, err := NextSeq(s.AgentDir(agentID))
 		if err != nil {
@@ -943,7 +943,7 @@ func (s *AgentSDK) AddAndGenerateTurnStream(req *agentv1.AddAndGenerateTurnStrea
 	if req != nil {
 		userMsg = req.GetUserMessage()
 	}
-	sink := NewToolEventSinkWithJournal(toolJournalPath(s.AgentDir(agentID)))
+	sink := NewToolEventSink()
 	sink.SetSeqAlloc(func() int64 {
 		seq, err := NextSeq(s.AgentDir(agentID))
 		if err != nil {

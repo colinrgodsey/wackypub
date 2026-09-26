@@ -46,52 +46,6 @@ func setupTestWatchAgent(t *testing.T) (wsDir, agentID, agentDir string) {
 	return wsDir, agentID, agentDir
 }
 
-// TestCLIWatchRaw verifies that `wackypub agent watch <id> --raw` outputs byte-identical
-// JSONL lines matching session.jsonl and tool-journal.jsonl.
-func TestCLIWatchRaw(t *testing.T) {
-	wsDir, agentID, agentDir := setupTestWatchAgent(t)
-
-	_ = adkAgent.AppendSessionTurn(agentDir, "user", "turn one")
-	_ = adkAgent.AppendSessionTurn(agentDir, "model", "turn two")
-
-	sink := adkAgent.NewToolEventSinkWithJournal(filepath.Join(agentDir, "tool-journal.jsonl"))
-	sink.SetSeqAlloc(func() int64 {
-		seq, _ := adkAgent.NextSeq(agentDir)
-		return seq
-	})
-	callID := sink.Announce("bash", "echo hi", false)
-	sink.Update(callID, "bash", "completed", 3, "hi", "")
-
-	// Read raw lines from disk
-	sessBytes, err := os.ReadFile(filepath.Join(agentDir, "session.jsonl"))
-	if err != nil {
-		t.Fatalf("read session.jsonl: %v", err)
-	}
-	journalBytes, err := os.ReadFile(filepath.Join(agentDir, "tool-journal.jsonl"))
-	if err != nil {
-		t.Fatalf("read tool-journal.jsonl: %v", err)
-	}
-	expectedLines := strings.Split(strings.TrimSpace(string(sessBytes)), "\n")
-	expectedLines = append(expectedLines, strings.Split(strings.TrimSpace(string(journalBytes)), "\n")...)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-
-	RootCmd.SetArgs([]string{"--ws", wsDir, "agent", "watch", agentID, "--raw"})
-	out, err := captureStdout(t, func() error {
-		return RootCmd.ExecuteContext(ctx)
-	})
-	if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
-		t.Fatalf("RootCmd.Execute failed: %v", err)
-	}
-
-	for _, line := range expectedLines {
-		if !strings.Contains(out, line) {
-			t.Errorf("expected stdout to contain exact raw JSON line:\n%s\ngot:\n%s", line, out)
-		}
-	}
-}
-
 // TestCLIWatchDispatcher verifies that `wackypub agent <id> watch` routes correctly.
 func TestCLIWatchDispatcher(t *testing.T) {
 	wsDir, agentID, agentDir := setupTestWatchAgent(t)
@@ -119,7 +73,7 @@ func TestCLIWatchHumanReadable(t *testing.T) {
 	wsDir, agentID, agentDir := setupTestWatchAgent(t)
 
 	_ = adkAgent.AppendSessionTurn(agentDir, "user", "hello human")
-	sink := adkAgent.NewToolEventSinkWithJournal(filepath.Join(agentDir, "tool-journal.jsonl"))
+	sink := adkAgent.NewToolEventSink()
 	sink.SetSeqAlloc(func() int64 {
 		seq, _ := adkAgent.NextSeq(agentDir)
 		return seq

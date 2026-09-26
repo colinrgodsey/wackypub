@@ -1519,12 +1519,13 @@ var agentWatchCmd = &cobra.Command{
 	Short: "Stream or poll session events for an agent (turns, tool calls, compaction)",
 	Long: `Streams session events (turns, tool calls, tool results, and compaction notices) for an agent.
 
+The durable source is session.jsonl alone, ordered by monotonic sequence number (seq).
+Tool activity that never reached a persisted turn, including a denied attempt and work
+in progress, is delivered live to connected consumers only: disconnect and reconnect and
+you receive the events of the turns still in the session, and nothing more.
+
 Caveats for consumers:
-  1. Two-file interleaving: The event stream merges records from both session.jsonl
-     (turns) and tool-journal.jsonl (tool calls and results), strictly ordered by monotonic
-     sequence number (seq). It represents the unified agent activity stream rather than
-     session.jsonl alone.
-  2. Trailing newlines: In --raw mode, each emitted line is the exact byte-for-byte JSONL
+  1. Trailing newlines: In --raw mode, each emitted line is the exact byte-for-byte JSONL
      record as persisted on disk, with newline termination normalized per line.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		defer func() {

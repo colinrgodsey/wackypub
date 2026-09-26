@@ -54,7 +54,7 @@ func TestSeqMonotonicityConcurrentWriters(t *testing.T) {
 					_ = AppendSessionTurn(agentDir, "user", turnText)
 				} else {
 					// Tool event write
-					sink := NewToolEventSinkWithJournal(toolJournalPath(agentDir))
+					sink := NewToolEventSink()
 					sink.SetSeqAlloc(func() int64 {
 						seq, _ := NextSeq(agentDir)
 						return seq
@@ -107,126 +107,6 @@ func TestSeqMonotonicityConcurrentWriters(t *testing.T) {
 	}
 }
 
-// TestCompactionRewindSignalling verifies that compaction replaces turns with a summary,
-// assigns the summary a fresh high sequence number, preserves remaining turn sequence numbers,
-// and signals rewound=true to consumers whose cursor was pruned.
-func TestCompactionRewindSignalling(t *testing.T) {
-	tempDir := t.TempDir()
-	t.Chdir(tempDir)
-	agentID := "compact-rewind-agent"
-	agentDir := filepath.Join(tempDir, agentID)
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	// Write 10 turns (seq 1 to 10)
-	for i := 1; i <= 10; i++ {
-		if err := AppendSessionTurn(agentDir, "user", fmt.Sprintf("Turn %d", i)); err != nil {
-			t.Fatalf("AppendSessionTurn %d: %v", i, err)
-		}
-	}
-
-	// Add tool journal rows at seq 2 and seq 4 (pre-compaction turns)
-	journalPath := toolJournalPath(agentDir)
-	j1, _ := json.Marshal(ToolEvent{CallID: "c1", ToolName: "tool1", Seq: 2, Timestamp: time.Now()})
-	j2, _ := json.Marshal(ToolEvent{CallID: "c2", ToolName: "tool2", Seq: 4, Timestamp: time.Now()})
-	if err := os.WriteFile(journalPath, []byte(string(j1)+"\n"+string(j2)+"\n"), 0644); err != nil {
-		t.Fatalf("write journal: %v", err)
-	}
-
-	sdk := NewSDK(tempDir)
-
-	// Poll before compaction with since_seq: 3
-	resp, err := sdk.ReadSessionEvents(context.Background(), &agentv1.ReadSessionEventsRequest{
-		AgentId:      agentID,
-		WorkspaceDir: tempDir,
-		Cursor:       &agentv1.ReadSessionEventsRequest_SinceSeq{SinceSeq: 3},
-	})
-	if err != nil {
-		t.Fatalf("ReadSessionEvents before compact: %v", err)
-	}
-	if resp.Rewound {
-		t.Errorf("expected rewound=false before compaction")
-	}
-
-	// Compact first 5 turns
-	// Read existing turns, compact turns 0..4, remaining turns are 5..9
-	existingTurns, err := ReadSessionTurns(agentDir)
-	if err != nil {
-		t.Fatalf("ReadSessionTurns: %v", err)
-	}
-	remainingTurns := existingTurns[5:] // turns 6 to 10
-
-	notice := "Turns 1 to 5 archived into memory"
-	noticeTurn := genai.NewContentFromText(FormatCompactionNotice(notice), "user")
-	summarySeq, err := NextSeq(agentDir) // seq 11
-	if err != nil {
-		t.Fatalf("NextSeq: %v", err)
-	}
-	if summarySeq <= 10 {
-		t.Fatalf("expected summarySeq > 10, got %d", summarySeq)
-	}
-
-	// Surviving turns kept their seqs: 6, 7, 8, 9, 10
-	var pTurns []PersistedTurn
-	pTurns = append(pTurns, PersistedTurn{Content: genai.Content{Role: "user", Parts: noticeTurn.Parts}, Seq: summarySeq})
-	for i, t := range remainingTurns {
-		pTurns = append(pTurns, PersistedTurn{Content: genai.Content{Role: t.Role, Parts: t.Parts}, Seq: int64(6 + i)})
-	}
-	if err := WritePersistedTurns(agentDir, pTurns); err != nil {
-		t.Fatalf("WritePersistedTurns: %v", err)
-	}
-	// Verify that even if journal rows at 2 and 4 linger on disk (tool-journal.jsonl is an append-only sidecar),
-	// the rewind baseline comes from the session stream (6), NOT the journal (2).
-	// Now poll with since_seq: 3 (which was compacted away!)
-	// Earliest surviving seq is 6. 3 < 6, so client was rewound!
-	respAfter, err := sdk.ReadSessionEvents(context.Background(), &agentv1.ReadSessionEventsRequest{
-		AgentId:      agentID,
-		WorkspaceDir: tempDir,
-		Cursor:       &agentv1.ReadSessionEventsRequest_SinceSeq{SinceSeq: 3},
-	})
-	if err != nil {
-		t.Fatalf("ReadSessionEvents after compact: %v", err)
-	}
-
-	if respAfter.BaselineSeq != 6 {
-		t.Fatalf("expected BaselineSeq 6 from session stream, got %d (dragged down by journal rows)", respAfter.BaselineSeq)
-	}
-
-	if !respAfter.Rewound {
-		t.Fatalf("expected rewound=true when cursor 3 is below baseline 6")
-	}
-	// Baseline must be 6 (from session baseline), NOT 2 or 4 from old journal rows!
-	if respAfter.BaselineSeq != 6 {
-		t.Fatalf("expected baseline_seq=6, got %d", respAfter.BaselineSeq)
-	}
-
-	// Poll with since_seq: 7 (which survived!)
-	// 7 >= 6, so not rewound
-	respIntact, err := sdk.ReadSessionEvents(context.Background(), &agentv1.ReadSessionEventsRequest{
-		AgentId:      agentID,
-		WorkspaceDir: tempDir,
-		Cursor:       &agentv1.ReadSessionEventsRequest_SinceSeq{SinceSeq: 7},
-	})
-	if err != nil {
-		t.Fatalf("ReadSessionEvents for intact cursor: %v", err)
-	}
-	if respIntact.Rewound {
-		t.Errorf("expected rewound=false for intact cursor 7 >= baseline 6")
-	}
-	// Events should be: seq 8, 9, 10, 11 (the compaction summary)
-	if len(respIntact.Events) != 4 {
-		t.Errorf("expected 4 events (8, 9, 10, 11), got %d", len(respIntact.Events))
-	}
-	lastEv := respIntact.Events[len(respIntact.Events)-1]
-	if lastEv.Seq != summarySeq {
-		t.Errorf("expected last event seq %d, got %d", summarySeq, lastEv.Seq)
-	}
-	if lastEv.GetCompaction() == nil {
-		t.Errorf("expected compaction event at seq %d", summarySeq)
-	}
-}
-
 // TestPollPathResumingFromCursor verifies that one-shot polling returns batches of events
 // and cleanly resumes from the client's cursor without re-reading past events.
 func TestPollPathResumingFromCursor(t *testing.T) {
@@ -275,7 +155,7 @@ func TestPollPathResumingFromCursor(t *testing.T) {
 
 	// Write new turn and new tool event
 	_ = AppendSessionTurn(agentDir, "user", "Hello 4")
-	sink := NewToolEventSinkWithJournal(toolJournalPath(agentDir))
+	sink := NewToolEventSink()
 	sink.SetSeqAlloc(func() int64 {
 		seq, _ := NextSeq(agentDir)
 		return seq
@@ -297,61 +177,6 @@ func TestPollPathResumingFromCursor(t *testing.T) {
 	}
 	if resp3.Events[0].Seq != 4 || resp3.Events[1].Seq != 5 || resp3.Events[2].Seq != 6 {
 		t.Fatalf("unexpected seqs: %d, %d, %d", resp3.Events[0].Seq, resp3.Events[1].Seq, resp3.Events[2].Seq)
-	}
-}
-
-// TestWatchRawByteIdentical verifies that event.Raw is byte-identical to the JSONL lines
-// in session.jsonl and tool-journal.jsonl.
-func TestWatchRawByteIdentical(t *testing.T) {
-	tempDir := t.TempDir()
-	agentID := "raw-byte-agent"
-	agentDir := filepath.Join(tempDir, agentID)
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	_ = AppendSessionTurn(agentDir, "user", "First raw turn")
-	_ = AppendSessionTurn(agentDir, "model", "Second raw turn")
-
-	sink := NewToolEventSinkWithJournal(toolJournalPath(agentDir))
-	sink.SetSeqAlloc(func() int64 {
-		seq, _ := NextSeq(agentDir)
-		return seq
-	})
-	callID := sink.Announce("grep", "pattern file", false)
-	sink.Update(callID, "grep", "completed", 20, "matched pattern", "")
-
-	// Read raw lines from session.jsonl
-	sessBytes, err := os.ReadFile(filepath.Join(agentDir, SessionFileName))
-	if err != nil {
-		t.Fatalf("read session.jsonl: %v", err)
-	}
-	sessLines := strings.Split(strings.TrimSpace(string(sessBytes)), "\n")
-
-	// Read raw lines from tool-journal.jsonl
-	journalBytes, err := os.ReadFile(toolJournalPath(agentDir))
-	if err != nil {
-		t.Fatalf("read tool-journal.jsonl: %v", err)
-	}
-	journalLines := strings.Split(strings.TrimSpace(string(journalBytes)), "\n")
-
-	events, _, _, _, err := ReadSessionEventsFromDisk(agentDir)
-	if err != nil {
-		t.Fatalf("ReadSessionEventsFromDisk: %v", err)
-	}
-
-	// Verify each raw string matches the corresponding file line exactly
-	if events[0].Raw != sessLines[0] {
-		t.Errorf("turn 1 raw mismatch:\ngot:  %q\nwant: %q", events[0].Raw, sessLines[0])
-	}
-	if events[1].Raw != sessLines[1] {
-		t.Errorf("turn 2 raw mismatch:\ngot:  %q\nwant: %q", events[1].Raw, sessLines[1])
-	}
-	if events[2].Raw != journalLines[0] {
-		t.Errorf("tool announce raw mismatch:\ngot:  %q\nwant: %q", events[2].Raw, journalLines[0])
-	}
-	if events[3].Raw != journalLines[1] {
-		t.Errorf("tool update raw mismatch:\ngot:  %q\nwant: %q", events[3].Raw, journalLines[1])
 	}
 }
 
@@ -467,7 +292,7 @@ func TestReplayThenLiveContinuity(t *testing.T) {
 
 	// 2. Append live events: turn 4, tool 5, turn 6
 	_ = AppendSessionTurn(agentDir, "model", "Live Turn 4")
-	sink := NewToolEventSinkWithJournal(toolJournalPath(agentDir))
+	sink := NewToolEventSink()
 	sink.SetSeqAlloc(func() int64 {
 		seq, _ := NextSeq(agentDir)
 		return seq
@@ -525,7 +350,7 @@ func TestColdStartHeadOnlyAndLiveOnly(t *testing.T) {
 	_ = AppendSessionTurn(agentDir, "user", "turn 1")
 	_ = AppendSessionTurn(agentDir, "model", "turn 2")
 
-	sink := NewToolEventSinkWithJournal(toolJournalPath(agentDir))
+	sink := NewToolEventSink()
 	sink.SetSeqAlloc(func() int64 {
 		seq, _ := NextSeq(agentDir)
 		return seq
@@ -1009,42 +834,5 @@ func TestCorruptedSeqFileRecovery(t *testing.T) {
 	}
 	if cur != 4 {
 		t.Errorf("expected CurrentSeq=4, got %d", cur)
-	}
-}
-
-// TestZeroSeqJournalRowRewindSignalling verifies that a journal row with seq <= 0 does not
-// yield baseline=0 and disable the since == 0 && baseline > 1 rewind rule.
-func TestZeroSeqJournalRowRewindSignalling(t *testing.T) {
-	tempDir := t.TempDir()
-	t.Chdir(tempDir)
-	agentDir := filepath.Join(tempDir, "zeroseq-agent")
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	sdk := NewSDK(tempDir)
-
-	// Turn at seq 5
-	_ = AppendSessionContentWithSeq(agentDir, genai.NewContentFromText("turn 5", "user"), 5)
-
-	// Journal row with seq 0 (legacy or unsequenced)
-	jPath := toolJournalPath(agentDir)
-	jData, _ := json.Marshal(ToolEvent{CallID: "c0", ToolName: "tool0", Seq: 0, Timestamp: time.Now()})
-	_ = os.WriteFile(jPath, []byte(string(jData)+"\n"), 0644)
-
-	// Poll with since_seq == 0
-	resp, err := sdk.ReadSessionEvents(context.Background(), &agentv1.ReadSessionEventsRequest{
-		AgentId:      "zeroseq-agent",
-		WorkspaceDir: tempDir,
-		Cursor:       &agentv1.ReadSessionEventsRequest_SinceSeq{SinceSeq: 0},
-	})
-	if err != nil {
-		t.Fatalf("ReadSessionEvents: %v", err)
-	}
-
-	if resp.BaselineSeq <= 0 {
-		t.Fatalf("expected baselineSeq > 0, got %d", resp.BaselineSeq)
-	}
-	if !resp.Rewound {
-		t.Errorf("expected rewound=true when baselineSeq (%d) > 1 and since_seq=0", resp.BaselineSeq)
 	}
 }

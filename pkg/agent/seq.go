@@ -141,8 +141,8 @@ func writeSeqFile(agentDir string, seq int64) error {
 	return nil
 }
 
-// RecoverSeq scans session.jsonl and tool-journal.jsonl to determine the highest existing
-// sequence number in agentDir.
+// RecoverSeq scans session.jsonl to determine the highest existing sequence number
+// in agentDir.
 func RecoverSeq(agentDir string) (int64, error) {
 	var maxSeq int64
 	var unsequencedTurns int64
@@ -177,32 +177,6 @@ func RecoverSeq(agentDir string) (int64, error) {
 		_ = f.Close()
 	} else if !os.IsNotExist(err) {
 		return 0, fmt.Errorf("opening %s: %w", SessionFileName, err)
-	}
-
-	// 2. Scan tool-journal.jsonl
-	journalPath := toolJournalPath(agentDir)
-	if f, err := os.Open(journalPath); err == nil {
-		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if len(line) == 0 {
-				continue
-			}
-			var rec struct {
-				Seq int64 `json:"seq"`
-			}
-			if err := json.Unmarshal(line, &rec); err == nil && rec.Seq > maxSeq {
-				maxSeq = rec.Seq
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			_ = f.Close()
-			return 0, fmt.Errorf("reading tool journal: %w", err)
-		}
-		_ = f.Close()
-	} else if !os.IsNotExist(err) {
-		return 0, fmt.Errorf("opening tool journal: %w", err)
 	}
 
 	// If there were unsequenced turns (from prior sessions before seq stamping),
