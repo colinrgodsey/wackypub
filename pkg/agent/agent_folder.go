@@ -619,6 +619,26 @@ func (fa *FolderAgent) refreshSystemPromptAndAgent() error {
 	return nil
 }
 
+// compactionAgentLoader returns the per-level loader CheckAndCompactSessionWithFallback
+// needs: level 0 reuses this FolderAgent's prebuilt CompactionAgent (cache-prefix
+// identical to the primary), deeper levels rebuild via loadFolderAgentFromRuntime so the
+// model constructor re-runs per provider - exactly what the normal turn path does.
+func (fa *FolderAgent) compactionAgentLoader(wsDir string) func(cfg *RuntimeConfig) (agent.Agent, *int64, error) {
+	return func(cfg *RuntimeConfig) (agent.Agent, *int64, error) {
+		if cfg == nil {
+			return fa.CompactionAgent, fa.CompactionToolDenials, nil
+		}
+		if cfg == fa.RuntimeConfig {
+			return fa.CompactionAgent, fa.CompactionToolDenials, nil
+		}
+		loaded, err := loadFolderAgentFromRuntime(fa.AgentDir, wsDir, fa.AgentID, fa.A2AMeta, fa.HookEnv, cfg, fa.DotEnv, fa.MaxToolTurns, fa.ToolEvents, fa.CommandTimeoutSeconds)
+		if err != nil {
+			return nil, nil, err
+		}
+		return loaded.CompactionAgent, loaded.CompactionToolDenials, nil
+	}
+}
+
 // readMemoryForChangeDetection reads MEMORY.md for the prompt-freshness detector. The bool
 // reports whether the read succeeded; on error the caller must keep lastMemory at its last
 // known value - conflating unreadable with empty would make an I/O error look like the
@@ -781,7 +801,7 @@ func (fa *FolderAgent) checkPostTurnCompaction(ctx context.Context, wsDir string
 		if fa.UsageTracker != nil {
 			fa.UsageTracker.Reset()
 		}
-		if _, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials); err != nil {
+		if _, err := CheckAndCompactSessionWithFallback(ctx, fa.AgentDir, fa.RuntimeConfig, fa.compactionAgentLoader(wsDir), true, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: post-turn session compaction error: %v\n", err)
 		}
 	}
@@ -795,7 +815,7 @@ func (fa *FolderAgent) checkColdStartCompaction(ctx context.Context, turns []*ge
 	budget := contextBudget(fa.RuntimeConfig.ContextWindow, fa.RuntimeConfig.MaxOutputReserve, resolveOverheadPct(fa.AgentDir))
 	used, _ := contextUsed(0, turns, fa.RuntimeConfig.PreserveThinking)
 	if exceedsBudget(used, budget) {
-		compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials)
+		compacted, err := CheckAndCompactSessionWithFallback(ctx, fa.AgentDir, fa.RuntimeConfig, fa.compactionAgentLoader(filepath.Dir(fa.AgentDir)), true, nil)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: cold-start session compaction error: %v\n", err)
 		} else if compacted {
@@ -834,7 +854,7 @@ func (fa *FolderAgent) compactForContinuation(ctx context.Context, yield func(st
 	if fa.UsageTracker != nil {
 		fa.UsageTracker.Reset()
 	}
-	compacted, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.CompactionAgent, true, nil, fa.CompactionToolDenials)
+	compacted, err := CheckAndCompactSessionWithFallback(ctx, fa.AgentDir, fa.RuntimeConfig, fa.compactionAgentLoader(filepath.Dir(fa.AgentDir)), true, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
 		yield(fmt.Sprintf("\n\n[Auto-continuation aborted: session compaction error: %v - incomplete status.]", err), nil)
