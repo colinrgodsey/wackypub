@@ -48,19 +48,13 @@ func TestSeqMonotonicityConcurrentWriters(t *testing.T) {
 					return
 				}
 
-				if (writerID+i)%2 == 0 {
-					// Turn write
-					turnText := fmt.Sprintf("message from writer %d iteration %d", writerID, i)
-					_ = AppendSessionTurn(agentDir, "user", turnText)
-				} else {
-					// Tool event write
-					sink := NewToolEventSink()
-					sink.SetSeqAlloc(func() int64 {
-						seq, _ := NextSeq(agentDir)
-						return seq
-					})
-					callID := sink.Announce("bash", "echo hello", false)
-					sink.Update(callID, "bash", "completed", 5, "hello", "")
+				role := "user"
+				if (writerID+i)%2 != 0 {
+					role = "model"
+				}
+				turnText := fmt.Sprintf("message from writer %d iteration %d", writerID, i)
+				if err := AppendSessionTurn(agentDir, role, turnText); err != nil {
+					t.Errorf("AppendSessionTurn: %v", err)
 				}
 
 				lock.Release()
@@ -104,6 +98,151 @@ func TestSeqMonotonicityConcurrentWriters(t *testing.T) {
 	}
 	if int(latestSeq) < totalWrites {
 		t.Errorf("expected latestSeq >= %d, got %d", totalWrites, latestSeq)
+	}
+}
+
+// TestCompactionRewindSignalling verifies that when compaction rewrites session.jsonl,
+// the baseline sequence number updates, and clients whose cursor is below the baseline
+// are notified that they were rewound.
+func TestCompactionRewindSignalling(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	agentID := "compact-rewind-agent"
+	agentDir := filepath.Join(tempDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Write 10 turns (seq 1 to 10)
+	for i := 1; i <= 10; i++ {
+		if err := AppendSessionTurn(agentDir, "user", fmt.Sprintf("Turn %d", i)); err != nil {
+			t.Fatalf("AppendSessionTurn %d: %v", i, err)
+		}
+	}
+
+	sdk := NewSDK(tempDir)
+
+	// Poll before compaction with since_seq: 3
+	resp, err := sdk.ReadSessionEvents(context.Background(), &agentv1.ReadSessionEventsRequest{
+		AgentId:      agentID,
+		WorkspaceDir: tempDir,
+		Cursor:       &agentv1.ReadSessionEventsRequest_SinceSeq{SinceSeq: 3},
+	})
+	if err != nil {
+		t.Fatalf("ReadSessionEvents before compact: %v", err)
+	}
+	if resp.Rewound {
+		t.Errorf("expected rewound=false before compaction")
+	}
+
+	// Compact first 5 turns
+	// Read existing turns, compact turns 0..4, remaining turns are 5..9 (turns 6 to 10)
+	existingTurns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns: %v", err)
+	}
+	remainingTurns := existingTurns[5:] // turns 6 to 10
+
+	notice := "Turns 1 to 5 archived into memory"
+	noticeTurn := genai.NewContentFromText(FormatCompactionNotice(notice), "user")
+	summarySeq, err := NextSeq(agentDir) // seq 11
+	if err != nil {
+		t.Fatalf("NextSeq: %v", err)
+	}
+	if summarySeq <= 10 {
+		t.Fatalf("expected summarySeq > 10, got %d", summarySeq)
+	}
+
+	// Surviving turns kept their seqs: 6, 7, 8, 9, 10
+	var pTurns []PersistedTurn
+	pTurns = append(pTurns, PersistedTurn{Content: genai.Content{Role: "user", Parts: noticeTurn.Parts}, Seq: summarySeq})
+	for i, t := range remainingTurns {
+		pTurns = append(pTurns, PersistedTurn{Content: genai.Content{Role: t.Role, Parts: t.Parts}, Seq: int64(6 + i)})
+	}
+	if err := WritePersistedTurns(agentDir, pTurns); err != nil {
+		t.Fatalf("WritePersistedTurns: %v", err)
+	}
+
+	// Now poll with since_seq: 3 (which was compacted away!)
+	// Earliest surviving seq is 6. 3 < 6, so client was rewound!
+	respAfter, err := sdk.ReadSessionEvents(context.Background(), &agentv1.ReadSessionEventsRequest{
+		AgentId:      agentID,
+		WorkspaceDir: tempDir,
+		Cursor:       &agentv1.ReadSessionEventsRequest_SinceSeq{SinceSeq: 3},
+	})
+	if err != nil {
+		t.Fatalf("ReadSessionEvents after compact: %v", err)
+	}
+
+	if respAfter.BaselineSeq != 6 {
+		t.Fatalf("expected BaselineSeq 6 from session stream, got %d", respAfter.BaselineSeq)
+	}
+
+	if !respAfter.Rewound {
+		t.Fatalf("expected rewound=true when cursor 3 is below baseline 6")
+	}
+
+	// Poll with since_seq: 7 (which survived!)
+	// 7 >= 6, so not rewound
+	respIntact, err := sdk.ReadSessionEvents(context.Background(), &agentv1.ReadSessionEventsRequest{
+		AgentId:      agentID,
+		WorkspaceDir: tempDir,
+		Cursor:       &agentv1.ReadSessionEventsRequest_SinceSeq{SinceSeq: 7},
+	})
+	if err != nil {
+		t.Fatalf("ReadSessionEvents for intact cursor: %v", err)
+	}
+	if respIntact.Rewound {
+		t.Errorf("expected rewound=false for intact cursor 7 >= baseline 6")
+	}
+	// Events should be: seq 8, 9, 10, 11 (the compaction summary)
+	if len(respIntact.Events) != 4 {
+		t.Errorf("expected 4 events (8, 9, 10, 11), got %d", len(respIntact.Events))
+	}
+	lastEv := respIntact.Events[len(respIntact.Events)-1]
+	if lastEv.Seq != summarySeq {
+		t.Errorf("expected last event seq %d, got %d", summarySeq, lastEv.Seq)
+	}
+	if lastEv.GetCompaction() == nil {
+		t.Errorf("expected compaction event at seq %d", summarySeq)
+	}
+}
+
+// TestWatchRawByteIdentical verifies that event.Raw is byte-identical to the JSONL lines
+// in session.jsonl.
+func TestWatchRawByteIdentical(t *testing.T) {
+	tempDir := t.TempDir()
+	agentID := "raw-byte-agent"
+	agentDir := filepath.Join(tempDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	_ = AppendSessionTurn(agentDir, "user", "First raw turn")
+	_ = AppendSessionTurn(agentDir, "model", "Second raw turn")
+	_ = AppendSessionTurn(agentDir, "user", "Third raw turn")
+
+	// Read raw lines from session.jsonl
+	sessBytes, err := os.ReadFile(filepath.Join(agentDir, SessionFileName))
+	if err != nil {
+		t.Fatalf("read session.jsonl: %v", err)
+	}
+	sessLines := strings.Split(strings.TrimSpace(string(sessBytes)), "\n")
+
+	events, _, _, _, err := ReadSessionEventsFromDisk(agentDir)
+	if err != nil {
+		t.Fatalf("ReadSessionEventsFromDisk: %v", err)
+	}
+
+	if len(events) != len(sessLines) {
+		t.Fatalf("expected %d events, got %d", len(sessLines), len(events))
+	}
+
+	// Verify each raw string matches the corresponding file line exactly
+	for i, line := range sessLines {
+		if events[i].Raw != line {
+			t.Errorf("turn %d raw mismatch:\ngot:  %q\nwant: %q", i+1, events[i].Raw, line)
+		}
 	}
 }
 
@@ -153,15 +292,10 @@ func TestPollPathResumingFromCursor(t *testing.T) {
 		t.Fatalf("expected 0 events, got %d", len(resp2.Events))
 	}
 
-	// Write new turn and new tool event
+	// Write new turns
 	_ = AppendSessionTurn(agentDir, "user", "Hello 4")
-	sink := NewToolEventSink()
-	sink.SetSeqAlloc(func() int64 {
-		seq, _ := NextSeq(agentDir)
-		return seq
-	})
-	callID := sink.Announce("cat", "file.txt", false)
-	sink.Update(callID, "cat", "completed", 12, "file contents", "")
+	_ = AppendSessionTurn(agentDir, "model", "Response 5")
+	_ = AppendSessionTurn(agentDir, "user", "Hello 6")
 
 	// Third poll with cursor=3: returns events 4, 5, 6
 	resp3, err := sdk.ReadSessionEvents(context.Background(), &agentv1.ReadSessionEventsRequest{
@@ -290,15 +424,10 @@ func TestReplayThenLiveContinuity(t *testing.T) {
 		t.Fatalf("timed out waiting for replay events: got %d", len(resps))
 	}
 
-	// 2. Append live events: turn 4, tool 5, turn 6
+	// 2. Append live events: turns 4, 5, 6, 7
 	_ = AppendSessionTurn(agentDir, "model", "Live Turn 4")
-	sink := NewToolEventSink()
-	sink.SetSeqAlloc(func() int64 {
-		seq, _ := NextSeq(agentDir)
-		return seq
-	})
-	callID := sink.Announce("test_tool", "arg=1", false)
-	sink.Update(callID, "test_tool", "completed", 10, "ok", "")
+	_ = AppendSessionTurn(agentDir, "user", "Live Turn 5")
+	_ = AppendSessionTurn(agentDir, "model", "Live Turn 6")
 	_ = AppendSessionTurn(agentDir, "user", "Live Turn 7")
 
 	// Wait for live events to be delivered

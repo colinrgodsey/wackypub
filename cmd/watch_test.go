@@ -46,6 +46,39 @@ func setupTestWatchAgent(t *testing.T) (wsDir, agentID, agentDir string) {
 	return wsDir, agentID, agentDir
 }
 
+// TestCLIWatchRaw verifies that `wackypub agent watch <id> --raw` outputs byte-identical
+// JSONL lines matching session.jsonl.
+func TestCLIWatchRaw(t *testing.T) {
+	wsDir, agentID, agentDir := setupTestWatchAgent(t)
+
+	_ = adkAgent.AppendSessionTurn(agentDir, "user", "turn one")
+	_ = adkAgent.AppendSessionTurn(agentDir, "model", "turn two")
+
+	// Read raw lines from disk
+	sessBytes, err := os.ReadFile(filepath.Join(agentDir, "session.jsonl"))
+	if err != nil {
+		t.Fatalf("read session.jsonl: %v", err)
+	}
+	expectedLines := strings.Split(strings.TrimSpace(string(sessBytes)), "\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	RootCmd.SetArgs([]string{"--ws", wsDir, "agent", "watch", agentID, "--raw"})
+	out, err := captureStdout(t, func() error {
+		return RootCmd.ExecuteContext(ctx)
+	})
+	if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
+		t.Fatalf("RootCmd.Execute failed: %v", err)
+	}
+
+	for _, line := range expectedLines {
+		if !strings.Contains(out, line) {
+			t.Errorf("expected stdout to contain exact raw JSON line:\n%s\ngot:\n%s", line, out)
+		}
+	}
+}
+
 // TestCLIWatchDispatcher verifies that `wackypub agent <id> watch` routes correctly.
 func TestCLIWatchDispatcher(t *testing.T) {
 	wsDir, agentID, agentDir := setupTestWatchAgent(t)
@@ -73,13 +106,9 @@ func TestCLIWatchHumanReadable(t *testing.T) {
 	wsDir, agentID, agentDir := setupTestWatchAgent(t)
 
 	_ = adkAgent.AppendSessionTurn(agentDir, "user", "hello human")
-	sink := adkAgent.NewToolEventSink()
-	sink.SetSeqAlloc(func() int64 {
-		seq, _ := adkAgent.NextSeq(agentDir)
-		return seq
-	})
-	callID := sink.Announce("create_file", "path=test.txt", false)
-	sink.Update(callID, "create_file", "completed", 15, "created", "")
+	_ = adkAgent.AppendSessionTurn(agentDir, "model", "hello back")
+	notice := adkAgent.FormatCompactionNotice("earlier conversation compressed")
+	_ = adkAgent.AppendSessionTurn(agentDir, "user", notice)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
@@ -93,13 +122,13 @@ func TestCLIWatchHumanReadable(t *testing.T) {
 	}
 
 	if !strings.Contains(out, "[Turn #1 user] hello human") {
-		t.Errorf("expected human turn output, got:\n%s", out)
+		t.Errorf("expected human turn 1 output, got:\n%s", out)
 	}
-	if !strings.Contains(out, "[Tool #2] create_file(path=test.txt)") {
-		t.Errorf("expected human tool announce output, got:\n%s", out)
+	if !strings.Contains(out, "[Turn #2 model] hello back") {
+		t.Errorf("expected human turn 2 output, got:\n%s", out)
 	}
-	if !strings.Contains(out, "[Tool #3 COMPLETED] created") {
-		t.Errorf("expected human tool update output, got:\n%s", out)
+	if !strings.Contains(out, "[Compaction #3]") {
+		t.Errorf("expected human compaction output, got:\n%s", out)
 	}
 }
 
