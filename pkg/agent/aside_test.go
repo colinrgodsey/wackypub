@@ -108,7 +108,7 @@ func TestAside_ContextualAnswerAndNothingPersisted(t *testing.T) {
 	}
 	// No new files appeared in the agent dir (e.g. no .last_usage.json, no trace artifacts).
 	entries, _ := os.ReadDir(agentDir)
-	expected := map[string]bool{"session.jsonl": true, "MEMORY.md": true, "runtime.json": true, "AGENTS.md": true, AllowedAgentsFile: true, RootMarkerFile: true}
+	expected := map[string]bool{"session.jsonl": true, "MEMORY.md": true, "runtime.json": true, "AGENTS.md": true, AllowedAgentsFile: true, RootMarkerFile: true, SeqFileName: true, sessionLockFileName: true}
 	for _, e := range entries {
 		if e.IsDir() {
 			continue

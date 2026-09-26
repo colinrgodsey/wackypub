@@ -1,9 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -62,39 +59,6 @@ func TestBuildArgsSummary_TruncatesLongArgs(t *testing.T) {
 	}
 	if !strings.HasPrefix(summary, "data=") {
 		t.Errorf("unexpected summary: %s", summary)
-	}
-}
-
-// TestToolEventSink_JournalAppends pins the evidence-trail persistence: completed events are
-// appended to the JSONL journal in addition to being stream-drained.
-func TestToolEventSink_JournalAppends(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "tool-journal.jsonl")
-	sink := NewToolEventSinkWithJournal(path)
-	callID := sink.Announce("create_scratchpad", "text=hello", false)
-	sink.Update(callID, "create_scratchpad", "completed", 123, "hello", "result-ref-1")
-
-	// Drain returns both (stream side).
-	evts := sink.Drain()
-	if len(evts) != 2 {
-		t.Fatalf("expected 2 drained events, got %d", len(evts))
-	}
-
-	// Journal has both lines (evidence side).
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read journal: %v", err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("expected 2 journal lines, got %d", len(lines))
-	}
-	var ev ToolEvent
-	if err := json.Unmarshal([]byte(lines[1]), &ev); err != nil {
-		t.Fatalf("journal line 2 unmarshal: %v", err)
-	}
-	if ev.Status != "completed" || ev.ResultRef != "result-ref-1" {
-		t.Errorf("unexpected journaled event: %+v", ev)
 	}
 }
 

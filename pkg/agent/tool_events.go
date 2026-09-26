@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -38,6 +36,7 @@ type ToolEvent struct {
 	ResultHead  string    `json:"result_head,omitempty"`
 	ResultRef   string    `json:"result_ref,omitempty"`
 	Timestamp   time.Time `json:"timestamp"`
+	Seq         int64     `json:"seq,omitempty"`
 }
 
 // ToolEventSink is a thread-safe collector for tool lifecycle events produced by the ADK
@@ -45,24 +44,26 @@ type ToolEvent struct {
 type ToolEventSink struct {
 	mu     sync.Mutex
 	events []ToolEvent
-	// journalPath, when set, appends every completed event to a JSONL tool journal on disk
-	// (stream announces; journal preserves the evidence trail).
-	journalPath string
 	// notify is a buffered(1) push signal fired on every record so stream handlers can wake
 	// and drain mid-tool (liveness): the announce becomes observable before tool completion.
 	notify chan struct{}
+	// seqAlloc, when set, is called under the session lock to assign monotonic sequence numbers.
+	seqAlloc func() int64
 }
 
-// NewToolEventSink returns a sink with no journal backing.
+// NewToolEventSink returns an in-memory sink for tool lifecycle events.
 func NewToolEventSink() *ToolEventSink {
 	return &ToolEventSink{notify: make(chan struct{}, 1)}
 }
 
-// NewToolEventSinkWithJournal returns a sink that appends completed/denied events to a
-// JSONL journal at the given path (created on first write). Event ordering on the wire is
-// unchanged; the journal is a preservation side-effect.
-func NewToolEventSinkWithJournal(journalPath string) *ToolEventSink {
-	return &ToolEventSink{journalPath: journalPath, notify: make(chan struct{}, 1)}
+// SetSeqAlloc configures the sequence number allocator for events recorded by this sink.
+func (s *ToolEventSink) SetSeqAlloc(alloc func() int64) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seqAlloc = alloc
 }
 
 // Announce records a tool_call (pre-execution) event. The returned call_id pairs the
@@ -75,13 +76,25 @@ func (s *ToolEventSink) Announce(toolName, argsSummary string, denied bool) stri
 	if denied {
 		status = string(ToolEventStatusDenied)
 	}
-	s.record(ToolEvent{CallID: callID, ToolName: toolName, ArgsSummary: argsSummary, Status: status, Denied: denied, Timestamp: time.Now()})
+	var seq int64
+	s.mu.Lock()
+	if s.seqAlloc != nil {
+		seq = s.seqAlloc()
+	}
+	s.mu.Unlock()
+	s.record(ToolEvent{CallID: callID, ToolName: toolName, ArgsSummary: argsSummary, Status: status, Denied: denied, Timestamp: time.Now(), Seq: seq})
 	return callID
 }
 
 // Update records a tool_call_update (outcome) event.
 func (s *ToolEventSink) Update(callID, toolName, status string, resultBytes int64, resultHead, resultRef string) {
-	s.record(ToolEvent{CallID: callID, ToolName: toolName, Status: status, ResultBytes: resultBytes, ResultHead: resultHead, ResultRef: resultRef, Timestamp: time.Now()})
+	var seq int64
+	s.mu.Lock()
+	if s.seqAlloc != nil {
+		seq = s.seqAlloc()
+	}
+	s.mu.Unlock()
+	s.record(ToolEvent{CallID: callID, ToolName: toolName, Status: status, ResultBytes: resultBytes, ResultHead: resultHead, ResultRef: resultRef, Timestamp: time.Now(), Seq: seq})
 }
 
 // Notify returns a push channel signaled (buffered, at least once) whenever a new tool
@@ -120,24 +133,6 @@ func (s *ToolEventSink) record(ev ToolEvent) {
 	case s.notify <- struct{}{}:
 	default:
 	}
-	if s.journalPath != "" {
-		s.appendJournal(ev)
-	}
-}
-
-// appendJournal persists the compact form. Best-effort: a failed journal write must never
-// fail the turn - the stream already carries the event.
-func (s *ToolEventSink) appendJournal(ev ToolEvent) {
-	data, err := json.Marshal(ev)
-	if err != nil {
-		return
-	}
-	f, err := os.OpenFile(s.journalPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.Write(append(data, '\n'))
 }
 
 // newToolCallID returns a short random identifier pairing announce with update.
@@ -251,11 +246,6 @@ func buildResultSummary(result map[string]any) (bytes int64, head string) {
 	redacted := redactSecretValues(string(data))
 	head = truncateRunesSafe(redacted, 256)
 	return
-}
-
-// toolJournalPath returns the compact journal path for an agent directory.
-func toolJournalPath(agentDir string) string {
-	return filepath.Join(agentDir, "tool-journal.jsonl")
 }
 
 // toolEventsKey is the context key carrying the per-turn ToolEventSink (D112 tool-call

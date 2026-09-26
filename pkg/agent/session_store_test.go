@@ -421,7 +421,7 @@ func TestAppendSessionContent_TruncationPreservesSmallParts(t *testing.T) {
 	smallText := "This is a normal user turn with reasonable length."
 	content := genai.NewContentFromText(smallText, "user")
 
-	expectedData, err := json.Marshal(content)
+	expectedData, err := json.Marshal(&PersistedTurn{Content: genai.Content{Role: "user", Parts: content.Parts}, Seq: 1})
 	if err != nil {
 		t.Fatalf("json.Marshal failed: %v", err)
 	}
@@ -498,5 +498,54 @@ func TestAppendSessionContent_WholeContentFallback(t *testing.T) {
 	}
 	if !strings.Contains(turns[0].Parts[1].Text, "remaining content dropped") {
 		t.Errorf("expected second part to be drop banner, got: %q", turns[0].Parts[1].Text)
+	}
+}
+
+// TestPersistedTurnLoadsLegacySessionJSONL pins the reason genai.Content is embedded
+// rather than mirrored: a session file written before sequence numbers existed must
+// load unchanged, in both directions.
+func TestPersistedTurnLoadsLegacySessionJSONL(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"role":"user","parts":[{"text":"written before seq existed"}]}
+`
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(legacy), 0644); err != nil {
+		t.Fatalf("write legacy session: %v", err)
+	}
+
+	turns, err := ReadPersistedTurns(dir)
+	if err != nil {
+		t.Fatalf("ReadPersistedTurns on legacy file: %v", err)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("expected 1 legacy turn, got %d", len(turns))
+	}
+	if turns[0].Role != "user" || ContentText(&turns[0].Content) != "written before seq existed" {
+		t.Fatalf("legacy turn lost data: role=%q text=%q", turns[0].Role, ContentText(&turns[0].Content))
+	}
+	if turns[0].Seq != 0 {
+		t.Fatalf("legacy turn must carry no seq, got %d", turns[0].Seq)
+	}
+
+	// The embedded half must be a genai.Content, not merely shaped like one.
+	var asContent genai.Content
+	if err := json.Unmarshal([]byte(legacy), &asContent); err != nil {
+		t.Fatalf("legacy line into genai.Content: %v", err)
+	}
+	if asContent.Role != turns[0].Role || ContentText(&asContent) != ContentText(&turns[0].Content) {
+		t.Fatal("genai.Content and PersistedTurn disagree on the same bytes")
+	}
+
+	// And a seq-bearing turn must still decode as a plain genai.Content, so readers
+	// that know nothing about seq keep working against a seq-bearing file.
+	withSeq, err := json.Marshal(PersistedTurn{Content: genai.Content{Role: "model", Parts: []*genai.Part{{Text: "after"}}}, Seq: 42})
+	if err != nil {
+		t.Fatalf("marshal seq turn: %v", err)
+	}
+	var round genai.Content
+	if err := json.Unmarshal(withSeq, &round); err != nil {
+		t.Fatalf("seq turn into genai.Content: %v", err)
+	}
+	if round.Role != "model" || ContentText(&round) != "after" {
+		t.Fatalf("seq turn lost data when read as genai.Content: %+v", round)
 	}
 }
