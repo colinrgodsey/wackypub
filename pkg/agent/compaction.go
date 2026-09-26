@@ -449,6 +449,13 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 	return CheckAndCompactSessionWithFallback(ctx, agentDir, runtimeCfg, loadCompactionAgent, force, cfgOverride)
 }
 
+func backendName(cfg *RuntimeConfig) string {
+	if cfg == nil {
+		return "<nil>"
+	}
+	return cfg.Endpoint + "/" + cfg.Model
+}
+
 // CheckAndCompactSessionWithFallback is CheckAndCompactSession with the runtime fallback
 // chain walk: it builds the compaction agent per level from each level's cfg/model (mirroring
 // runTurnWithRuntimeFallback's per-level rebuild for normal turns), descends on
@@ -652,16 +659,16 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 
 	for level, levelCfg := range chain {
 		if backendFailedUntilReset(levelCfg) {
-			fmt.Fprintf(os.Stderr, "Warning: skipping backend %s/%s for compaction: usage limit not yet reset\n", levelCfg.Endpoint, levelCfg.Model)
-			lastErr = fmt.Errorf("backend %s/%s skipped: usage limit not yet reset", levelCfg.Endpoint, levelCfg.Model)
+			fmt.Fprintf(os.Stderr, "Warning: skipping backend %s for compaction: usage limit not yet reset\n", backendName(levelCfg))
+			lastErr = fmt.Errorf("backend %s skipped: usage limit not yet reset", backendName(levelCfg))
 			continue
 		}
 
 		compactionAgent, denials, err := loadCompactionAgent(levelCfg)
 		if err != nil {
-			lastErr = fmt.Errorf("failed to load compaction agent for %s/%s: %w", levelCfg.Endpoint, levelCfg.Model, err)
+			lastErr = fmt.Errorf("failed to load compaction agent for %s: %w", backendName(levelCfg), err)
 			if level+1 < len(chain) {
-				fmt.Fprintf(os.Stderr, "Warning: backend %s/%s load failed: %v; falling back\n", levelCfg.Endpoint, levelCfg.Model, err)
+				fmt.Fprintf(os.Stderr, "Warning: backend %s load failed: %v; falling back\n", backendName(levelCfg), err)
 				continue
 			}
 			return fail("load-agent", lastErr)
@@ -676,9 +683,9 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 			SessionService: sessionSvc,
 		})
 		if err != nil {
-			lastErr = fmt.Errorf("failed to create compaction runner for %s/%s: %w", levelCfg.Endpoint, levelCfg.Model, err)
+			lastErr = fmt.Errorf("failed to create compaction runner for %s: %w", backendName(levelCfg), err)
 			if level+1 < len(chain) {
-				fmt.Fprintf(os.Stderr, "Warning: compaction runner for %s/%s failed: %v; falling back\n", levelCfg.Endpoint, levelCfg.Model, err)
+				fmt.Fprintf(os.Stderr, "Warning: compaction runner for %s failed: %v; falling back\n", backendName(levelCfg), err)
 				continue
 			}
 			return fail("create-runner", lastErr)
@@ -695,11 +702,11 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 					// Nothing emitted at this level: re-run the summary from scratch on the
 					// next backend is clean - no frankenstein memory risk.
 
-					fmt.Fprintf(os.Stderr, "Warning: compaction backend %s/%s failed: %v; falling back to %s/%s\n", levelCfg.Endpoint, levelCfg.Model, err, chain[level+1].Endpoint, chain[level+1].Model)
+					fmt.Fprintf(os.Stderr, "Warning: compaction backend %s failed: %v; falling back to %s\n", backendName(levelCfg), err, backendName(chain[level+1]))
 					break
 				}
 				// Text already produced (or non-qualifying, or chain exhausted): fatal.
-				return fail("generation", fmt.Errorf("LLM compaction generation failed on %s/%s: %w", levelCfg.Endpoint, levelCfg.Model, err))
+				return fail("generation", fmt.Errorf("LLM compaction generation failed on %s: %w", backendName(levelCfg), err))
 			}
 			if event != nil {
 				if text := ExtractTextFromEvent(event); text != "" {
@@ -713,14 +720,16 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 		if levelAddendum != "" {
 			// This level succeeded; it is the one whose model we report.
 			addendum = levelAddendum
-			servedModel = levelCfg.Model
+			if levelCfg != nil {
+				servedModel = levelCfg.Model
+			}
 			servedDenials = denials
 			break
 		}
 		// levelAddendum == "" without an error: the level produced nothing (empty response).
 		// Treat as a qualifying failure ONLY if a fallback exists; otherwise fall through.
 		if level+1 == len(chain) {
-			return fail("generation", fmt.Errorf("compaction backend %s/%s returned an empty summary", levelCfg.Endpoint, levelCfg.Model))
+			return fail("generation", fmt.Errorf("compaction backend %s returned an empty summary", backendName(levelCfg)))
 		}
 	}
 	if addendum == "" && lastErr != nil {

@@ -308,6 +308,9 @@ func (s *AgentSDK) CancelTurn(ctx context.Context, req *agentv1.CancelTurnReques
 // model together identify a backend: a fallback may differ from the primary in either, so
 // both are part of the identity.
 func backendIdentity(cfg *RuntimeConfig) string {
+	if cfg == nil {
+		return ""
+	}
 	return cfg.Endpoint + "/" + cfg.Model
 }
 
@@ -322,6 +325,9 @@ var (
 )
 
 func markBackendFailedUntil(cfg *RuntimeConfig, resetAt time.Time) {
+	if cfg == nil {
+		return
+	}
 	backendFailedUntilMu.Lock()
 	defer backendFailedUntilMu.Unlock()
 	if backendFailedUntil == nil {
@@ -331,17 +337,18 @@ func markBackendFailedUntil(cfg *RuntimeConfig, resetAt time.Time) {
 }
 
 func backendFailedUntilReset(cfg *RuntimeConfig) bool {
+	if cfg == nil {
+		return false
+	}
 	backendFailedUntilMu.Lock()
+	defer backendFailedUntilMu.Unlock()
 	resetAt, ok := backendFailedUntil[backendIdentity(cfg)]
-	backendFailedUntilMu.Unlock()
 	if !ok {
 		return false
 	}
 	if time.Now().After(resetAt) {
 		// Window closed; drop the stale entry so we don't leak map entries per outage.
-		backendFailedUntilMu.Lock()
 		delete(backendFailedUntil, backendIdentity(cfg))
-		backendFailedUntilMu.Unlock()
 		return false
 	}
 	return true
@@ -954,21 +961,23 @@ func asideInternal(s *AgentSDK, ctx context.Context, workspaceDir, agentID, ques
 		if backendFailedUntilReset(levelCfg) {
 			for _, fn := range onWarning {
 				if fn != nil {
-					fn(fmt.Sprintf("skipping backend %s/%s for aside: usage limit not yet reset", levelCfg.Endpoint, levelCfg.Model))
+					fn(fmt.Sprintf("skipping backend %s for aside: usage limit not yet reset", backendName(levelCfg)))
 				}
 			}
 			if level+1 == len(asideChain) {
-				yield("", fmt.Errorf("all aside backends were skipped as failed-until-reset"))
-				return err
+				skipErr := fmt.Errorf("all aside backends were skipped as failed-until-reset")
+				yield("", skipErr)
+				return skipErr
 			}
 			continue
 		}
 		levelAgent, denialsPtr, err := asideLoader(levelCfg)
 		if err != nil {
-			yield("", fmt.Errorf("failed to build aside agent for level %q: %w", levelCfg.Model, err))
+			yield("", fmt.Errorf("failed to build aside agent for level %s: %w", backendName(levelCfg), err))
 			return err
 		}
 		servedDenials = denialsPtr
+		descend := false
 		r, err := runner.New(runner.Config{
 			AppName:        "wackypub",
 			Agent:          levelAgent,
@@ -987,12 +996,13 @@ func asideInternal(s *AgentSDK, ctx context.Context, workspaceDir, agentID, ques
 				if !yieldedText && IsQualifyingFallbackError(err) && level+1 < len(asideChain) {
 					for _, fn := range onWarning {
 						if fn != nil {
-							fn(fmt.Sprintf("aside backend %s/%s failed: %v; falling back to %s/%s", levelCfg.Endpoint, levelCfg.Model, err, asideChain[level+1].Endpoint, asideChain[level+1].Model))
+							fn(fmt.Sprintf("aside backend %s failed: %v; falling back to %s", backendName(levelCfg), err, backendName(asideChain[level+1])))
 						}
 					}
+					descend = true
 					break
 				}
-				yield("", fmt.Errorf("aside generation failed: %w", err))
+				yield("", fmt.Errorf("aside generation failed on %s: %w", backendName(levelCfg), err))
 				return err
 			}
 			if event == nil {
@@ -1009,8 +1019,12 @@ func asideInternal(s *AgentSDK, ctx context.Context, workspaceDir, agentID, ques
 			yield("", ctx.Err())
 			return ctx.Err()
 		}
-		// Success (or text was produced): the current level served the answer.
-		break
+		if !descend {
+			// Success (or text was produced): the current level served the answer.
+			break
+		}
+		// descend: a qualifying zero-text error sent us to the NEXT level - continue the
+		// chain exactly like runTurnWithRuntimeFallback.
 	}
 	if asideResult != nil {
 		asideResult.ToolEvents = asideSink.Drain()
