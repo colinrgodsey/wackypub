@@ -43,6 +43,8 @@ const (
 	AgentService_AddAndGenerateTurn_FullMethodName       = "/wackypub.agent.v1.AgentService/AddAndGenerateTurn"
 	AgentService_AsideQuestion_FullMethodName            = "/wackypub.agent.v1.AgentService/AsideQuestion"
 	AgentService_Trace_FullMethodName                    = "/wackypub.agent.v1.AgentService/Trace"
+	AgentService_ReadSessionEvents_FullMethodName        = "/wackypub.agent.v1.AgentService/ReadSessionEvents"
+	AgentService_SubscribeSession_FullMethodName         = "/wackypub.agent.v1.AgentService/SubscribeSession"
 )
 
 // AgentServiceClient is the client API for AgentService service.
@@ -196,6 +198,16 @@ type AgentServiceClient interface {
 	// inspect multi-hop turn histories, and reconstruct causal chains. The request uses a oneof to enforce
 	// that callers specify either an agent commit specifier or a trace ID.
 	Trace(ctx context.Context, in *TraceRequest, opts ...grpc.CallOption) (*TraceResponse, error)
+	// ReadSessionEvents polls and returns a batch of session events for an agent (D112 watch protocol).
+	// Callers specify either since_seq (to receive events strictly after since_seq) or last_n (to receive
+	// the most recent N events). Replays durable events from session.jsonl. If
+	// the requested since_seq has been compacted away, rewound is set to true and baseline_seq indicates
+	// the new earliest available sequence number.
+	ReadSessionEvents(ctx context.Context, in *ReadSessionEventsRequest, opts ...grpc.CallOption) (*ReadSessionEventsResponse, error)
+	// SubscribeSession establishes a streaming push of session events for an agent.
+	// Replays existing events matching the cursor (since_seq or last_n), then continues streaming live events
+	// as they are committed. Enforces a bounded per-subscriber buffer with drop-with-notice.
+	SubscribeSession(ctx context.Context, in *SubscribeSessionRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SubscribeSessionResponse], error)
 }
 
 type agentServiceClient struct {
@@ -464,6 +476,35 @@ func (c *agentServiceClient) Trace(ctx context.Context, in *TraceRequest, opts .
 	return out, nil
 }
 
+func (c *agentServiceClient) ReadSessionEvents(ctx context.Context, in *ReadSessionEventsRequest, opts ...grpc.CallOption) (*ReadSessionEventsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReadSessionEventsResponse)
+	err := c.cc.Invoke(ctx, AgentService_ReadSessionEvents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) SubscribeSession(ctx context.Context, in *SubscribeSessionRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SubscribeSessionResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &AgentService_ServiceDesc.Streams[2], AgentService_SubscribeSession_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SubscribeSessionRequest, SubscribeSessionResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type AgentService_SubscribeSessionClient = grpc.ServerStreamingClient[SubscribeSessionResponse]
+
 // AgentServiceServer is the server API for AgentService service.
 // All implementations should embed UnimplementedAgentServiceServer
 // for forward compatibility.
@@ -615,6 +656,16 @@ type AgentServiceServer interface {
 	// inspect multi-hop turn histories, and reconstruct causal chains. The request uses a oneof to enforce
 	// that callers specify either an agent commit specifier or a trace ID.
 	Trace(context.Context, *TraceRequest) (*TraceResponse, error)
+	// ReadSessionEvents polls and returns a batch of session events for an agent (D112 watch protocol).
+	// Callers specify either since_seq (to receive events strictly after since_seq) or last_n (to receive
+	// the most recent N events). Replays durable events from session.jsonl. If
+	// the requested since_seq has been compacted away, rewound is set to true and baseline_seq indicates
+	// the new earliest available sequence number.
+	ReadSessionEvents(context.Context, *ReadSessionEventsRequest) (*ReadSessionEventsResponse, error)
+	// SubscribeSession establishes a streaming push of session events for an agent.
+	// Replays existing events matching the cursor (since_seq or last_n), then continues streaming live events
+	// as they are committed. Enforces a bounded per-subscriber buffer with drop-with-notice.
+	SubscribeSession(*SubscribeSessionRequest, grpc.ServerStreamingServer[SubscribeSessionResponse]) error
 }
 
 // UnimplementedAgentServiceServer should be embedded to have
@@ -695,6 +746,12 @@ func (UnimplementedAgentServiceServer) AsideQuestion(context.Context, *AsideQues
 }
 func (UnimplementedAgentServiceServer) Trace(context.Context, *TraceRequest) (*TraceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Trace not implemented")
+}
+func (UnimplementedAgentServiceServer) ReadSessionEvents(context.Context, *ReadSessionEventsRequest) (*ReadSessionEventsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReadSessionEvents not implemented")
+}
+func (UnimplementedAgentServiceServer) SubscribeSession(*SubscribeSessionRequest, grpc.ServerStreamingServer[SubscribeSessionResponse]) error {
+	return status.Error(codes.Unimplemented, "method SubscribeSession not implemented")
 }
 func (UnimplementedAgentServiceServer) testEmbeddedByValue() {}
 
@@ -1134,6 +1191,35 @@ func _AgentService_Trace_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_ReadSessionEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReadSessionEventsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).ReadSessionEvents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_ReadSessionEvents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).ReadSessionEvents(ctx, req.(*ReadSessionEventsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_SubscribeSession_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(SubscribeSessionRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(AgentServiceServer).SubscribeSession(m, &grpc.GenericServerStream[SubscribeSessionRequest, SubscribeSessionResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type AgentService_SubscribeSessionServer = grpc.ServerStreamingServer[SubscribeSessionResponse]
+
 // AgentService_ServiceDesc is the grpc.ServiceDesc for AgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1229,6 +1315,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "Trace",
 			Handler:    _AgentService_Trace_Handler,
 		},
+		{
+			MethodName: "ReadSessionEvents",
+			Handler:    _AgentService_ReadSessionEvents_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -1239,6 +1329,11 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "AddAndGenerateTurnStream",
 			Handler:       _AgentService_AddAndGenerateTurnStream_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "SubscribeSession",
+			Handler:       _AgentService_SubscribeSession_Handler,
 			ServerStreams: true,
 		},
 	},

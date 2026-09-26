@@ -88,9 +88,23 @@ func truncatePersistTextPart(text string) string {
 	return head + banner + tail
 }
 
+// PersistedTurn represents a serialized turn in session.jsonl with an optional
+// monotonic sequence number. genai.Content is embedded rather than mirrored: the
+// wire shape stays byte-identical for both shapes a reader can meet, a turn
+// written before sequence numbers existed loads straight into a genai.Content, and
+// no field-by-field translation layer is needed to move between the two.
+type PersistedTurn struct {
+	genai.Content
+	Seq int64 `json:"seq,omitempty"`
+}
+
 // sanitizeContentForPersist caps oversized text parts and enforces the MaxPersistTurnBytes
 // hard cap before session.jsonl serialization (D101).
 func sanitizeContentForPersist(content *genai.Content) ([]byte, error) {
+	return sanitizeContentForPersistWithSeq(content, 0)
+}
+
+func sanitizeContentForPersistWithSeq(content *genai.Content, seq int64) ([]byte, error) {
 	if content == nil {
 		return []byte("null"), nil
 	}
@@ -109,7 +123,14 @@ func sanitizeContentForPersist(content *genai.Content) ([]byte, error) {
 		}
 	}
 
-	data, err := json.Marshal(&toPersist)
+	marshalTurn := func(role string, parts []*genai.Part) ([]byte, error) {
+		if seq > 0 {
+			return json.Marshal(&PersistedTurn{Content: genai.Content{Role: role, Parts: parts}, Seq: seq})
+		}
+		return json.Marshal(&genai.Content{Role: role, Parts: parts})
+	}
+
+	data, err := marshalTurn(toPersist.Role, toPersist.Parts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal content: %w", err)
 	}
@@ -138,7 +159,7 @@ func sanitizeContentForPersist(content *genai.Content) ([]byte, error) {
 			toPersist.Parts = fallbackParts
 		}
 
-		data, err = json.Marshal(&toPersist)
+		data, err = marshalTurn(toPersist.Role, toPersist.Parts)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal fallback content: %w", err)
 		}
@@ -154,7 +175,7 @@ func sanitizeContentForPersist(content *genai.Content) ([]byte, error) {
 				}
 				fallbackParts[0] = &cloned
 				toPersist.Parts = fallbackParts
-				data, err = json.Marshal(&toPersist)
+				data, err = marshalTurn(toPersist.Role, toPersist.Parts)
 				if err != nil {
 					return nil, fmt.Errorf("failed to marshal clamped content: %w", err)
 				}
@@ -164,7 +185,7 @@ func sanitizeContentForPersist(content *genai.Content) ([]byte, error) {
 		if len(data) > MaxPersistTurnBytes {
 			finalBanner := fmt.Sprintf("[...turn truncated - content exceeded %d bytes limit...]", MaxPersistTurnBytes)
 			toPersist.Parts = []*genai.Part{{Text: finalBanner}}
-			data, err = json.Marshal(&toPersist)
+			data, err = marshalTurn(toPersist.Role, toPersist.Parts)
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal minimal content: %w", err)
 			}
@@ -174,29 +195,22 @@ func sanitizeContentForPersist(content *genai.Content) ([]byte, error) {
 	return data, nil
 }
 
-// AppendSessionContent appends a genai.Content turn to <agent_dir>/session.jsonl.
-// If the file exists and its last byte is not a newline (e.g. from a hand-edit that
-// dropped the trailing newline), a healing '\n' is written first so the new turn lands
-// on its own line rather than being merged with the previous one. See D75.
-//
-// Size Guards (D101):
-// Enforces persist-time caps to prevent runaway model outputs from bricking the agent.
-// In the incident motivating D101, a model turn emitted 411 repeated tool-call markup blocks
-// totaling 1.55M characters; persisting that turn raw created a 1.7MB line in session.jsonl,
-// overflowing scanner buffer caps (bufio.Scanner: token too long) and causing subsequent
-// agent generation and session compaction to permanently fail.
-//
-// To guarantee safety:
-//  1. Text parts exceeding MaxPersistTextPartBytes (256KB) are truncated to
-//     head(8192) + banner + tail(8192).
-//  2. The whole marshaled Content is capped at MaxPersistTurnBytes (512KB); if exceeded,
-//     a fallback retains only the first (capped) text part plus a banner noting dropped content.
-//
-// Structured/binary parts (function calls, inline images) are left to the D48 path.
+// AppendSessionContent appends a genai.Content turn to <agent_dir>/session.jsonl,
+// allocating a new strictly monotonic sequence number stamped on the persisted turn.
 func AppendSessionContent(agentDir string, content *genai.Content) error {
+	seq, err := NextSeq(agentDir)
+	if err != nil {
+		return fmt.Errorf("allocating sequence number for turn: %w", err)
+	}
+	return AppendSessionContentWithSeq(agentDir, content, seq)
+}
+
+// AppendSessionContentWithSeq appends a genai.Content turn to <agent_dir>/session.jsonl
+// with an explicit sequence number.
+func AppendSessionContentWithSeq(agentDir string, content *genai.Content, seq int64) error {
 	sessionPath := filepath.Join(agentDir, SessionFileName)
 
-	data, err := sanitizeContentForPersist(content)
+	data, err := sanitizeContentForPersistWithSeq(content, seq)
 	if err != nil {
 		return err
 	}
@@ -230,6 +244,7 @@ func AppendSessionContent(agentDir string, content *genai.Content) error {
 		return fmt.Errorf("failed to write content to %s: %w", SessionFileName, err)
 	}
 
+	NotifySessionActivity(agentDir)
 	return nil
 }
 
@@ -238,8 +253,44 @@ func AppendSessionTurn(agentDir string, role string, text string) error {
 	return AppendSessionContent(agentDir, genai.NewContentFromText(text, genai.Role(role)))
 }
 
-// WriteSessionTurns overwrites <agent_dir>/session.jsonl with a new list of turns.
-func WriteSessionTurns(agentDir string, turns []*genai.Content) error {
+// ReadPersistedTurns reads all turns from <agent_dir>/session.jsonl as PersistedTurn objects.
+func ReadPersistedTurns(agentDir string) ([]PersistedTurn, error) {
+	sessionPath := filepath.Join(agentDir, SessionFileName)
+
+	file, err := os.Open(sessionPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to open session file at %s: %w", sessionPath, err)
+	}
+	defer file.Close()
+
+	var turns []PersistedTurn
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var turn PersistedTurn
+		if err := json.Unmarshal(line, &turn); err != nil {
+			continue
+		}
+		turns = append(turns, turn)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return turns, fmt.Errorf("error reading session file at %s: %w", sessionPath, err)
+	}
+
+	return turns, nil
+}
+
+// WritePersistedTurns overwrites <agent_dir>/session.jsonl with a list of PersistedTurns.
+func WritePersistedTurns(agentDir string, turns []PersistedTurn) error {
 	sessionPath := filepath.Join(agentDir, "session.jsonl")
 
 	file, err := os.Create(sessionPath)
@@ -250,7 +301,7 @@ func WriteSessionTurns(agentDir string, turns []*genai.Content) error {
 
 	writer := bufio.NewWriter(file)
 	for _, t := range turns {
-		data, err := json.Marshal(t)
+		data, err := json.Marshal(&t)
 		if err != nil {
 			continue
 		}
@@ -262,7 +313,32 @@ func WriteSessionTurns(agentDir string, turns []*genai.Content) error {
 		}
 	}
 
-	return writer.Flush()
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+	NotifySessionActivity(agentDir)
+	return nil
+}
+
+// WriteSessionTurns overwrites <agent_dir>/session.jsonl with a new list of turns,
+// preserving existing sequence numbers where possible.
+func WriteSessionTurns(agentDir string, turns []*genai.Content) error {
+	existing, _ := ReadPersistedTurns(agentDir)
+	var pTurns []PersistedTurn
+	for i, t := range turns {
+		if t == nil {
+			continue
+		}
+		var seq int64
+		if i < len(existing) && existing[i].Seq > 0 {
+			seq = existing[i].Seq
+		}
+		pTurns = append(pTurns, PersistedTurn{
+			Content: genai.Content{Role: t.Role, Parts: t.Parts},
+			Seq:     seq,
+		})
+	}
+	return WritePersistedTurns(agentDir, pTurns)
 }
 
 // ContentText extracts the concatenated final-answer text from a genai.Content's parts,

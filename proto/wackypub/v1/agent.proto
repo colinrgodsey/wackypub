@@ -177,6 +177,18 @@ service AgentService {
   // inspect multi-hop turn histories, and reconstruct causal chains. The request uses a oneof to enforce
   // that callers specify either an agent commit specifier or a trace ID.
   rpc Trace(TraceRequest) returns (TraceResponse);
+
+  // ReadSessionEvents polls and returns a batch of session events for an agent (D112 watch protocol).
+  // Callers specify either since_seq (to receive events strictly after since_seq) or last_n (to receive
+  // the most recent N events). Replays durable events from session.jsonl. If
+  // the requested since_seq has been compacted away, rewound is set to true and baseline_seq indicates
+  // the new earliest available sequence number.
+  rpc ReadSessionEvents(ReadSessionEventsRequest) returns (ReadSessionEventsResponse);
+
+  // SubscribeSession establishes a streaming push of session events for an agent.
+  // Replays existing events matching the cursor (since_seq or last_n), then continues streaming live events
+  // as they are committed. Enforces a bounded per-subscriber buffer with drop-with-notice.
+  rpc SubscribeSession(SubscribeSessionRequest) returns (stream SubscribeSessionResponse);
 }
 
 // ListAgentsRequest specifies parameters for listing agent directories in a workspace.
@@ -304,6 +316,9 @@ message SessionTurn {
 
   // parts contains the ordered sequence of content parts comprising this turn.
   repeated SessionPart parts = 2;
+
+  // seq is the strictly monotonic sequence counter assigned to this turn.
+  int64 seq = 3;
 }
 
 // SessionPart represents one content component of a conversation turn (text or inline data).
@@ -845,6 +860,9 @@ message ToolCall {
   // denied is true when the invocation was refused before execution (compaction/aside
   // deny paths emit the same announce shape with denied=true and no update).
   bool denied = 4;
+
+  // seq is the strictly monotonic sequence counter assigned to this tool call event.
+  int64 seq = 5;
 }
 
 // ToolCallUpdate reports the outcome of a previously announced ToolCall (the ACP
@@ -871,6 +889,9 @@ message ToolCallUpdate {
   // result_ref is a store/session reference for the full result body (see journal
   // stamping). May be empty when the result had no persisted body.
   string result_ref = 6;
+
+  // seq is the strictly monotonic sequence counter assigned to this tool call update event.
+  int64 seq = 7;
 }
 
 // GenerateTurnStreamResponse is a single streamed slice of the assistant response text
@@ -1078,3 +1099,160 @@ message TraceResponse {
   // steps contains the ordered causal steps traversed backward in time.
   repeated TraceStep steps = 4;
 }
+
+// ReadSessionEventsRequest specifies parameters for polling session events.
+message ReadSessionEventsRequest {
+  // agent_id identifies the agent whose session events to read. Required.
+  string agent_id = 1;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 2;
+
+  // cursor specifies the starting point for reading events.
+  // If neither is set, defaults to replaying all surviving events (since_seq = 0).
+  oneof cursor {
+    // since_seq requests events with sequence number strictly greater than since_seq.
+    int64 since_seq = 3;
+
+    // last_n requests the N most recent events (capped at server max).
+    int32 last_n = 4;
+
+    // head_only requests no events, returning only baseline_seq, latest_seq, and latest_turn_seq.
+    // Cheap metadata-only request for cold-starting consumers (e.g. wackydiscord) that should not replay past events.
+    bool head_only = 5;
+  }
+}
+
+// ReadSessionEventsResponse returns a batch of session events and stream cursor state.
+message ReadSessionEventsResponse {
+  // events contains the batch of session events in strictly increasing sequence order.
+  repeated SessionEvent events = 1;
+
+  // rewound indicates that the requested since_seq cursor is invalid against current session history:
+  // either since_seq < baseline_seq (compacted away) or since_seq > latest_seq (rollback / restored directory).
+  // When true, the consumer must reset its local cursor to baseline_seq (or latest_seq).
+  bool rewound = 2;
+
+  // baseline_seq is the earliest available sequence number for this agent's session.
+  int64 baseline_seq = 3;
+
+  // latest_seq is the highest sequence number currently assigned for this agent's session.
+  int64 latest_seq = 4;
+
+  // latest_turn_seq is the sequence number of the most recent persisted turn in this agent's session (0 if none).
+  int64 latest_turn_seq = 5;
+
+  // rolled_back indicates that since_seq was strictly greater than latest_seq,
+  // signalling that the session shrank or was restored from an earlier checkpoint.
+  bool rolled_back = 6;
+}
+
+// SubscribeSessionRequest specifies parameters for streaming session events.
+message SubscribeSessionRequest {
+  // agent_id identifies the agent whose session events to watch. Required.
+  string agent_id = 1;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 2;
+
+  // cursor specifies the replay starting point before transitioning to live streaming.
+  // If neither is set, defaults to replaying all surviving events (since_seq = 0).
+  oneof cursor {
+    // since_seq requests replay of events with sequence number strictly greater than since_seq.
+    int64 since_seq = 3;
+
+    // last_n requests replay of the N most recent events before transitioning to live.
+    int32 last_n = 4;
+
+    // live_only skips replay and starts streaming only new live events emitted after subscription.
+    bool live_only = 5;
+  }
+}
+
+// SubscribeSessionResponse is a streamed unit emitted by SubscribeSession.
+message SubscribeSessionResponse {
+  // event is the next session event.
+  SessionEvent event = 1;
+
+  // rewound indicates that the requested since_seq cursor was invalid (below baseline_seq or above latest_seq).
+  bool rewound = 2;
+
+  // dropped_events indicates the count of live events dropped due to a full subscriber buffer.
+  // When non-zero, this frame acts as a drop notice before resuming event delivery.
+  int64 dropped_events = 3;
+
+  // rolled_back indicates that since_seq was strictly greater than latest_seq.
+  bool rolled_back = 4;
+}
+
+// CompactionEvent captures a session compaction lifecycle occurrence.
+// Durable and replayable.
+message CompactionEvent {
+  // baseline_seq is the earliest sequence number surviving in the session after compaction.
+  int64 baseline_seq = 1;
+
+  // summary is the compaction notice or summary text that replaced compacted turns.
+  string summary = 2;
+
+  // compacted_turns is the number of turns summarized and removed from session.jsonl.
+  int32 compacted_turns = 3;
+
+  // turn is the synthetic user turn representing the compaction notice in session.jsonl.
+  SessionTurn turn = 4;
+}
+
+// SessionEvent represents a unified session observation record.
+//
+// Caveats for Consumers:
+// 1. Two-file interleaving: The stream interleaves lines from TWO underlying files
+//    (session.jsonl)
+//    ordered strictly by seq. It represents the unified agent activity log rather
+//    than session.jsonl alone.
+// 2. Trailing newlines: In raw mode, each line contains the verbatim persisted JSONL
+//    record with normalized newline termination.
+//
+// Event Classes & Durability Contract (Colin / archon):
+// - Durable / replayable events:
+//     * turn (persisted turns from session.jsonl)
+//     * tool_call (pre-execution tool invocation announce)
+//     * tool_call_update (tool execution outcome)
+//     * compaction (session compaction notice/rewrite)
+//   These events are preserved in the on-disk logs (session.jsonl)
+//   and are always available for replay to offline consumers, late joiners, or cache sync.
+//
+// - Live-only events:
+//     * token_delta (in-flight text chunk as model generates)
+//     * progress (in-flight execution progress indication)
+//     * usage (turn token consumption frame at generation close)
+//   These events exist only on the live stream during active turn execution and are NOT
+//   persisted to disk. A consumer that was offline gets the persisted turn, not the live
+//   deltas it missed. That contract is an intentional architectural design, not a limitation.
+message SessionEvent {
+  // seq is the strictly monotonic sequence counter assigned under the session lock.
+  // Guaranteed unique and strictly increasing per agent.
+  int64 seq = 1;
+
+  // timestamp is when the event occurred.
+  google.protobuf.Timestamp timestamp = 2;
+
+  // raw is the byte-identical JSONL line as persisted on disk (for durable events),
+  // allowing CLI --raw to preserve exact tail -f output byte-for-byte.
+  string raw = 3;
+
+  // event payload
+  oneof event {
+    // Durable events:
+    SessionTurn turn = 4;
+    ToolCall tool_call = 5;
+    ToolCallUpdate tool_call_update = 6;
+    CompactionEvent compaction = 7;
+
+    // Live-only events:
+    string token_delta = 8;
+    string progress = 9;
+    TurnUsage usage = 10;
+  }
+}
+
