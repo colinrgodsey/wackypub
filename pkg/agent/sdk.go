@@ -1341,18 +1341,23 @@ func (s *AgentSDK) ReadSession(ctx context.Context, req *agentv1.ReadSessionRequ
 	}
 
 	agentDir := filepath.Join(wsDir, agentID)
-	turns, err := ReadSessionTurns(agentDir)
+	// ReadPersistedTurns (not ReadSessionTurns): the persisted form carries the #65
+	// monotonic sequence number added by the watch protocol, and the bot-side cursor
+	// relies on it - a Seq that is always 0 would drop every turn from the client's
+	// view and make the session look permanently empty.
+	turns, err := ReadPersistedTurns(agentDir)
 	if err != nil {
 		return nil, err
 	}
 
 	var protoTurns []*agentv1.SessionTurn
 	for _, t := range turns {
-		if t == nil {
+		if t.Content.Role == "" && len(t.Parts) == 0 {
 			continue
 		}
 		st := &agentv1.SessionTurn{
-			Role: t.Role,
+			Role: t.Content.Role,
+			Seq:  t.Seq,
 		}
 		for _, p := range t.Parts {
 			if p == nil {

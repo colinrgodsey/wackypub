@@ -14,6 +14,7 @@ import (
 	"time"
 
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
+	"google.golang.org/genai"
 )
 
 func TestSDKAddUserTurnAndReadSession(t *testing.T) {
@@ -55,6 +56,123 @@ func TestSDKAddUserTurnAndReadSession(t *testing.T) {
 
 	if turns[0].GetRole() != "user" || len(turns[0].GetParts()) == 0 || turns[0].GetParts()[0].GetText() != "What is your quest?" {
 		t.Errorf("turn contents mismatch: %+v", turns[0])
+	}
+	// The #65 sequence stamp must survive the proto conversion: the bot-side cursor
+	// (stream C) treats Seq==0 as absent and drops the turn, so a session that never
+	// stamps seq would read as permanently empty. AddUserTurn persists via the
+	// seq-allocating writer, so turn 1 must carry seq 1.
+	if turns[0].GetSeq() != 1 {
+		t.Errorf("turn seq = %d, want 1 (stream-C cursor contract)", turns[0].GetSeq())
+	}
+}
+
+// TestSDKReadSession_SequenceNumbersForSeededSession pins the stream-C blocker: a seeded
+// multi-turn session must round-trip its per-turn sequence numbers through ReadSession.
+// This test FAILED before the fix (ReadSession built SessionTurn from ReadSessionTurns,
+// which returns []*genai.Content with no seq field - every turn was Seq 0).
+func TestSDKReadSession_SequenceNumbersForSeededSession(t *testing.T) {
+	tempDir := t.TempDir()
+	sdk := NewSDK(tempDir)
+	agentID := "seq_agent"
+	agentDir := sdk.AgentDir(agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte(agentID+"\n"), 0644); err != nil {
+		t.Fatalf("allowlist: %v", err)
+	}
+	origCwd, _ := os.Getwd()
+	if err := os.Chdir(agentDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origCwd) }()
+
+	// Seed through the real session writer so sequence numbers are allocated on disk.
+	for _, m := range []string{"hello", "world"} {
+		if err := AppendSessionTurn(agentDir, "user", m); err != nil {
+			t.Fatalf("append %s: %v", m, err)
+		}
+	}
+	if err := AppendSessionTurn(agentDir, "model", "hi there"); err != nil {
+		t.Fatalf("append model: %v", err)
+	}
+
+	resp, err := sdk.ReadSession(context.Background(), &agentv1.ReadSessionRequest{AgentId: agentID})
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	turns := resp.GetTurns()
+	if len(turns) != 3 {
+		t.Fatalf("want 3 turns, got %d", len(turns))
+	}
+	wantSeqs := []int64{1, 2, 3}
+	for i, want := range wantSeqs {
+		if turns[i].GetSeq() != want {
+			t.Errorf("turn %d seq = %d, want %d (stream-C cursor contract)", i, turns[i].GetSeq(), want)
+		}
+	}
+}
+
+// TestSDKReadSession_LegacyLinesRoundTripAsSeqZero pins the REAL migration shape: a
+// long-lived agent's session.jsonl contains lines written before sequence numbers
+// existed (no seq key) mixed with newer stamped lines. ReadSession must not error on
+// the legacy line and must round-trip it as Seq 0 (the pre-#65 value), so the bot's
+// cursor can distinguish "authored before seq" from "absent".
+func TestSDKReadSession_LegacyLinesRoundTripAsSeqZero(t *testing.T) {
+	tempDir := t.TempDir()
+	sdk := NewSDK(tempDir)
+	agentID := "legacy_agent"
+	agentDir := sdk.AgentDir(agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte(agentID+"\n"), 0644); err != nil {
+		t.Fatalf("allowlist: %v", err)
+	}
+	origCwd, _ := os.Getwd()
+	if err := os.Chdir(agentDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origCwd) }()
+
+	// WriteSessionTurns on a fresh file persists WITHOUT seq keys (json omitempty) -
+	// exactly what a pre-#65 session.jsonl looks like.
+	legacy := []*genai.Content{genai.NewContentFromText("old turn", "user")}
+	if err := WriteSessionTurns(agentDir, legacy); err != nil {
+		t.Fatalf("write legacy: %v", err)
+	}
+	// Now stamp two newer turns through the seq-allocating writer: mixed file.
+	if err := AppendSessionTurn(agentDir, "model", "new one"); err != nil {
+		t.Fatalf("append new one: %v", err)
+	}
+	if err := AppendSessionTurn(agentDir, "user", "new two"); err != nil {
+		t.Fatalf("append new two: %v", err)
+	}
+
+	resp, err := sdk.ReadSession(context.Background(), &agentv1.ReadSessionRequest{AgentId: agentID})
+	if err != nil {
+		t.Fatalf("read session with legacy lines errored: %v", err)
+	}
+	turns := resp.GetTurns()
+	if len(turns) != 3 {
+		t.Fatalf("want 3 turns (1 legacy + 2 stamped), got %d", len(turns))
+	}
+	// Migration contract: the legacy line is seq 0; every stamped line is > 0 and
+	// strictly monotonic (RecoverSeq resumes the counter past the unsequenced group,
+	// so the exact first value is 2 here, not 1 - only the relationship matters).
+	if turns[0].GetSeq() != 0 {
+		t.Errorf("legacy turn seq = %d, want 0 (authored before seq existed)", turns[0].GetSeq())
+	}
+	if len(turns[0].GetParts()) == 0 || turns[0].GetParts()[0].GetText() != "old turn" {
+		t.Errorf("legacy turn text = %q, want %q", turns[0].GetParts()[0].GetText(), "old turn")
+	}
+	for i := 1; i < 3; i++ {
+		if turns[i].GetSeq() <= turns[i-1].GetSeq() {
+			t.Errorf("stamped turn %d seq = %d must be > previous %d", i, turns[i].GetSeq(), turns[i-1].GetSeq())
+		}
+	}
+	if turns[1].GetSeq() != 2 || turns[2].GetSeq() != 3 {
+		t.Errorf("stamped seqs = %d,%d; want 2,3 (RecoverSeq offsets past the 0-group)", turns[1].GetSeq(), turns[2].GetSeq())
 	}
 }
 
