@@ -56,6 +56,60 @@ func TestSDKAddUserTurnAndReadSession(t *testing.T) {
 	if turns[0].GetRole() != "user" || len(turns[0].GetParts()) == 0 || turns[0].GetParts()[0].GetText() != "What is your quest?" {
 		t.Errorf("turn contents mismatch: %+v", turns[0])
 	}
+	// The #65 sequence stamp must survive the proto conversion: the bot-side cursor
+	// (stream C) treats Seq==0 as absent and drops the turn, so a session that never
+	// stamps seq would read as permanently empty. AddUserTurn persists via the
+	// seq-allocating writer, so turn 1 must carry seq 1.
+	if turns[0].GetSeq() != 1 {
+		t.Errorf("turn seq = %d, want 1 (stream-C cursor contract)", turns[0].GetSeq())
+	}
+}
+
+// TestSDKReadSession_SequenceNumbersForSeededSession pins the stream-C blocker: a seeded
+// multi-turn session must round-trip its per-turn sequence numbers through ReadSession.
+// This test FAILED before the fix (ReadSession built SessionTurn from ReadSessionTurns,
+// which returns []*genai.Content with no seq field - every turn was Seq 0).
+func TestSDKReadSession_SequenceNumbersForSeededSession(t *testing.T) {
+	tempDir := t.TempDir()
+	sdk := NewSDK(tempDir)
+	agentID := "seq_agent"
+	agentDir := sdk.AgentDir(agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte(agentID+"\n"), 0644); err != nil {
+		t.Fatalf("allowlist: %v", err)
+	}
+	origCwd, _ := os.Getwd()
+	if err := os.Chdir(agentDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origCwd) }()
+
+	// Seed through the real session writer so sequence numbers are allocated on disk.
+	for _, m := range []string{"hello", "world"} {
+		if err := AppendSessionTurn(agentDir, "user", m); err != nil {
+			t.Fatalf("append %s: %v", m, err)
+		}
+	}
+	if err := AppendSessionTurn(agentDir, "model", "hi there"); err != nil {
+		t.Fatalf("append model: %v", err)
+	}
+
+	resp, err := sdk.ReadSession(context.Background(), &agentv1.ReadSessionRequest{AgentId: agentID})
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	turns := resp.GetTurns()
+	if len(turns) != 3 {
+		t.Fatalf("want 3 turns, got %d", len(turns))
+	}
+	wantSeqs := []int64{1, 2, 3}
+	for i, want := range wantSeqs {
+		if turns[i].GetSeq() != want {
+			t.Errorf("turn %d seq = %d, want %d (stream-C cursor contract)", i, turns[i].GetSeq(), want)
+		}
+	}
 }
 
 func TestSDKReadMemory(t *testing.T) {
