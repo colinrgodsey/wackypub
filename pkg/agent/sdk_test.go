@@ -38,11 +38,15 @@ func TestSDKAddUserTurnAndReadSession(t *testing.T) {
 	}
 	defer os.Chdir(origCwd)
 
-	if _, err := sdk.AddUserTurn(context.Background(), &agentv1.AddUserTurnRequest{
+	addResp, err := sdk.AddUserTurn(context.Background(), &agentv1.AddUserTurnRequest{
 		AgentId: agentID,
 		Message: "What is your quest?",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("failed to add user turn via SDK: %v", err)
+	}
+	if addResp.GetTurn().GetSeq() != 1 {
+		t.Errorf("expected echoed turn Seq 1, got %d", addResp.GetTurn().GetSeq())
 	}
 
 	resp, err := sdk.ReadSession(context.Background(), &agentv1.ReadSessionRequest{AgentId: agentID})
@@ -543,5 +547,139 @@ func TestD93_InspectSessionContext(t *testing.T) {
 	}
 	if rep4.GetLastTotalTokens() != 1750 || rep4.GetLastPromptTokens() != 1500 {
 		t.Errorf("expected the deciding numbers preserved after invalidation: %+v", rep4)
+	}
+}
+
+// TestSDKAddUserTurn_EchoesAllocatedSeqWithLegacyAndStampedHistory verifies that AddUserTurnResponse.Turn.Seq
+// (and AddMediaResponse.Turn.Seq) matches the sequence number allocated and persisted to disk on write,
+// including across sessions containing unsequenced legacy rows and stamped rows.
+func TestSDKAddUserTurn_EchoesAllocatedSeqWithLegacyAndStampedHistory(t *testing.T) {
+	tempDir := t.TempDir()
+	sdk := NewSDK(tempDir)
+
+	agentID := "seq_echo_bot"
+	agentDir := sdk.AgentDir(agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte(agentID+"\n"), 0644); err != nil {
+		t.Fatalf("failed to write allowed agents: %v", err)
+	}
+	// Enable image attachments for AddMedia verification
+	runtimeJSON := `{"model":"test-model","endpoint":"http://localhost:1234/v1","maxImageDimension":400}`
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(runtimeJSON), 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	if err := os.Chdir(agentDir); err != nil {
+		t.Fatalf("failed to chdir to agentDir: %v", err)
+	}
+	defer os.Chdir(origCwd)
+
+	// 1. Seed legacy unsequenced lines directly in session.jsonl (simulating sessions created before #65 seq stamping).
+	sessionPath := filepath.Join(agentDir, SessionFileName)
+	legacyContent := `{"role":"user","parts":[{"text":"legacy turn 1"}]}
+{"role":"model","parts":[{"text":"legacy reply 2"}]}
+`
+	if err := os.WriteFile(sessionPath, []byte(legacyContent), 0644); err != nil {
+		t.Fatalf("failed to write legacy session lines: %v", err)
+	}
+
+	// 2. Append a turn via AppendSessionTurn; this forces recovery of the legacy turns (maxSeq=2),
+	// allocating seq 3 for this turn.
+	if err := AppendSessionTurn(agentDir, "user", "stamped turn 3"); err != nil {
+		t.Fatalf("AppendSessionTurn failed: %v", err)
+	}
+
+	// 3. Call sdk.AddUserTurn. It must echo the allocated seq (4) on AddUserTurnResponse.Turn.Seq.
+	res4, err := sdk.AddUserTurn(context.Background(), &agentv1.AddUserTurnRequest{
+		AgentId: agentID,
+		Message: "new user turn 4",
+	})
+	if err != nil {
+		t.Fatalf("AddUserTurn failed: %v", err)
+	}
+	if res4.GetTurn() == nil {
+		t.Fatalf("expected non-nil Turn in AddUserTurnResponse")
+	}
+	if res4.GetTurn().GetSeq() != 4 {
+		t.Errorf("AddUserTurnResponse.Turn.Seq = %d, want 4", res4.GetTurn().GetSeq())
+	}
+
+	// Verify against persisted row on disk
+	persisted, err := ReadPersistedTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadPersistedTurns failed: %v", err)
+	}
+	if len(persisted) != 4 {
+		t.Fatalf("expected 4 persisted turns, got %d", len(persisted))
+	}
+	if persisted[3].Seq != res4.GetTurn().GetSeq() {
+		t.Errorf("persisted seq %d does not match echoed seq %d", persisted[3].Seq, res4.GetTurn().GetSeq())
+	}
+
+	// 4. Consecutive AddUserTurn must allocate and echo seq 5
+	res5, err := sdk.AddUserTurn(context.Background(), &agentv1.AddUserTurnRequest{
+		AgentId: agentID,
+		Message: "new user turn 5",
+	})
+	if err != nil {
+		t.Fatalf("AddUserTurn consecutive failed: %v", err)
+	}
+	if res5.GetTurn().GetSeq() != 5 {
+		t.Errorf("AddUserTurnResponse.Turn.Seq = %d, want 5", res5.GetTurn().GetSeq())
+	}
+	persisted, err = ReadPersistedTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadPersistedTurns failed: %v", err)
+	}
+	if len(persisted) != 5 {
+		t.Fatalf("expected 5 persisted turns, got %d", len(persisted))
+	}
+	if persisted[4].Seq != res5.GetTurn().GetSeq() {
+		t.Errorf("persisted seq %d does not match echoed seq %d", persisted[4].Seq, res5.GetTurn().GetSeq())
+	}
+
+	// 5. AddMedia sibling surface must allocate and echo seq 6
+	testImgData := createTestImage(100, 100, false)
+	mediaRes, err := sdk.AddMedia(context.Background(), &agentv1.AddMediaRequest{
+		AgentId:   agentID,
+		MediaData: testImgData,
+	})
+	if err != nil {
+		t.Fatalf("AddMedia failed: %v", err)
+	}
+	if mediaRes.GetTurn().GetSeq() != 6 {
+		t.Errorf("AddMediaResponse.Turn.Seq = %d, want 6", mediaRes.GetTurn().GetSeq())
+	}
+	persisted, err = ReadPersistedTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadPersistedTurns failed: %v", err)
+	}
+	if len(persisted) != 6 {
+		t.Fatalf("expected 6 persisted turns, got %d", len(persisted))
+	}
+	if persisted[5].Seq != mediaRes.GetTurn().GetSeq() {
+		t.Errorf("persisted media seq %d does not match echoed seq %d", persisted[5].Seq, mediaRes.GetTurn().GetSeq())
+	}
+
+	// 6. Test AppendSessionTurnGetSeq and AppendSessionContentGetSeq helper directly
+	seq7, err := AppendSessionTurnGetSeq(agentDir, "user", "turn 7")
+	if err != nil {
+		t.Fatalf("AppendSessionTurnGetSeq failed: %v", err)
+	}
+	if seq7 != 7 {
+		t.Errorf("AppendSessionTurnGetSeq seq = %d, want 7", seq7)
+	}
+	persisted, err = ReadPersistedTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadPersistedTurns failed: %v", err)
+	}
+	if len(persisted) != 7 || persisted[6].Seq != 7 {
+		t.Errorf("persisted turn 7 seq = %d, want 7", persisted[6].Seq)
 	}
 }

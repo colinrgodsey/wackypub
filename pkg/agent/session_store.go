@@ -195,14 +195,25 @@ func sanitizeContentForPersistWithSeq(content *genai.Content, seq int64) ([]byte
 	return data, nil
 }
 
+// AppendSessionContentGetSeq appends a genai.Content turn to <agent_dir>/session.jsonl,
+// allocating a new strictly monotonic sequence number stamped on the persisted turn,
+// and returns the allocated sequence number.
+func AppendSessionContentGetSeq(agentDir string, content *genai.Content) (int64, error) {
+	seq, err := NextSeq(agentDir)
+	if err != nil {
+		return 0, fmt.Errorf("allocating sequence number for turn: %w", err)
+	}
+	if err := AppendSessionContentWithSeq(agentDir, content, seq); err != nil {
+		return 0, err
+	}
+	return seq, nil
+}
+
 // AppendSessionContent appends a genai.Content turn to <agent_dir>/session.jsonl,
 // allocating a new strictly monotonic sequence number stamped on the persisted turn.
 func AppendSessionContent(agentDir string, content *genai.Content) error {
-	seq, err := NextSeq(agentDir)
-	if err != nil {
-		return fmt.Errorf("allocating sequence number for turn: %w", err)
-	}
-	return AppendSessionContentWithSeq(agentDir, content, seq)
+	_, err := AppendSessionContentGetSeq(agentDir, content)
+	return err
 }
 
 // AppendSessionContentWithSeq appends a genai.Content turn to <agent_dir>/session.jsonl
@@ -251,6 +262,12 @@ func AppendSessionContentWithSeq(agentDir string, content *genai.Content, seq in
 // AppendSessionTurn is a convenience wrapper that appends a simple text turn.
 func AppendSessionTurn(agentDir string, role string, text string) error {
 	return AppendSessionContent(agentDir, genai.NewContentFromText(text, genai.Role(role)))
+}
+
+// AppendSessionTurnGetSeq is a convenience wrapper that appends a simple text turn
+// and returns the allocated sequence number.
+func AppendSessionTurnGetSeq(agentDir string, role string, text string) (int64, error) {
+	return AppendSessionContentGetSeq(agentDir, genai.NewContentFromText(text, genai.Role(role)))
 }
 
 // ReadPersistedTurns reads all turns from <agent_dir>/session.jsonl as PersistedTurn objects.

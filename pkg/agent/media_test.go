@@ -74,6 +74,9 @@ func TestAddMedia_GatingAndExecution(t *testing.T) {
 	if mediaResp.GetTurn().GetRole() != "user" || len(mediaResp.GetTurn().GetParts()) != 1 || len(mediaResp.GetTurn().GetParts()[0].GetInlineData()) == 0 {
 		t.Fatalf("unexpected Turn structure: %+v", mediaResp.GetTurn())
 	}
+	if mediaResp.GetTurn().GetSeq() != 1 {
+		t.Errorf("expected Turn.Seq = 1, got %d", mediaResp.GetTurn().GetSeq())
+	}
 
 	if mediaResp.GetMimeType() != "image/jpeg" {
 		t.Errorf("expected MIMEType image/jpeg, got %s", mediaResp.GetMimeType())
