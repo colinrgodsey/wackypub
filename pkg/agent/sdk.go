@@ -144,7 +144,8 @@ func (s *AgentSDK) AddUserTurn(ctx context.Context, req *agentv1.AddUserTurnRequ
 	finalMsg, hookEnv, warnings, _ := RunUserMessageHooks(agentDir, message)
 
 	content := genai.NewContentFromText(finalMsg, "user")
-	if err := AppendSessionContent(agentDir, content); err != nil {
+	seq, err := AppendSessionContentGetSeq(agentDir, content)
+	if err != nil {
 		return nil, err
 	}
 
@@ -159,6 +160,7 @@ func (s *AgentSDK) AddUserTurn(ctx context.Context, req *agentv1.AddUserTurnRequ
 				Text: finalMsg,
 			},
 		},
+		Seq: seq,
 	}
 	return &agentv1.AddUserTurnResponse{
 		Turn:     turn,
@@ -228,7 +230,8 @@ func (s *AgentSDK) AddMedia(ctx context.Context, req *agentv1.AddMediaRequest) (
 		},
 	}
 
-	if err := AppendSessionContent(agentDir, content); err != nil {
+	seq, err := AppendSessionContentGetSeq(agentDir, content)
+	if err != nil {
 		return nil, fmt.Errorf("failed to append image turn: %w", err)
 	}
 
@@ -242,6 +245,7 @@ func (s *AgentSDK) AddMedia(ctx context.Context, req *agentv1.AddMediaRequest) (
 				MimeType:   mimeType,
 			},
 		},
+		Seq: seq,
 	}
 	return &agentv1.AddMediaResponse{
 		Turn:     turn,
