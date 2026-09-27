@@ -209,11 +209,18 @@ func (c *RuntimeConfig) FallbackChain() []*RuntimeConfig {
 // timeout, DNS), 429-after-retries, and 5xx server errors. Explicitly NOT qualifying: 401/403
 // auth failures (fallback would repeat them or mask credential rot - fail loud) and empty
 // model output (a quality judgment, not an availability signal).
-// urlRegex matches a quoted URL inside an error message so status-code
-// substrings inside it (scheme, host, ephemeral port) cannot misclassify the
-// error as another status (bug: httptest ports containing "401"/"403" were
-// rejecting qualifying 429/503 fallback errors).
-var urlRegex = regexp.MustCompile(`\"https?://[^\"]+\"`)
+// urlRegex matches URL/address forms inside an error message so status-code
+// substrings inside them (scheme, host, ephemeral port) cannot misclassify the
+// error as another status. Two classes of bug: (1) httptest ports containing
+// "401"/"403"/"429"/5xx digits rejected genuinely qualifying 429/503 fallback
+// errors when they sat in a quoted URL; (2) the SAME digits in the bare
+// address inside a net/http dial error ("dial tcp 127.0.0.1:40173: connect:
+// connection refused") are NOT inside a quoted URL and leaked into the checks,
+// flipping a qualifying transport error into a false auth error.
+//
+// Addressed forms: quoted URLs, scheme URLs, bare IPv4:port, bracketed IPv6:port,
+// and localhost[.]localdomain:port / localhost:port.
+var urlRegex = regexp.MustCompile(`\"https?://[^\"]+\"|https?://[^\s\"]+|\d{1,3}(\.\d{1,3}){3}:\d+|\[[a-fA-F0-9:]+\]:\d+|localhost[.]localdomain:\d+|localhost:\d+`)
 
 func IsQualifyingFallbackError(err error) bool {
 	if err == nil {
@@ -221,9 +228,11 @@ func IsQualifyingFallbackError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 
-	// Strip quoted URLs before numeric checks: httptest picks ephemeral ports that
-	// can contain the digits of another status code (e.g. :44017 -> "401"), which
-	// would otherwise misclassify a genuinely qualifying transport/429/5xx error.
+	// Strip URL/address forms before numeric checks: httptest picks ephemeral ports
+	// that can contain the digits of another status code (:44017 contains "401"),
+	// and net/http dial errors carry the same digits in a bare address
+	// ("dial tcp 127.0.0.1:40173"). Either embedded form would otherwise
+	// misclassify a genuinely qualifying transport/429/5xx error as an auth error.
 	msg = urlRegex.ReplaceAllString(msg, " ")
 
 	// Non-qualifying checks first so a message containing both "401" and "connection"
