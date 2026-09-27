@@ -190,6 +190,108 @@ func TestValidateAgentTarget_A2ACycleRejection(t *testing.T) {
 	}
 }
 
+func TestValidateAgentTarget_AsyncSkipsCycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentDir := filepath.Join(tmpDir, "jax")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte("bob\n"), 0644); err != nil {
+		t.Fatalf("failed to write allowed agents: %v", err)
+	}
+	t.Chdir(agentDir)
+
+	origA2A := os.Getenv(Agent2AgentEnvVar)
+	origChain := os.Getenv(CallChainEnvVar)
+	defer func() {
+		os.Setenv(Agent2AgentEnvVar, origA2A)
+		os.Setenv(CallChainEnvVar, origChain)
+	}()
+
+	os.Setenv(Agent2AgentEnvVar, `{"caller_id":"jax","call_chain":["bob","jax"],"trace_id":"a2a-cycle-test"}`)
+
+	// Normal call to 'bob' should fail because 'bob' is already in call_chain
+	_, err := ValidateAgentTarget("bob")
+	if err == nil {
+		t.Fatalf("expected cycle error for normal ValidateAgentTarget('bob'), got nil")
+	}
+
+	// With WithSkipCycleCheck(ctx, true), the cycle check is skipped for this dispatch
+	ctx := WithSkipCycleCheck(context.Background(), true)
+	newMeta, err := ValidateAgentTargetContext(ctx, "bob")
+	if err != nil {
+		t.Fatalf("ValidateAgentTargetContext with WithSkipCycleCheck failed: %v", err)
+	}
+
+	// Child inherits the intact call chain: ["bob", "jax", "bob"]
+	expectedChain := []string{"bob", "jax", "bob"}
+	if len(newMeta.CallChain) != len(expectedChain) {
+		t.Fatalf("call chain length mismatch: got %v, want %v", newMeta.CallChain, expectedChain)
+	}
+	for i, id := range expectedChain {
+		if newMeta.CallChain[i] != id {
+			t.Errorf("call chain[%d] = %q, want %q", i, newMeta.CallChain[i], id)
+		}
+	}
+
+	// Downstream call from the target: when 'bob' now dispatches without skip-cycle,
+	// calling 'jax' should be rejected because 'jax' is in the inherited chain.
+	bobDir := filepath.Join(tmpDir, "bob")
+	if err := os.MkdirAll(bobDir, 0755); err != nil {
+		t.Fatalf("failed to create bob dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bobDir, AllowedAgentsFile), []byte("jax\n"), 0644); err != nil {
+		t.Fatalf("failed to write allowed agents: %v", err)
+	}
+	t.Chdir(bobDir)
+
+	downstreamCtx := WithA2AMetadata(context.Background(), newMeta)
+	_, err = ValidateAgentTargetContext(downstreamCtx, "jax")
+	if err == nil {
+		t.Fatalf("expected downstream cycle rejection when calling jax from bob, got nil")
+	}
+	if !strings.Contains(err.Error(), "already in call chain") {
+		t.Fatalf("expected 'already in call chain' error, got: %v", err)
+	}
+}
+
+func TestA2AMetadataProtoConversion(t *testing.T) {
+	meta := &A2AMetadata{
+		CallerID:  "agent-1",
+		CallChain: []string{"root", "agent-1"},
+		TraceID:   "a2a-trace-xyz",
+		Metadata:  map[string]string{"foo": "bar", "rev": "abcdef"},
+	}
+
+	pb := A2AMetadataToProto(meta)
+	if pb == nil {
+		t.Fatal("A2AMetadataToProto returned nil")
+	}
+	if pb.GetCallerId() != "agent-1" || pb.GetTraceId() != "a2a-trace-xyz" {
+		t.Errorf("proto fields mismatch: %+v", pb)
+	}
+	if len(pb.GetCallChain()) != 2 || pb.GetCallChain()[0] != "root" || pb.GetCallChain()[1] != "agent-1" {
+		t.Errorf("proto call chain mismatch: %v", pb.GetCallChain())
+	}
+	if pb.GetMetadata()["foo"] != "bar" || pb.GetMetadata()["rev"] != "abcdef" {
+		t.Errorf("proto metadata mismatch: %v", pb.GetMetadata())
+	}
+
+	back := ProtoToA2AMetadata(pb)
+	if back == nil {
+		t.Fatal("ProtoToA2AMetadata returned nil")
+	}
+	if back.CallerID != meta.CallerID || back.TraceID != meta.TraceID {
+		t.Errorf("roundtrip fields mismatch: %+v", back)
+	}
+	if len(back.CallChain) != len(meta.CallChain) {
+		t.Errorf("roundtrip call chain mismatch: %v", back.CallChain)
+	}
+	if back.Metadata["foo"] != "bar" || back.Metadata["rev"] != "abcdef" {
+		t.Errorf("roundtrip metadata mismatch: %v", back.Metadata)
+	}
+}
+
 func TestD59_StatelessA2APropagationAndReadOnlyExemption(t *testing.T) {
 	wsDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), []byte(""), 0644); err != nil {

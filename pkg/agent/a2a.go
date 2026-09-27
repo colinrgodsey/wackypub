@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
 
 const (
@@ -80,4 +82,46 @@ func (m *A2AMetadata) Encode() (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+// ProtoToA2AMetadata converts an agentv1.A2AMetadata protobuf message to an A2AMetadata struct.
+func ProtoToA2AMetadata(p *agentv1.A2AMetadata) *A2AMetadata {
+	if p == nil {
+		return nil
+	}
+	var chain []string
+	if len(p.GetCallChain()) > 0 {
+		chain = append([]string{}, p.GetCallChain()...)
+	}
+	metaMap := make(map[string]string)
+	for k, v := range p.GetMetadata() {
+		metaMap[k] = v
+	}
+	return &A2AMetadata{
+		CallerID:  p.GetCallerId(),
+		CallChain: chain,
+		TraceID:   p.GetTraceId(),
+		Metadata:  metaMap,
+	}
+}
+
+// A2AMetadataToProto converts an A2AMetadata struct to an agentv1.A2AMetadata protobuf message.
+func A2AMetadataToProto(m *A2AMetadata) *agentv1.A2AMetadata {
+	if m == nil {
+		return nil
+	}
+	var chain []string
+	if len(m.CallChain) > 0 {
+		chain = append([]string{}, m.CallChain...)
+	}
+	metaMap := make(map[string]string)
+	for k, v := range m.Metadata {
+		metaMap[k] = v
+	}
+	return &agentv1.A2AMetadata{
+		CallerId:  m.CallerID,
+		CallChain: chain,
+		TraceId:   m.TraceID,
+		Metadata:  metaMap,
+	}
 }

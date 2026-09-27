@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,7 +11,7 @@ import (
 
 // envProbeVars are the variables the probe tool prints. Add a name here and the script below to
 // observe another variable in the child.
-var envProbeVars = []string{"AGENT2AGENT", "WACKYPUB_CALL_CHAIN", "MY_CUSTOM_VAR", "OVERRIDDEN_VAR", "PATH", "HOME", "TMPDIR", "LANG"}
+var envProbeVars = []string{"AGENT2AGENT", "WACKYPUB_CALL_CHAIN", "MY_CUSTOM_VAR", "OVERRIDDEN_VAR", "PATH", "HOME", "TMPDIR", "LANG", WackyprocSupervisedEnvVar}
 
 const envProbeUnset = "<unset>"
 
@@ -179,5 +180,63 @@ func TestExecuteTool_ModelEnvStillOverridesUnlockedDotEnvAndPassesThrough(t *tes
 
 	if seen["OVERRIDDEN_VAR"] != "from_args" || seen["MY_CUSTOM_VAR"] != "from_args" {
 		t.Errorf("model-supplied env stopped overriding .env: %v", seen)
+	}
+}
+
+// TestToolEnvStripsWackyprocSupervised verifies the anti-bleed protection:
+//  1. Tool children lack WACKYPROC_SUPERVISED even when the parent runtime environment carries it,
+//     and even if attempted to be injected via .env or tool args.
+//  2. A wackyproc-spawned call directly carries WACKYPROC_SUPERVISED, making the supervision attestation exact.
+func TestToolEnvStripsWackyprocSupervised(t *testing.T) {
+	// Step 1: Verify childEnv unit logic strips WACKYPROC_SUPERVISED from base, harness, and overlays
+	base := []string{
+		WackyprocSupervisedEnvVar + "=parent-supervised-12345",
+		"PATH=/usr/bin",
+		"HOME=/home/test",
+	}
+	harness := map[string]string{
+		"PATH":                    "/usr/bin",
+		"HOME":                    "/home/test",
+		WackyprocSupervisedEnvVar: "harness-bleed",
+	}
+	overlayDotEnv := map[string]string{
+		WackyprocSupervisedEnvVar: "dotenv-bleed",
+	}
+	overlayArgs := map[string]string{
+		WackyprocSupervisedEnvVar: "args-bleed",
+	}
+
+	resultEnv := childEnv(base, harness, overlayDotEnv, overlayArgs)
+	for _, entry := range resultEnv {
+		if strings.HasPrefix(entry, WackyprocSupervisedEnvVar+"=") {
+			t.Fatalf("childEnv leaked %s into tool env: %s", WackyprocSupervisedEnvVar, entry)
+		}
+	}
+
+	// Step 2: Verify real tool execution via executeTool strips it from tool child even when parent has it
+	t.Setenv(WackyprocSupervisedEnvVar, "parent-supervised-99999")
+
+	agentDir, toolPath := newEnvProbeAgent(t, WackyprocSupervisedEnvVar+"=dotenv-attempt\n")
+	seen := runEnvProbe(t, agentDir, toolPath, ExecToolArgs{
+		Env: map[string]string{
+			WackyprocSupervisedEnvVar: "model-attempt",
+		},
+	}, nil)
+
+	if val := seen[WackyprocSupervisedEnvVar]; val != envProbeUnset {
+		t.Fatalf("tool child observed %s = %q; want %q (anti-bleed stripped)", WackyprocSupervisedEnvVar, val, envProbeUnset)
+	}
+
+	// Step 3: Verify a wackyproc-spawned call carries the variable
+	// Wackyproc spawns processes directly setting WACKYPROC_SUPERVISED in the child's environment.
+	cmd := exec.Command("sh", "-c", "echo \"$WACKYPROC_SUPERVISED\"")
+	cmd.Env = append(os.Environ(), WackyprocSupervisedEnvVar+"=wackyproc-proc-42")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("wackyproc-spawned command failed: %v", err)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != "wackyproc-proc-42" {
+		t.Fatalf("wackyproc-spawned call observed %s = %q; want %q", WackyprocSupervisedEnvVar, got, "wackyproc-proc-42")
 	}
 }

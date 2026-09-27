@@ -63,6 +63,25 @@ How your reply reaches the other agent depends entirely on WHICH command they us
 - **How to tell which happened**: you cannot reliably tell from the message text alone. The AGENT2AGENT env metadata (caller_id, call_chain, trace_id) tells you WHO sent it, but not whether they are blocking on your response. Heuristic until tooling improves: if the message is a question or task handed to you mid-conversation by a known collaborator, assume synchronous and answer in-turn; if it is a notification, FYI, or batch instruction, assume async.
 - **Cycle-blocked replies are recoverable**: if your `agent prompt` reply is rejected with "already in call chain", the sender is still waiting - your in-progress turn's final response will be delivered to them when you finish. Do not keep retrying the prompt; finish your turn with the answer as your final text.
 
-Known friction (TODO logged): an async pattern with reply routing does not exist yet - `add` gives the sender no way to receive your response. See GitKB task `a2a-async-reply-pattern`.
+### 6. Async Supervised Dispatch (`--async` via wackyproc)
+
+When an agent needs to start and sustain a real turn in a target agent without blocking the caller, use wackyproc-supervised async dispatch:
+
+```bash
+wackyproc run wackypub agent prompt --async <target_agent_id> "<message>\n\nYour response is not needed. Respond with only NO_RESPONSE."
+```
+
+#### Key Semantics:
+- **Supervision Gate**: `--async` requires `WACKYPROC_SUPERVISED` in the environment. Bare dispatches without wackyproc supervision are refused immediately (`--async requires WACKYPROC_SUPERVISED in environment: the dispatch must be wackyproc-supervised (dangerous flag; output must be captured)`).
+- **Anti-Bleed Protection**: `wackypub`'s tool environment builder (`childEnv`) strips `WACKYPROC_SUPERVISED` from all tool children. Even if the calling agent runtime was spawned via wackyproc, its tool children cannot execute bare `--async` calls; dispatches must explicitly route through `wackyproc run` so that output capture and supervision are guaranteed.
+- **Cycle-Detection Relaxation**: `--async` skips call-chain cycle detection for that single dispatch only. The child process inherits the intact call chain (with the target appended), ensuring all downstream calls made by the target remain fully cycle-protected.
+- **NO_RESPONSE Convention**: Async dispatches MUST append the hard suffix:
+  `"Your response is not needed. Respond with only NO_RESPONSE."`
+  This convention removes the reply temptation that cycle detection normally polices. If a model fails to follow the instruction, its output is safely captured in wackyproc stdout rather than lost.
+- **Output Retrieval (No Callback)**: Callers check wackyproc stdout on completion (`wait`/`get`); there is no callback.
+- **Dispatch Receipts**: The dispatch receipt surfaces the wackyproc proc ID and target (wackyproc-side changes owned by Phoebe).
+- **Deadline Supervision**: Turn deadlines and timeouts are enforced wackyproc-side via a timeout watchdog on the supervised child (owned by Phoebe).
+- **Open Architectural Note**: The `.git.lock` shared-repo commit serialization question remains OPEN in the task card (`tasks/wackypub/a2a-async-reply-pattern`). Per-target `session.lock` serializes turns per agent, but cross-agent concurrent commits to a single shared repo remain unresolved.
 
 **Hook recommendation**: if your workspace does a2a, install a receiver-side announce hook (see `examples/hooks/on-user-message/10-announce-check` in the wackypub repo) so inbound agent turns are mechanically annotated with `[Message from agent: <id>]` - generally wanted; a minority of use cases do not call for it. Verify what hooks you have via `git-kb show knowledge/gitkb-swarm-process` and the hooks inspection command (pending).
+

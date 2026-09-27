@@ -3487,7 +3487,9 @@ type AddAndGenerateTurnStreamRequest struct {
 	UserMessage string `protobuf:"bytes,2,opt,name=user_message,json=userMessage,proto3" json:"user_message,omitempty"`
 	// workspace_dir is the filesystem path to the workspace root containing the agent.
 	// When empty, the SDK's configured default workspace directory is used.
-	WorkspaceDir  string `protobuf:"bytes,3,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	WorkspaceDir string `protobuf:"bytes,3,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	// a2a_metadata optionally carries Agent2Agent attribution context (D33).
+	A2AMetadata   *A2AMetadata `protobuf:"bytes,4,opt,name=a2a_metadata,json=a2aMetadata,proto3" json:"a2a_metadata,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3541,6 +3543,13 @@ func (x *AddAndGenerateTurnStreamRequest) GetWorkspaceDir() string {
 		return x.WorkspaceDir
 	}
 	return ""
+}
+
+func (x *AddAndGenerateTurnStreamRequest) GetA2AMetadata() *A2AMetadata {
+	if x != nil {
+		return x.A2AMetadata
+	}
+	return nil
 }
 
 // AddAndGenerateTurnStreamResponse is one streamed unit of an add-and-generate turn: either
@@ -3635,7 +3644,9 @@ type AddAndGenerateTurnRequest struct {
 	UserMessage string `protobuf:"bytes,2,opt,name=user_message,json=userMessage,proto3" json:"user_message,omitempty"`
 	// workspace_dir is the filesystem path to the workspace root containing the agent.
 	// When empty, the SDK's configured default workspace directory is used.
-	WorkspaceDir  string `protobuf:"bytes,3,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	WorkspaceDir string `protobuf:"bytes,3,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	// a2a_metadata optionally carries Agent2Agent attribution context (D33).
+	A2AMetadata   *A2AMetadata `protobuf:"bytes,4,opt,name=a2a_metadata,json=a2aMetadata,proto3" json:"a2a_metadata,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3689,6 +3700,13 @@ func (x *AddAndGenerateTurnRequest) GetWorkspaceDir() string {
 		return x.WorkspaceDir
 	}
 	return ""
+}
+
+func (x *AddAndGenerateTurnRequest) GetA2AMetadata() *A2AMetadata {
+	if x != nil {
+		return x.A2AMetadata
+	}
+	return nil
 }
 
 // AddAndGenerateTurnResponse returns the complete assistant text and any hook warnings.
@@ -5239,21 +5257,23 @@ const file_agent_proto_rawDesc = "" +
 	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\"^\n" +
 	"\x14GenerateTurnResponse\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x122\n" +
-	"\x05usage\x18\x02 \x01(\v2\x1c.wackypub.agent.v1.TurnUsageR\x05usage\"\x84\x01\n" +
+	"\x05usage\x18\x02 \x01(\v2\x1c.wackypub.agent.v1.TurnUsageR\x05usage\"\xc7\x01\n" +
 	"\x1fAddAndGenerateTurnStreamRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12!\n" +
 	"\fuser_message\x18\x02 \x01(\tR\vuserMessage\x12#\n" +
-	"\rworkspace_dir\x18\x03 \x01(\tR\fworkspaceDir\"\x8b\x02\n" +
+	"\rworkspace_dir\x18\x03 \x01(\tR\fworkspaceDir\x12A\n" +
+	"\fa2a_metadata\x18\x04 \x01(\v2\x1e.wackypub.agent.v1.A2AMetadataR\va2aMetadata\"\x8b\x02\n" +
 	" AddAndGenerateTurnStreamResponse\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x18\n" +
 	"\awarning\x18\x02 \x01(\tR\awarning\x122\n" +
 	"\x05usage\x18\x03 \x01(\v2\x1c.wackypub.agent.v1.TurnUsageR\x05usage\x128\n" +
 	"\ttool_call\x18\x04 \x01(\v2\x1b.wackypub.agent.v1.ToolCallR\btoolCall\x12K\n" +
-	"\x10tool_call_update\x18\x05 \x01(\v2!.wackypub.agent.v1.ToolCallUpdateR\x0etoolCallUpdate\"~\n" +
+	"\x10tool_call_update\x18\x05 \x01(\v2!.wackypub.agent.v1.ToolCallUpdateR\x0etoolCallUpdate\"\xc1\x01\n" +
 	"\x19AddAndGenerateTurnRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12!\n" +
 	"\fuser_message\x18\x02 \x01(\tR\vuserMessage\x12#\n" +
-	"\rworkspace_dir\x18\x03 \x01(\tR\fworkspaceDir\"\x80\x01\n" +
+	"\rworkspace_dir\x18\x03 \x01(\tR\fworkspaceDir\x12A\n" +
+	"\fa2a_metadata\x18\x04 \x01(\v2\x1e.wackypub.agent.v1.A2AMetadataR\va2aMetadata\"\x80\x01\n" +
 	"\x1aAddAndGenerateTurnResponse\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x1a\n" +
 	"\bwarnings\x18\x02 \x03(\tR\bwarnings\x122\n" +
@@ -5482,81 +5502,83 @@ var file_agent_proto_depIdxs = []int32{
 	44, // 13: wackypub.agent.v1.GenerateTurnStreamResponse.tool_call:type_name -> wackypub.agent.v1.ToolCall
 	45, // 14: wackypub.agent.v1.GenerateTurnStreamResponse.tool_call_update:type_name -> wackypub.agent.v1.ToolCallUpdate
 	43, // 15: wackypub.agent.v1.GenerateTurnResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
-	43, // 16: wackypub.agent.v1.AddAndGenerateTurnStreamResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
-	44, // 17: wackypub.agent.v1.AddAndGenerateTurnStreamResponse.tool_call:type_name -> wackypub.agent.v1.ToolCall
-	45, // 18: wackypub.agent.v1.AddAndGenerateTurnStreamResponse.tool_call_update:type_name -> wackypub.agent.v1.ToolCallUpdate
-	43, // 19: wackypub.agent.v1.AddAndGenerateTurnResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
-	43, // 20: wackypub.agent.v1.AsideQuestionResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
-	65, // 21: wackypub.agent.v1.A2AMetadata.metadata:type_name -> wackypub.agent.v1.A2AMetadata.MetadataEntry
-	55, // 22: wackypub.agent.v1.TraceStep.a2a_metadata:type_name -> wackypub.agent.v1.A2AMetadata
-	6,  // 23: wackypub.agent.v1.TraceStep.turn_contents:type_name -> wackypub.agent.v1.SessionTurn
-	56, // 24: wackypub.agent.v1.TraceResponse.steps:type_name -> wackypub.agent.v1.TraceStep
-	64, // 25: wackypub.agent.v1.ReadSessionEventsResponse.events:type_name -> wackypub.agent.v1.SessionEvent
-	64, // 26: wackypub.agent.v1.SubscribeSessionResponse.event:type_name -> wackypub.agent.v1.SessionEvent
-	6,  // 27: wackypub.agent.v1.CompactionEvent.turn:type_name -> wackypub.agent.v1.SessionTurn
-	66, // 28: wackypub.agent.v1.SessionEvent.timestamp:type_name -> google.protobuf.Timestamp
-	6,  // 29: wackypub.agent.v1.SessionEvent.turn:type_name -> wackypub.agent.v1.SessionTurn
-	44, // 30: wackypub.agent.v1.SessionEvent.tool_call:type_name -> wackypub.agent.v1.ToolCall
-	45, // 31: wackypub.agent.v1.SessionEvent.tool_call_update:type_name -> wackypub.agent.v1.ToolCallUpdate
-	63, // 32: wackypub.agent.v1.SessionEvent.compaction:type_name -> wackypub.agent.v1.CompactionEvent
-	43, // 33: wackypub.agent.v1.SessionEvent.usage:type_name -> wackypub.agent.v1.TurnUsage
-	0,  // 34: wackypub.agent.v1.AgentService.ListAgents:input_type -> wackypub.agent.v1.ListAgentsRequest
-	2,  // 35: wackypub.agent.v1.AgentService.InspectAgent:input_type -> wackypub.agent.v1.InspectAgentRequest
-	4,  // 36: wackypub.agent.v1.AgentService.ReadSession:input_type -> wackypub.agent.v1.ReadSessionRequest
-	8,  // 37: wackypub.agent.v1.AgentService.ReadMemory:input_type -> wackypub.agent.v1.ReadMemoryRequest
-	10, // 38: wackypub.agent.v1.AgentService.RenderSystemPrompt:input_type -> wackypub.agent.v1.RenderSystemPromptRequest
-	12, // 39: wackypub.agent.v1.AgentService.InspectSessionContext:input_type -> wackypub.agent.v1.InspectSessionContextRequest
-	14, // 40: wackypub.agent.v1.AgentService.InspectAgentLocks:input_type -> wackypub.agent.v1.InspectAgentLocksRequest
-	17, // 41: wackypub.agent.v1.AgentService.AddUserTurn:input_type -> wackypub.agent.v1.AddUserTurnRequest
-	19, // 42: wackypub.agent.v1.AgentService.AddMedia:input_type -> wackypub.agent.v1.AddMediaRequest
-	21, // 43: wackypub.agent.v1.AgentService.CancelTurn:input_type -> wackypub.agent.v1.CancelTurnRequest
-	23, // 44: wackypub.agent.v1.AgentService.StripSignatures:input_type -> wackypub.agent.v1.StripSignaturesRequest
-	25, // 45: wackypub.agent.v1.AgentService.CompactSession:input_type -> wackypub.agent.v1.CompactSessionRequest
-	28, // 46: wackypub.agent.v1.AgentService.CreateScratchpad:input_type -> wackypub.agent.v1.CreateScratchpadRequest
-	31, // 47: wackypub.agent.v1.AgentService.GetScratchpad:input_type -> wackypub.agent.v1.GetScratchpadRequest
-	33, // 48: wackypub.agent.v1.AgentService.ListScratchpads:input_type -> wackypub.agent.v1.ListScratchpadsRequest
-	35, // 49: wackypub.agent.v1.AgentService.SearchScratchpad:input_type -> wackypub.agent.v1.SearchScratchpadRequest
-	38, // 50: wackypub.agent.v1.AgentService.DiffScratchpadEntries:input_type -> wackypub.agent.v1.DiffScratchpadEntriesRequest
-	40, // 51: wackypub.agent.v1.AgentService.DeleteScratchpad:input_type -> wackypub.agent.v1.DeleteScratchpadRequest
-	42, // 52: wackypub.agent.v1.AgentService.GenerateTurnStream:input_type -> wackypub.agent.v1.GenerateTurnStreamRequest
-	47, // 53: wackypub.agent.v1.AgentService.GenerateTurn:input_type -> wackypub.agent.v1.GenerateTurnRequest
-	49, // 54: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:input_type -> wackypub.agent.v1.AddAndGenerateTurnStreamRequest
-	51, // 55: wackypub.agent.v1.AgentService.AddAndGenerateTurn:input_type -> wackypub.agent.v1.AddAndGenerateTurnRequest
-	53, // 56: wackypub.agent.v1.AgentService.AsideQuestion:input_type -> wackypub.agent.v1.AsideQuestionRequest
-	57, // 57: wackypub.agent.v1.AgentService.Trace:input_type -> wackypub.agent.v1.TraceRequest
-	59, // 58: wackypub.agent.v1.AgentService.ReadSessionEvents:input_type -> wackypub.agent.v1.ReadSessionEventsRequest
-	61, // 59: wackypub.agent.v1.AgentService.SubscribeSession:input_type -> wackypub.agent.v1.SubscribeSessionRequest
-	1,  // 60: wackypub.agent.v1.AgentService.ListAgents:output_type -> wackypub.agent.v1.ListAgentsResponse
-	3,  // 61: wackypub.agent.v1.AgentService.InspectAgent:output_type -> wackypub.agent.v1.InspectAgentResponse
-	5,  // 62: wackypub.agent.v1.AgentService.ReadSession:output_type -> wackypub.agent.v1.ReadSessionResponse
-	9,  // 63: wackypub.agent.v1.AgentService.ReadMemory:output_type -> wackypub.agent.v1.ReadMemoryResponse
-	11, // 64: wackypub.agent.v1.AgentService.RenderSystemPrompt:output_type -> wackypub.agent.v1.RenderSystemPromptResponse
-	13, // 65: wackypub.agent.v1.AgentService.InspectSessionContext:output_type -> wackypub.agent.v1.InspectSessionContextResponse
-	15, // 66: wackypub.agent.v1.AgentService.InspectAgentLocks:output_type -> wackypub.agent.v1.InspectAgentLocksResponse
-	18, // 67: wackypub.agent.v1.AgentService.AddUserTurn:output_type -> wackypub.agent.v1.AddUserTurnResponse
-	20, // 68: wackypub.agent.v1.AgentService.AddMedia:output_type -> wackypub.agent.v1.AddMediaResponse
-	22, // 69: wackypub.agent.v1.AgentService.CancelTurn:output_type -> wackypub.agent.v1.CancelTurnResponse
-	24, // 70: wackypub.agent.v1.AgentService.StripSignatures:output_type -> wackypub.agent.v1.StripSignaturesResponse
-	27, // 71: wackypub.agent.v1.AgentService.CompactSession:output_type -> wackypub.agent.v1.CompactSessionResponse
-	29, // 72: wackypub.agent.v1.AgentService.CreateScratchpad:output_type -> wackypub.agent.v1.CreateScratchpadResponse
-	32, // 73: wackypub.agent.v1.AgentService.GetScratchpad:output_type -> wackypub.agent.v1.GetScratchpadResponse
-	34, // 74: wackypub.agent.v1.AgentService.ListScratchpads:output_type -> wackypub.agent.v1.ListScratchpadsResponse
-	36, // 75: wackypub.agent.v1.AgentService.SearchScratchpad:output_type -> wackypub.agent.v1.SearchScratchpadResponse
-	39, // 76: wackypub.agent.v1.AgentService.DiffScratchpadEntries:output_type -> wackypub.agent.v1.DiffScratchpadEntriesResponse
-	41, // 77: wackypub.agent.v1.AgentService.DeleteScratchpad:output_type -> wackypub.agent.v1.DeleteScratchpadResponse
-	46, // 78: wackypub.agent.v1.AgentService.GenerateTurnStream:output_type -> wackypub.agent.v1.GenerateTurnStreamResponse
-	48, // 79: wackypub.agent.v1.AgentService.GenerateTurn:output_type -> wackypub.agent.v1.GenerateTurnResponse
-	50, // 80: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:output_type -> wackypub.agent.v1.AddAndGenerateTurnStreamResponse
-	52, // 81: wackypub.agent.v1.AgentService.AddAndGenerateTurn:output_type -> wackypub.agent.v1.AddAndGenerateTurnResponse
-	54, // 82: wackypub.agent.v1.AgentService.AsideQuestion:output_type -> wackypub.agent.v1.AsideQuestionResponse
-	58, // 83: wackypub.agent.v1.AgentService.Trace:output_type -> wackypub.agent.v1.TraceResponse
-	60, // 84: wackypub.agent.v1.AgentService.ReadSessionEvents:output_type -> wackypub.agent.v1.ReadSessionEventsResponse
-	62, // 85: wackypub.agent.v1.AgentService.SubscribeSession:output_type -> wackypub.agent.v1.SubscribeSessionResponse
-	60, // [60:86] is the sub-list for method output_type
-	34, // [34:60] is the sub-list for method input_type
-	34, // [34:34] is the sub-list for extension type_name
-	34, // [34:34] is the sub-list for extension extendee
-	0,  // [0:34] is the sub-list for field type_name
+	55, // 16: wackypub.agent.v1.AddAndGenerateTurnStreamRequest.a2a_metadata:type_name -> wackypub.agent.v1.A2AMetadata
+	43, // 17: wackypub.agent.v1.AddAndGenerateTurnStreamResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
+	44, // 18: wackypub.agent.v1.AddAndGenerateTurnStreamResponse.tool_call:type_name -> wackypub.agent.v1.ToolCall
+	45, // 19: wackypub.agent.v1.AddAndGenerateTurnStreamResponse.tool_call_update:type_name -> wackypub.agent.v1.ToolCallUpdate
+	55, // 20: wackypub.agent.v1.AddAndGenerateTurnRequest.a2a_metadata:type_name -> wackypub.agent.v1.A2AMetadata
+	43, // 21: wackypub.agent.v1.AddAndGenerateTurnResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
+	43, // 22: wackypub.agent.v1.AsideQuestionResponse.usage:type_name -> wackypub.agent.v1.TurnUsage
+	65, // 23: wackypub.agent.v1.A2AMetadata.metadata:type_name -> wackypub.agent.v1.A2AMetadata.MetadataEntry
+	55, // 24: wackypub.agent.v1.TraceStep.a2a_metadata:type_name -> wackypub.agent.v1.A2AMetadata
+	6,  // 25: wackypub.agent.v1.TraceStep.turn_contents:type_name -> wackypub.agent.v1.SessionTurn
+	56, // 26: wackypub.agent.v1.TraceResponse.steps:type_name -> wackypub.agent.v1.TraceStep
+	64, // 27: wackypub.agent.v1.ReadSessionEventsResponse.events:type_name -> wackypub.agent.v1.SessionEvent
+	64, // 28: wackypub.agent.v1.SubscribeSessionResponse.event:type_name -> wackypub.agent.v1.SessionEvent
+	6,  // 29: wackypub.agent.v1.CompactionEvent.turn:type_name -> wackypub.agent.v1.SessionTurn
+	66, // 30: wackypub.agent.v1.SessionEvent.timestamp:type_name -> google.protobuf.Timestamp
+	6,  // 31: wackypub.agent.v1.SessionEvent.turn:type_name -> wackypub.agent.v1.SessionTurn
+	44, // 32: wackypub.agent.v1.SessionEvent.tool_call:type_name -> wackypub.agent.v1.ToolCall
+	45, // 33: wackypub.agent.v1.SessionEvent.tool_call_update:type_name -> wackypub.agent.v1.ToolCallUpdate
+	63, // 34: wackypub.agent.v1.SessionEvent.compaction:type_name -> wackypub.agent.v1.CompactionEvent
+	43, // 35: wackypub.agent.v1.SessionEvent.usage:type_name -> wackypub.agent.v1.TurnUsage
+	0,  // 36: wackypub.agent.v1.AgentService.ListAgents:input_type -> wackypub.agent.v1.ListAgentsRequest
+	2,  // 37: wackypub.agent.v1.AgentService.InspectAgent:input_type -> wackypub.agent.v1.InspectAgentRequest
+	4,  // 38: wackypub.agent.v1.AgentService.ReadSession:input_type -> wackypub.agent.v1.ReadSessionRequest
+	8,  // 39: wackypub.agent.v1.AgentService.ReadMemory:input_type -> wackypub.agent.v1.ReadMemoryRequest
+	10, // 40: wackypub.agent.v1.AgentService.RenderSystemPrompt:input_type -> wackypub.agent.v1.RenderSystemPromptRequest
+	12, // 41: wackypub.agent.v1.AgentService.InspectSessionContext:input_type -> wackypub.agent.v1.InspectSessionContextRequest
+	14, // 42: wackypub.agent.v1.AgentService.InspectAgentLocks:input_type -> wackypub.agent.v1.InspectAgentLocksRequest
+	17, // 43: wackypub.agent.v1.AgentService.AddUserTurn:input_type -> wackypub.agent.v1.AddUserTurnRequest
+	19, // 44: wackypub.agent.v1.AgentService.AddMedia:input_type -> wackypub.agent.v1.AddMediaRequest
+	21, // 45: wackypub.agent.v1.AgentService.CancelTurn:input_type -> wackypub.agent.v1.CancelTurnRequest
+	23, // 46: wackypub.agent.v1.AgentService.StripSignatures:input_type -> wackypub.agent.v1.StripSignaturesRequest
+	25, // 47: wackypub.agent.v1.AgentService.CompactSession:input_type -> wackypub.agent.v1.CompactSessionRequest
+	28, // 48: wackypub.agent.v1.AgentService.CreateScratchpad:input_type -> wackypub.agent.v1.CreateScratchpadRequest
+	31, // 49: wackypub.agent.v1.AgentService.GetScratchpad:input_type -> wackypub.agent.v1.GetScratchpadRequest
+	33, // 50: wackypub.agent.v1.AgentService.ListScratchpads:input_type -> wackypub.agent.v1.ListScratchpadsRequest
+	35, // 51: wackypub.agent.v1.AgentService.SearchScratchpad:input_type -> wackypub.agent.v1.SearchScratchpadRequest
+	38, // 52: wackypub.agent.v1.AgentService.DiffScratchpadEntries:input_type -> wackypub.agent.v1.DiffScratchpadEntriesRequest
+	40, // 53: wackypub.agent.v1.AgentService.DeleteScratchpad:input_type -> wackypub.agent.v1.DeleteScratchpadRequest
+	42, // 54: wackypub.agent.v1.AgentService.GenerateTurnStream:input_type -> wackypub.agent.v1.GenerateTurnStreamRequest
+	47, // 55: wackypub.agent.v1.AgentService.GenerateTurn:input_type -> wackypub.agent.v1.GenerateTurnRequest
+	49, // 56: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:input_type -> wackypub.agent.v1.AddAndGenerateTurnStreamRequest
+	51, // 57: wackypub.agent.v1.AgentService.AddAndGenerateTurn:input_type -> wackypub.agent.v1.AddAndGenerateTurnRequest
+	53, // 58: wackypub.agent.v1.AgentService.AsideQuestion:input_type -> wackypub.agent.v1.AsideQuestionRequest
+	57, // 59: wackypub.agent.v1.AgentService.Trace:input_type -> wackypub.agent.v1.TraceRequest
+	59, // 60: wackypub.agent.v1.AgentService.ReadSessionEvents:input_type -> wackypub.agent.v1.ReadSessionEventsRequest
+	61, // 61: wackypub.agent.v1.AgentService.SubscribeSession:input_type -> wackypub.agent.v1.SubscribeSessionRequest
+	1,  // 62: wackypub.agent.v1.AgentService.ListAgents:output_type -> wackypub.agent.v1.ListAgentsResponse
+	3,  // 63: wackypub.agent.v1.AgentService.InspectAgent:output_type -> wackypub.agent.v1.InspectAgentResponse
+	5,  // 64: wackypub.agent.v1.AgentService.ReadSession:output_type -> wackypub.agent.v1.ReadSessionResponse
+	9,  // 65: wackypub.agent.v1.AgentService.ReadMemory:output_type -> wackypub.agent.v1.ReadMemoryResponse
+	11, // 66: wackypub.agent.v1.AgentService.RenderSystemPrompt:output_type -> wackypub.agent.v1.RenderSystemPromptResponse
+	13, // 67: wackypub.agent.v1.AgentService.InspectSessionContext:output_type -> wackypub.agent.v1.InspectSessionContextResponse
+	15, // 68: wackypub.agent.v1.AgentService.InspectAgentLocks:output_type -> wackypub.agent.v1.InspectAgentLocksResponse
+	18, // 69: wackypub.agent.v1.AgentService.AddUserTurn:output_type -> wackypub.agent.v1.AddUserTurnResponse
+	20, // 70: wackypub.agent.v1.AgentService.AddMedia:output_type -> wackypub.agent.v1.AddMediaResponse
+	22, // 71: wackypub.agent.v1.AgentService.CancelTurn:output_type -> wackypub.agent.v1.CancelTurnResponse
+	24, // 72: wackypub.agent.v1.AgentService.StripSignatures:output_type -> wackypub.agent.v1.StripSignaturesResponse
+	27, // 73: wackypub.agent.v1.AgentService.CompactSession:output_type -> wackypub.agent.v1.CompactSessionResponse
+	29, // 74: wackypub.agent.v1.AgentService.CreateScratchpad:output_type -> wackypub.agent.v1.CreateScratchpadResponse
+	32, // 75: wackypub.agent.v1.AgentService.GetScratchpad:output_type -> wackypub.agent.v1.GetScratchpadResponse
+	34, // 76: wackypub.agent.v1.AgentService.ListScratchpads:output_type -> wackypub.agent.v1.ListScratchpadsResponse
+	36, // 77: wackypub.agent.v1.AgentService.SearchScratchpad:output_type -> wackypub.agent.v1.SearchScratchpadResponse
+	39, // 78: wackypub.agent.v1.AgentService.DiffScratchpadEntries:output_type -> wackypub.agent.v1.DiffScratchpadEntriesResponse
+	41, // 79: wackypub.agent.v1.AgentService.DeleteScratchpad:output_type -> wackypub.agent.v1.DeleteScratchpadResponse
+	46, // 80: wackypub.agent.v1.AgentService.GenerateTurnStream:output_type -> wackypub.agent.v1.GenerateTurnStreamResponse
+	48, // 81: wackypub.agent.v1.AgentService.GenerateTurn:output_type -> wackypub.agent.v1.GenerateTurnResponse
+	50, // 82: wackypub.agent.v1.AgentService.AddAndGenerateTurnStream:output_type -> wackypub.agent.v1.AddAndGenerateTurnStreamResponse
+	52, // 83: wackypub.agent.v1.AgentService.AddAndGenerateTurn:output_type -> wackypub.agent.v1.AddAndGenerateTurnResponse
+	54, // 84: wackypub.agent.v1.AgentService.AsideQuestion:output_type -> wackypub.agent.v1.AsideQuestionResponse
+	58, // 85: wackypub.agent.v1.AgentService.Trace:output_type -> wackypub.agent.v1.TraceResponse
+	60, // 86: wackypub.agent.v1.AgentService.ReadSessionEvents:output_type -> wackypub.agent.v1.ReadSessionEventsResponse
+	62, // 87: wackypub.agent.v1.AgentService.SubscribeSession:output_type -> wackypub.agent.v1.SubscribeSessionResponse
+	62, // [62:88] is the sub-list for method output_type
+	36, // [36:62] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_agent_proto_init() }
