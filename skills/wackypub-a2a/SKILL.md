@@ -79,8 +79,8 @@ wackyproc run wackypub agent prompt --async <target_agent_id> "<message>\n\nYour
   `"Your response is not needed. Respond with only NO_RESPONSE."`
   This convention removes the reply temptation that cycle detection normally polices. If a model fails to follow the instruction, its output is safely captured in wackyproc stdout rather than lost.
 - **Output Retrieval (No Callback)**: Callers check wackyproc stdout on completion (`wait`/`get`); there is no callback.
-- **Dispatch Receipts**: The dispatch receipt surfaces the wackyproc proc ID and target (wackyproc-side changes owned by Phoebe).
-- **Deadline Supervision**: Turn deadlines and timeouts are enforced wackyproc-side via a timeout watchdog on the supervised child (owned by Phoebe).
+- **Dispatch Receipts**: The dispatch receipt is wackyproc's own: `wackyproc run` prints the proc ID and `list` shows target/state; the output arrives via `wait`/`get`. No separate wackyproc-side delivery.
+- **Deadline Rule (no timeout machinery)**: There is deliberately no deadline/watchdog. A hung supervised call holds the same locks and has the same risk profile as a hung normal call, so the remedy is the existing kill signals: `wackyproc stop <id>` (SIGTERM, then SIGKILL after the grace period) or `wackyproc kill <id>` (immediate SIGKILL of the whole process group).
 - **Open Architectural Note**: The `.git.lock` shared-repo commit serialization question remains OPEN in the task card (`tasks/wackypub/a2a-async-reply-pattern`). Per-target `session.lock` serializes turns per agent, but cross-agent concurrent commits to a single shared repo remain unresolved.
 
 **Hook recommendation**: if your workspace does a2a, install a receiver-side announce hook (see `examples/hooks/on-user-message/10-announce-check` in the wackypub repo) so inbound agent turns are mechanically annotated with `[Message from agent: <id>]` - generally wanted; a minority of use cases do not call for it. Verify what hooks you have via `git-kb show knowledge/gitkb-swarm-process` and the hooks inspection command (pending).
