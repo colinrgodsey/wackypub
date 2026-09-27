@@ -22,6 +22,7 @@ var (
 	messageFlag        string
 	compactMDFile      string
 	compactRuntimeFile string
+	asyncFlag          bool
 )
 
 // stdinIsPipe reports whether stdin is connected to a pipe (not a TTY). Callers use it to
@@ -100,11 +101,18 @@ func addAndGenerateTurnStreamProto(sdk *adkAgent.AgentSDK, ctx context.Context, 
 		}
 		defer cleanup()
 
-		stream, err := client.AddAndGenerateTurnStream(ctx, &agentv1.AddAndGenerateTurnStreamRequest{
+		req := &agentv1.AddAndGenerateTurnStreamRequest{
 			AgentId:      agentID,
 			UserMessage:  userMsg,
 			WorkspaceDir: sdk.WorkspaceDir,
-		})
+		}
+		if meta := adkAgent.A2AMetadataFromContext(ctx); meta != nil {
+			req.A2AMetadata = adkAgent.A2AMetadataToProto(meta)
+		} else if envMeta, err := adkAgent.ParseA2AMetadata(); err == nil && envMeta != nil {
+			req.A2AMetadata = adkAgent.A2AMetadataToProto(envMeta)
+		}
+
+		stream, err := client.AddAndGenerateTurnStream(ctx, req)
 		if err != nil {
 			yield("", err)
 			return
@@ -739,6 +747,16 @@ Arguments:
 Prints the generated final-answer text to stdout (reasoning/thinking text is excluded from
 what's printed, though it is still persisted to session.jsonl).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		defer func() {
+			asyncFlag = false
+		}()
+
+		if asyncFlag {
+			if strings.TrimSpace(os.Getenv(adkAgent.WackyprocSupervisedEnvVar)) == "" {
+				return fmt.Errorf("--async requires %s in environment: the dispatch must be wackyproc-supervised (dangerous flag; output must be captured)", adkAgent.WackyprocSupervisedEnvVar)
+			}
+		}
+
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {
 			return err
@@ -777,6 +795,9 @@ what's printed, though it is still persisted to session.jsonl).`,
 
 		ctx, stop := signalCtx()
 		defer stop()
+		if asyncFlag {
+			ctx = adkAgent.WithSkipCycleCheck(ctx, true)
+		}
 		first := true
 		for text, err := range addAndGenerateTurnStreamProto(sdk, ctx, agentID, userMsg, func(w string) {
 			cmd.PrintErrln(w)
@@ -1401,6 +1422,7 @@ func init() {
 	// panics on the collision as soon as --help (or completion) merges the two flag sets.
 	agentAddCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
 	agentPromptCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
+	agentPromptCmd.Flags().BoolVar(&asyncFlag, "async", false, "Skip call-chain cycle detection for supervised async dispatch")
 	agentCompactCmd.Flags().StringVar(&compactMDFile, "md-file", "", "Path to alternate COMPACT.md file to use for compaction recipe")
 	agentCompactCmd.Flags().StringVar(&compactRuntimeFile, "runtime", "", "Path to alternate runtime.json file to use for compaction")
 	scratchpadCreateCmd.Flags().StringVar(&messageFlag, "message", "", "Scratchpad text payload")
@@ -1444,6 +1466,7 @@ func init() {
 	agentCmd.Flags().BoolVar(&watchRawFlag, "raw", false, "Emit JSONL-identical lines byte-for-byte")
 	agentCmd.Flags().Int64Var(&watchSinceSeqFlag, "since-seq", 0, "Resume streaming strictly after sequence number N")
 	agentCmd.Flags().Int32Var(&watchLastFlag, "last", 0, "Replay the last N events before live streaming")
+	agentCmd.Flags().BoolVar(&asyncFlag, "async", false, "Skip call-chain cycle detection for supervised async dispatch")
 	agentCmd.AddCommand(agentWatchCmd)
 
 	RootCmd.AddCommand(agentCmd)

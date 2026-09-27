@@ -941,6 +941,9 @@ message AddAndGenerateTurnStreamRequest {
   // workspace_dir is the filesystem path to the workspace root containing the agent.
   // When empty, the SDK's configured default workspace directory is used.
   string workspace_dir = 3;
+
+  // a2a_metadata optionally carries Agent2Agent attribution context (D33).
+  A2AMetadata a2a_metadata = 4;
 }
 
 // AddAndGenerateTurnStreamResponse is one streamed unit of an add-and-generate turn: either
@@ -973,6 +976,9 @@ message AddAndGenerateTurnRequest {
   // workspace_dir is the filesystem path to the workspace root containing the agent.
   // When empty, the SDK's configured default workspace directory is used.
   string workspace_dir = 3;
+
+  // a2a_metadata optionally carries Agent2Agent attribution context (D33).
+  A2AMetadata a2a_metadata = 4;
 }
 
 // AddAndGenerateTurnResponse returns the complete assistant text and any hook warnings.

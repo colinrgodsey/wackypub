@@ -501,7 +501,7 @@ func (s *AgentSDK) generateTurnStreamImplWorkspace(ctx context.Context, workspac
 			return
 		}
 
-		a2aMeta, err := ValidateAgentTarget(agentID)
+		a2aMeta, err := ValidateAgentTargetContext(ctx, agentID)
 		if err != nil {
 			yield("", err)
 			return
@@ -708,7 +708,7 @@ func (s *AgentSDK) addAndGenerateTurnStreamImplWorkspace(ctx context.Context, wo
 			return
 		}
 
-		a2aMeta, err := ValidateAgentTarget(agentID)
+		a2aMeta, err := ValidateAgentTargetContext(ctx, agentID)
 		if err != nil {
 			yield("", err)
 			return
@@ -864,7 +864,7 @@ func asideInternal(s *AgentSDK, ctx context.Context, workspaceDir, agentID, ques
 		return fmt.Errorf("question cannot be empty")
 	}
 
-	a2aMeta, err := ValidateAgentTarget(agentID)
+	a2aMeta, err := ValidateAgentTargetContext(ctx, agentID)
 	if err != nil {
 		yield("", err)
 		return err
@@ -1114,6 +1114,9 @@ func (s *AgentSDK) AddAndGenerateTurnStream(req *agentv1.AddAndGenerateTurnStrea
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 	ctx = withToolEvents(ctx, sink)
+	if req != nil && req.GetA2AMetadata() != nil {
+		ctx = WithA2AMetadata(ctx, ProtoToA2AMetadata(req.GetA2AMetadata()))
+	}
 
 	// M1 liveness: same push-path shape as GenerateTurnStream. Warnings flow on their own
 	// channel (the generator goroutine must never send on the grpc stream - it is not safe
@@ -1244,6 +1247,9 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, req *agentv1.AddAndGe
 	wsDir := ""
 	if req != nil {
 		wsDir = req.GetWorkspaceDir()
+	}
+	if req != nil && req.GetA2AMetadata() != nil {
+		ctx = WithA2AMetadata(ctx, ProtoToA2AMetadata(req.GetA2AMetadata()))
 	}
 	result, err := s.addAndGenerateTurnImplWorkspace(ctx, wsDir, agentID, userMsg)
 	if err != nil {

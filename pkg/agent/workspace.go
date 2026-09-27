@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -219,10 +220,50 @@ func AuthorizeAgentTarget(targetAgentID string) error {
 	return nil
 }
 
+type skipCycleCheckKey struct{}
+type a2aMetadataKey struct{}
+
+// WithSkipCycleCheck returns a context with the skip-cycle-check flag set.
+// When true, ValidateAgentTargetContext skips the cycle detection check
+// for this dispatch only, while preserving call chain inheritance for downstream calls.
+func WithSkipCycleCheck(ctx context.Context, skip bool) context.Context {
+	return context.WithValue(ctx, skipCycleCheckKey{}, skip)
+}
+
+// ShouldSkipCycleCheck reports whether the cycle detection check should be skipped.
+func ShouldSkipCycleCheck(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, ok := ctx.Value(skipCycleCheckKey{}).(bool)
+	return ok && v
+}
+
+// WithA2AMetadata returns a context carrying explicit A2AMetadata.
+func WithA2AMetadata(ctx context.Context, meta *A2AMetadata) context.Context {
+	return context.WithValue(ctx, a2aMetadataKey{}, meta)
+}
+
+// A2AMetadataFromContext retrieves A2AMetadata from context if present.
+func A2AMetadataFromContext(ctx context.Context) *A2AMetadata {
+	if ctx == nil {
+		return nil
+	}
+	meta, _ := ctx.Value(a2aMetadataKey{}).(*A2AMetadata)
+	return meta
+}
+
 // ValidateAgentTarget performs cross-agent authorization (AllowedAgentsFile against CWD)
 // and deadlock prevention (A2AMetadata.CallChain) according to D16, D33, D59, D60.
 // Returns the updated *A2AMetadata to propagate to spawned child tools, with zero process-global os.Setenv mutation.
 func ValidateAgentTarget(targetAgentID string) (*A2AMetadata, error) {
+	return ValidateAgentTargetContext(context.Background(), targetAgentID)
+}
+
+// ValidateAgentTargetContext is ValidateAgentTarget with context support.
+// If ctx has ShouldSkipCycleCheck(ctx) == true, cycle detection is skipped for this call.
+// If ctx carries A2AMetadata via WithA2AMetadata, that metadata is used instead of parsing from env.
+func ValidateAgentTargetContext(ctx context.Context, targetAgentID string) (*A2AMetadata, error) {
 	if targetAgentID == "" {
 		return nil, nil
 	}
@@ -233,14 +274,20 @@ func ValidateAgentTarget(targetAgentID string) (*A2AMetadata, error) {
 	}
 
 	// 2. Deadlock cycle check & A2A Metadata parsing (D16, D33, D59)
-	meta, err := ParseA2AMetadata()
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse A2A metadata: %w", err)
+	meta := A2AMetadataFromContext(ctx)
+	if meta == nil {
+		var err error
+		meta, err = ParseA2AMetadata()
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse A2A metadata: %w", err)
+		}
 	}
 
-	for _, id := range meta.CallChain {
-		if id == targetAgentID {
-			return nil, fmt.Errorf("agent %q is already in call chain (%s); operation rejected to prevent deadlock cycle", targetAgentID, strings.Join(meta.CallChain, ","))
+	if !ShouldSkipCycleCheck(ctx) {
+		for _, id := range meta.CallChain {
+			if id == targetAgentID {
+				return nil, fmt.Errorf("agent %q is already in call chain (%s); operation rejected to prevent deadlock cycle", targetAgentID, strings.Join(meta.CallChain, ","))
+			}
 		}
 	}
 

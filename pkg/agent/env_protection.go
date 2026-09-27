@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+// WackyprocSupervisedEnvVar is set by wackyproc in processes it supervises.
+// Tool children must never inherit it (anti-bleed strip) so that --async dispatches
+// cannot be made bare by agents whose runtime was itself spawned via wackyproc.
+const WackyprocSupervisedEnvVar = "WACKYPROC_SUPERVISED"
+
 // harnessLockedEnvNames are environment variables whose values belong to the harness, not to the
 // model. A tool invocation may still set any other variable it wants, but it must not be able to
 // replace these. exec resolves duplicate entries last-wins, and args.Env used to be appended after
@@ -63,7 +68,8 @@ func harnessEnvFromBase(base []string) map[string]string {
 func childEnv(base []string, harness map[string]string, overlays ...map[string]string) []string {
 	env := make([]string, 0, len(base)+len(harness)+8)
 	for _, entry := range base {
-		if !isHarnessLockedEnvName(envEntryName(entry)) {
+		name := envEntryName(entry)
+		if !isHarnessLockedEnvName(name) && name != WackyprocSupervisedEnvVar {
 			env = append(env, entry)
 		}
 	}
@@ -72,7 +78,7 @@ func childEnv(base []string, harness map[string]string, overlays ...map[string]s
 	for _, overlay := range overlays {
 		overlayNames = overlayNames[:0]
 		for name := range overlay {
-			if !isHarnessLockedEnvName(name) {
+			if !isHarnessLockedEnvName(name) && name != WackyprocSupervisedEnvVar {
 				overlayNames = append(overlayNames, name)
 			}
 		}
@@ -84,7 +90,7 @@ func childEnv(base []string, harness map[string]string, overlays ...map[string]s
 
 	harnessNames := make([]string, 0, len(harness))
 	for name := range harness {
-		if isHarnessLockedEnvName(name) {
+		if isHarnessLockedEnvName(name) && name != WackyprocSupervisedEnvVar {
 			harnessNames = append(harnessNames, name)
 		}
 	}
