@@ -218,8 +218,9 @@ func (c *RuntimeConfig) FallbackChain() []*RuntimeConfig {
 // connection refused") are NOT inside a quoted URL and leaked into the checks,
 // flipping a qualifying transport error into a false auth error.
 //
-// Addressed forms: quoted URLs, scheme URLs, bare IPv4:port, and localhost:port.
-var urlRegex = regexp.MustCompile(`\"https?://[^\"]+\"|https?://[^\s\"]+|\d{1,3}(\.\d{1,3}){3}:\d+|localhost:\d+|localhost\\.localdomain:\d+`)
+// Addressed forms: quoted URLs, scheme URLs, bare IPv4:port, bracketed IPv6:port,
+// and localhost[.]localdomain:port / localhost:port.
+var urlRegex = regexp.MustCompile(`\"https?://[^\"]+\"|https?://[^\s\"]+|\d{1,3}(\.\d{1,3}){3}:\d+|\[[a-fA-F0-9:]+\]:\d+|localhost[.]localdomain:\d+|localhost:\d+`)
 
 func IsQualifyingFallbackError(err error) bool {
 	if err == nil {
