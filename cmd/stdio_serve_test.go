@@ -434,3 +434,65 @@ func TestStdioServe_BinaryScratchpadCreate(t *testing.T) {
 		t.Fatalf("created entry %q not found in list", createResp.GetEntry().GetEntryId())
 	}
 }
+
+// TestStdioServe_BridgedAgentRouting verifies that wackypub stdio-serve acts as a routing
+// proxy, dispatching calls for bridged agents defined in REMOTE_MANIFEST to their configured
+// bridge subprocess over gRPC.
+func TestStdioServe_BridgedAgentRouting(t *testing.T) {
+	wsDir := t.TempDir()
+	shim := getShim(t)
+
+	if err := os.WriteFile(filepath.Join(wsDir, adkAgent.RootMarkerFile), []byte(""), 0644); err != nil {
+		t.Fatalf("root marker: %v", err)
+	}
+
+	manifest := fmt.Sprintf("bridgedagent: %s --behavior=echo\n", shim)
+	if err := os.WriteFile(filepath.Join(wsDir, adkAgent.RemoteManifestFile), []byte(manifest), 0644); err != nil {
+		t.Fatalf("write REMOTE_MANIFEST: %v", err)
+	}
+
+	client, _ := spawnStdioServe(t, wsDir)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 1. ListAgents includes bridged agent from manifest
+	listResp, err := client.ListAgents(ctx, &agentv1.ListAgentsRequest{})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	var found bool
+	for _, id := range listResp.GetAgentIds() {
+		if id == "bridgedagent" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected bridgedagent in ListAgents, got %v", listResp.GetAgentIds())
+	}
+
+	// 2. InspectAgent routes to bridge
+	insp, err := client.InspectAgent(ctx, &agentv1.InspectAgentRequest{AgentId: "bridgedagent"})
+	if err != nil {
+		t.Fatalf("InspectAgent over stdio: %v", err)
+	}
+	if insp.GetAgentId() != "bridgedagent" {
+		t.Errorf("expected agent ID %q, got %q", "bridgedagent", insp.GetAgentId())
+	}
+
+	// 3. AddAndGenerateTurnStream routes to bridge
+	stream, err := client.AddAndGenerateTurnStream(ctx, &agentv1.AddAndGenerateTurnStreamRequest{
+		AgentId:     "bridgedagent",
+		UserMessage: "hello over stdio",
+	})
+	if err != nil {
+		t.Fatalf("AddAndGenerateTurnStream over stdio: %v", err)
+	}
+	chunk, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("stream recv over stdio: %v", err)
+	}
+	if chunk.GetText() != "echo: hello over stdio" {
+		t.Errorf("expected 'echo: hello over stdio', got %q", chunk.GetText())
+	}
+}
