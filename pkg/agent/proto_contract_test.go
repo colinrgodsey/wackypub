@@ -472,3 +472,113 @@ func TestTrace_OneofTarget(t *testing.T) {
 		t.Fatalf("expected error for empty trace_id, got: %v", err)
 	}
 }
+
+func TestProtoContract_SessionTurnContentJSON(t *testing.T) {
+	wsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), []byte(""), 0644); err != nil {
+		t.Fatalf("failed to create root marker: %v", err)
+	}
+
+	agentID := "contentjson-agent"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte(agentID+"\n"), 0644); err != nil {
+		t.Fatalf("failed to create allowed agents file: %v", err)
+	}
+	t.Chdir(agentDir)
+
+	// Turn containing thought, text, and function call
+	turn := &genai.Content{
+		Role: "model",
+		Parts: []*genai.Part{
+			{Text: "Thinking step 1", Thought: true},
+			{Text: "Executing tool command."},
+			{FunctionCall: &genai.FunctionCall{Name: "bash", ID: "call_abc"}},
+		},
+	}
+	if _, err := AppendSessionContentGetSeq(agentDir, turn); err != nil {
+		t.Fatalf("AppendSessionContentGetSeq failed: %v", err)
+	}
+
+	sdk := NewSDK(wsDir)
+	ctx := context.Background()
+
+	// 1. ReadSession carries content_json with full 1:1 fidelity
+	readResp, err := sdk.ReadSession(ctx, &agentv1.ReadSessionRequest{AgentId: agentID})
+	if err != nil {
+		t.Fatalf("ReadSession failed: %v", err)
+	}
+	if len(readResp.GetTurns()) != 1 {
+		t.Fatalf("expected 1 turn, got %d", len(readResp.GetTurns()))
+	}
+	st := readResp.GetTurns()[0]
+	if st.GetContentJson() == "" {
+		t.Fatal("expected non-empty ContentJson in ReadSession response")
+	}
+	var unmarshaled genai.Content
+	if err := json.Unmarshal([]byte(st.GetContentJson()), &unmarshaled); err != nil {
+		t.Fatalf("failed to unmarshal ContentJson: %v", err)
+	}
+	if len(unmarshaled.Parts) != 3 {
+		t.Fatalf("expected 3 parts in ContentJson, got %d", len(unmarshaled.Parts))
+	}
+	if !unmarshaled.Parts[0].Thought || unmarshaled.Parts[0].Text != "Thinking step 1" {
+		t.Errorf("part 0 mismatch: %+v", unmarshaled.Parts[0])
+	}
+	if unmarshaled.Parts[1].Thought || unmarshaled.Parts[1].Text != "Executing tool command." {
+		t.Errorf("part 1 mismatch: %+v", unmarshaled.Parts[1])
+	}
+	if unmarshaled.Parts[2].FunctionCall == nil || unmarshaled.Parts[2].FunctionCall.Name != "bash" {
+		t.Errorf("part 2 function call mismatch: %+v", unmarshaled.Parts[2])
+	}
+
+	// 2. ReadSessionEvents carries content_json
+	eventsResp, err := sdk.ReadSessionEvents(ctx, &agentv1.ReadSessionEventsRequest{AgentId: agentID})
+	if err != nil {
+		t.Fatalf("ReadSessionEvents failed: %v", err)
+	}
+	var evTurn *agentv1.SessionTurn
+	for _, ev := range eventsResp.GetEvents() {
+		if t := ev.GetTurn(); t != nil {
+			evTurn = t
+			break
+		}
+	}
+	if evTurn == nil || evTurn.GetContentJson() == "" {
+		t.Fatalf("expected turn event with non-empty ContentJson")
+	}
+	var evContent genai.Content
+	if err := json.Unmarshal([]byte(evTurn.GetContentJson()), &evContent); err != nil {
+		t.Fatalf("failed to unmarshal ContentJson from event: %v", err)
+	}
+	if len(evContent.Parts) != 3 || !evContent.Parts[0].Thought || evContent.Parts[2].FunctionCall == nil {
+		t.Fatalf("event ContentJson fidelity mismatch: %+v", evContent.Parts)
+	}
+
+	// 3. Trace roundtrip preserves full Content via content_json
+	traceResult := &TraceResult{
+		Steps: []TraceStep{
+			{
+				AgentID:      agentID,
+				TurnContents: []*genai.Content{turn},
+			},
+		},
+	}
+	protoTrace := TraceResultToProto(traceResult)
+	if len(protoTrace.GetSteps()) != 1 || len(protoTrace.GetSteps()[0].GetTurnContents()) != 1 {
+		t.Fatalf("TraceResultToProto steps mismatch")
+	}
+	if protoTrace.GetSteps()[0].GetTurnContents()[0].GetContentJson() == "" {
+		t.Fatalf("TraceResultToProto expected non-empty ContentJson")
+	}
+	roundtrip := TraceProtoToResult(protoTrace)
+	if len(roundtrip.Steps) != 1 || len(roundtrip.Steps[0].TurnContents) != 1 {
+		t.Fatalf("TraceProtoToResult steps mismatch")
+	}
+	rtParts := roundtrip.Steps[0].TurnContents[0].Parts
+	if len(rtParts) != 3 || !rtParts[0].Thought || rtParts[2].FunctionCall == nil {
+		t.Fatalf("Trace roundtrip fidelity mismatch: %+v", rtParts)
+	}
+}

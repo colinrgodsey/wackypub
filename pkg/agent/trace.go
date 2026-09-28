@@ -89,6 +89,9 @@ func TraceResultToProto(res *TraceResult) *agentv1.TraceResponse {
 			st := &agentv1.SessionTurn{
 				Role: t.Role,
 			}
+			if contentJSON, err := json.Marshal(t); err == nil {
+				st.ContentJson = string(contentJSON)
+			}
 			for _, p := range t.Parts {
 				if p == nil {
 					continue
@@ -140,23 +143,32 @@ func TraceProtoToResult(resp *agentv1.TraceResponse) *TraceResult {
 			if t == nil {
 				continue
 			}
-			c := &genai.Content{
-				Role: t.GetRole(),
+			var c *genai.Content
+			if jsonStr := t.GetContentJson(); jsonStr != "" {
+				var parsed genai.Content
+				if err := json.Unmarshal([]byte(jsonStr), &parsed); err == nil {
+					c = &parsed
+				}
 			}
-			for _, p := range t.GetParts() {
-				if p == nil {
-					continue
+			if c == nil {
+				c = &genai.Content{
+					Role: t.GetRole(),
 				}
-				gp := &genai.Part{
-					Text: p.GetText(),
-				}
-				if len(p.GetInlineData()) > 0 {
-					gp.InlineData = &genai.Blob{
-						Data:     p.GetInlineData(),
-						MIMEType: p.GetMimeType(),
+				for _, p := range t.GetParts() {
+					if p == nil {
+						continue
 					}
+					gp := &genai.Part{
+						Text: p.GetText(),
+					}
+					if len(p.GetInlineData()) > 0 {
+						gp.InlineData = &genai.Blob{
+							Data:     p.GetInlineData(),
+							MIMEType: p.GetMimeType(),
+						}
+					}
+					c.Parts = append(c.Parts, gp)
 				}
-				c.Parts = append(c.Parts, gp)
 			}
 			step.TurnContents = append(step.TurnContents, c)
 		}

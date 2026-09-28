@@ -315,18 +315,26 @@ message SessionTurn {
   string role = 1;
 
   // parts contains the ordered sequence of content parts comprising this turn.
-  repeated SessionPart parts = 2;
+  // NOTE(D112 v1): Deprecated in favor of content_json. In v1, SessionPart omitted
+  // non-text/non-media parts (like tool calls and thought blocks). Retained for backward
+  // compatibility with older CLI readers.
+  repeated SessionPart parts = 2 [deprecated = true];
 
   // seq is the strictly monotonic sequence counter assigned to this turn.
   int64 seq = 3;
+
+  // content_json contains the serialized JSON of google.golang.org/genai Content.
+  // Delivers genai.Content faithfully 1:1 (thought flags, function calls, inline data,
+  // and future fields) without lossy translation.
+  string content_json = 4;
 }
 
 // SessionPart represents one content component of a conversation turn (text or inline data).
 //
-// NOTE(D112 v1): In v1, SessionPart models plain text and inline data parts. Non-text parts
-// such as tool invocations (FunctionCall and FunctionResponse) stored in session.jsonl are
-// omitted during conversion. This lossy conversion is accepted for v1; this protobuf interface
-// is canonical going forward, and richer part schemas may be introduced in a future revision.
+// NOTE(D112 v1 / v1.1): In v1, SessionPart was used for text and inline data parts while
+// non-text parts were omitted. In v1.1+, SessionTurn.content_json delivers genai.Content
+// faithfully 1:1, rendering lossy SessionPart conversion obsolete while SessionPart remains
+// for legacy compatibility.
 message SessionPart {
   // text contains the plain text content of this part, if applicable.
   string text = 1;
