@@ -166,6 +166,23 @@ func asideQuestionProto(sdk *adkAgent.AgentSDK, ctx context.Context, agentID, qu
 	return resp.GetText(), nil
 }
 
+// setModelConfigProto drives the D112 protocol surface for changing a bridged session's
+// model through ResolveAgentClient. For a LOCAL (native) agent the SDK method returns
+// Unimplemented (native agents take their model from runtime.json) - that error surfaces
+// as-is.
+func setModelConfigProto(sdk *adkAgent.AgentSDK, ctx context.Context, agentID, model string) (*agentv1.SetModelConfigResponse, error) {
+	client, cleanup, err := adkAgent.ResolveAgentClient(ctx, sdk, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	return client.SetModelConfig(ctx, &agentv1.SetModelConfigRequest{
+		AgentId:      agentID,
+		Model:        model,
+		WorkspaceDir: sdk.WorkspaceDir,
+	})
+}
+
 var agentCmd = &cobra.Command{
 	Use:   "agent <agent_id>",
 	Short: "Manage folder-based agent sessions (<ws_dir>/<agent_id>)",
@@ -818,6 +835,62 @@ what's printed, though it is still persisted to session.jsonl).`,
 }
 
 // wackypub agent aside [agent_id] [message] OR wackypub agent aside <agent_id> <question>
+
+var agentSetModelCmd = &cobra.Command{
+	Use:   "setmodel [agent_id] [model]",
+	Short: "Change the model of a bridged ACP session (session-scoped passthrough)",
+	Long: `Changes the model of a bridged (ACP) agent's session by forwarding session/setConfigOption
+(configId "model") to the harness. Session-scoped: the change applies to the current bridged
+session and persists across bridge restarts, matching the ACP session/model concept. It does
+NOT change the agent's runtime.json (native agents are unaffected) and there is no
+model-routing system.
+
+Arguments:
+  agent_id   Required. The bridged agent whose session model to change.
+  model      Required. The canonical model id (e.g. "sonnet"). Unknown ids are a
+             harness-side error and are reported as-is.
+
+Prints the confirmed model and, when present, the harness's config options JSON.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
+
+		var agentID, model string
+		if len(args) >= 2 {
+			agentID = args[0]
+			model = args[1]
+		} else {
+			if len(args) >= 1 {
+				agentID = args[0]
+			}
+			model = messageFlag
+		}
+		if agentID == "" {
+			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> setmodel [model]")
+		}
+		if model == "" {
+			return fmt.Errorf("model is required. Usage: wackypub agent <agent_id> setmodel [model]")
+		}
+
+		ctx, stop := signalCtx()
+		defer stop()
+		resp, err := setModelConfigProto(sdk, ctx, agentID, model)
+		if err != nil {
+			return err
+		}
+		if resp.GetModel() != "" {
+			fmt.Printf("model set to %s\n", resp.GetModel())
+		}
+		if resp.GetConfigOptions() != "" {
+			fmt.Printf("config options: %s\n", resp.GetConfigOptions())
+		}
+		return nil
+	},
+}
+
 var agentAsideCmd = &cobra.Command{
 	Use:   "aside [agent_id] [message]",
 	Short: "One-shot question on a forked in-memory session (tools denied, nothing persisted)",
@@ -1448,6 +1521,7 @@ func init() {
 	agentCmd.AddCommand(agentGenerateCmd)
 	agentCmd.AddCommand(agentPromptCmd)
 	agentCmd.AddCommand(agentAsideCmd)
+	agentCmd.AddCommand(agentSetModelCmd)
 	agentCmd.AddCommand(agentReplCmd)
 	agentCmd.AddCommand(agentCancelCmd)
 	agentCmd.AddCommand(agentStripSignaturesCmd)

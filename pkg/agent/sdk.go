@@ -30,6 +30,8 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
@@ -1648,6 +1650,19 @@ func (s *AgentSDK) AsideQuestion(ctx context.Context, req *agentv1.AsideQuestion
 			TotalTokens:      int64(result.Usage.TotalTokens),
 		},
 	}, nil
+}
+
+// SetModelConfig implements agentv1.AgentServiceServer: change the model of a bridged ACP
+// session (passthrough to the harness's session/setConfigOption; session-scoped). For a
+// NATIVE (non-bridged) agent this is Unimplemented - native agents take their model from
+// runtime.json and there is no per-session override surface on this side (deliberately no
+// model-routing system). Bridged agents are served by the bridge's d112 server; this method
+// is the in-process default that reports the unsupported case for agents resolved locally.
+func (s *AgentSDK) SetModelConfig(ctx context.Context, req *agentv1.SetModelConfigRequest) (*agentv1.SetModelConfigResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+	return nil, status.Error(codes.Unimplemented, "SetModelConfig is only supported for bridged (ACP) agents; native agents take their model from runtime.json")
 }
 
 // CreateScratchpad implements the behavior defined in proto/wackypub/v1/agent.proto.

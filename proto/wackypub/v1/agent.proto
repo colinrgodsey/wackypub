@@ -172,6 +172,14 @@ service AgentService {
   // as metadata only, never written to session state.
   rpc AsideQuestion(AsideQuestionRequest) returns (AsideQuestionResponse);
 
+  // SetModelConfig changes the model of a bridged ACP session (session-scoped, per the
+  // harness's own session/model concept). It is a PASSTHROUGH: the bridge forwards to the
+  // harness's session/setConfigOption (configId "model"), applies it to the CURRENT bridged
+  // session, and confirms the resulting model. For a native (non-bridged) agent this returns
+  // Unimplemented - native agents take their model from runtime.json; there is no per-session
+  // override surface on this side, and no model-routing system is introduced.
+  rpc SetModelConfig(SetModelConfigRequest) returns (SetModelConfigResponse);
+
   // Trace performs backward causal graph traversal starting from an agent's git commit or a global
   // correlation trace identifier (D36). Callers invoke this method to audit cross-agent workflows,
   // inspect multi-hop turn histories, and reconstruct causal chains. The request uses a oneof to enforce
@@ -1028,6 +1036,30 @@ message AsideQuestionResponse {
 
   // usage contains token consumption billed to the aside turn (metadata only, never persisted).
   TurnUsage usage = 4;
+}
+
+// SetModelConfigRequest specifies the model to apply to a bridged ACP session.
+message SetModelConfigRequest {
+  // agent_id identifies the bridged agent whose session model to change. Required.
+  string agent_id = 1;
+
+  // model is the canonical model id to apply (e.g. "sonnet"). The harness resolves it
+  // through its own canonicalization; an unknown id is a harness-side error.
+  string model = 2;
+
+  // workspace_dir is the filesystem path to the workspace root containing the agent.
+  // When empty, the SDK's configured default workspace directory is used.
+  string workspace_dir = 3;
+}
+
+// SetModelConfigResponse confirms the model now in effect for the session.
+message SetModelConfigResponse {
+  // model is the canonical model id the harness confirmed as current.
+  string model = 1;
+
+  // config_options is the harness's ACP configOptions array (JSON), listing the available
+  // models and which is selected. Opaque to wackypub - passthrough of the harness response.
+  string config_options = 2;
 }
 
 // A2AMetadata represents minified Agent2Agent context propagated across agent calls (D33).

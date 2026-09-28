@@ -42,6 +42,7 @@ const (
 	AgentService_AddAndGenerateTurnStream_FullMethodName = "/wackypub.agent.v1.AgentService/AddAndGenerateTurnStream"
 	AgentService_AddAndGenerateTurn_FullMethodName       = "/wackypub.agent.v1.AgentService/AddAndGenerateTurn"
 	AgentService_AsideQuestion_FullMethodName            = "/wackypub.agent.v1.AgentService/AsideQuestion"
+	AgentService_SetModelConfig_FullMethodName           = "/wackypub.agent.v1.AgentService/SetModelConfig"
 	AgentService_Trace_FullMethodName                    = "/wackypub.agent.v1.AgentService/Trace"
 	AgentService_ReadSessionEvents_FullMethodName        = "/wackypub.agent.v1.AgentService/ReadSessionEvents"
 	AgentService_SubscribeSession_FullMethodName         = "/wackypub.agent.v1.AgentService/SubscribeSession"
@@ -193,6 +194,13 @@ type AgentServiceClient interface {
 	// is acquired (copy-on-read snapshot), so an aside never blocks a live turn. Usage is returned
 	// as metadata only, never written to session state.
 	AsideQuestion(ctx context.Context, in *AsideQuestionRequest, opts ...grpc.CallOption) (*AsideQuestionResponse, error)
+	// SetModelConfig changes the model of a bridged ACP session (session-scoped, per the
+	// harness's own session/model concept). It is a PASSTHROUGH: the bridge forwards to the
+	// harness's session/setConfigOption (configId "model"), applies it to the CURRENT bridged
+	// session, and confirms the resulting model. For a native (non-bridged) agent this returns
+	// Unimplemented - native agents take their model from runtime.json; there is no per-session
+	// override surface on this side, and no model-routing system is introduced.
+	SetModelConfig(ctx context.Context, in *SetModelConfigRequest, opts ...grpc.CallOption) (*SetModelConfigResponse, error)
 	// Trace performs backward causal graph traversal starting from an agent's git commit or a global
 	// correlation trace identifier (D36). Callers invoke this method to audit cross-agent workflows,
 	// inspect multi-hop turn histories, and reconstruct causal chains. The request uses a oneof to enforce
@@ -466,6 +474,16 @@ func (c *agentServiceClient) AsideQuestion(ctx context.Context, in *AsideQuestio
 	return out, nil
 }
 
+func (c *agentServiceClient) SetModelConfig(ctx context.Context, in *SetModelConfigRequest, opts ...grpc.CallOption) (*SetModelConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetModelConfigResponse)
+	err := c.cc.Invoke(ctx, AgentService_SetModelConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *agentServiceClient) Trace(ctx context.Context, in *TraceRequest, opts ...grpc.CallOption) (*TraceResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TraceResponse)
@@ -651,6 +669,13 @@ type AgentServiceServer interface {
 	// is acquired (copy-on-read snapshot), so an aside never blocks a live turn. Usage is returned
 	// as metadata only, never written to session state.
 	AsideQuestion(context.Context, *AsideQuestionRequest) (*AsideQuestionResponse, error)
+	// SetModelConfig changes the model of a bridged ACP session (session-scoped, per the
+	// harness's own session/model concept). It is a PASSTHROUGH: the bridge forwards to the
+	// harness's session/setConfigOption (configId "model"), applies it to the CURRENT bridged
+	// session, and confirms the resulting model. For a native (non-bridged) agent this returns
+	// Unimplemented - native agents take their model from runtime.json; there is no per-session
+	// override surface on this side, and no model-routing system is introduced.
+	SetModelConfig(context.Context, *SetModelConfigRequest) (*SetModelConfigResponse, error)
 	// Trace performs backward causal graph traversal starting from an agent's git commit or a global
 	// correlation trace identifier (D36). Callers invoke this method to audit cross-agent workflows,
 	// inspect multi-hop turn histories, and reconstruct causal chains. The request uses a oneof to enforce
@@ -743,6 +768,9 @@ func (UnimplementedAgentServiceServer) AddAndGenerateTurn(context.Context, *AddA
 }
 func (UnimplementedAgentServiceServer) AsideQuestion(context.Context, *AsideQuestionRequest) (*AsideQuestionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AsideQuestion not implemented")
+}
+func (UnimplementedAgentServiceServer) SetModelConfig(context.Context, *SetModelConfigRequest) (*SetModelConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetModelConfig not implemented")
 }
 func (UnimplementedAgentServiceServer) Trace(context.Context, *TraceRequest) (*TraceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Trace not implemented")
@@ -1173,6 +1201,24 @@ func _AgentService_AsideQuestion_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_SetModelConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetModelConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).SetModelConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_SetModelConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).SetModelConfig(ctx, req.(*SetModelConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AgentService_Trace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TraceRequest)
 	if err := dec(in); err != nil {
@@ -1310,6 +1356,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AsideQuestion",
 			Handler:    _AgentService_AsideQuestion_Handler,
+		},
+		{
+			MethodName: "SetModelConfig",
+			Handler:    _AgentService_SetModelConfig_Handler,
 		},
 		{
 			MethodName: "Trace",

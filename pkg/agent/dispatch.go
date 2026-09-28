@@ -124,6 +124,10 @@ func (l *localAgentClient) AsideQuestion(ctx context.Context, in *agentv1.AsideQ
 	return l.sdk.AsideQuestion(ctx, in)
 }
 
+func (l *localAgentClient) SetModelConfig(ctx context.Context, in *agentv1.SetModelConfigRequest, _ ...grpc.CallOption) (*agentv1.SetModelConfigResponse, error) {
+	return l.sdk.SetModelConfig(ctx, in)
+}
+
 func (l *localAgentClient) GenerateTurn(ctx context.Context, in *agentv1.GenerateTurnRequest, _ ...grpc.CallOption) (*agentv1.GenerateTurnResponse, error) {
 	return l.sdk.GenerateTurn(ctx, in)
 }

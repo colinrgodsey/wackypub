@@ -76,6 +76,13 @@ func (s *shimImpl) AddAndGenerateTurnStream(req *agentv1.AddAndGenerateTurnStrea
 	return stream.Send(&agentv1.AddAndGenerateTurnStreamResponse{Text: "echo: " + req.GetUserMessage()})
 }
 
+func (s *shimImpl) SetModelConfig(ctx context.Context, req *agentv1.SetModelConfigRequest) (*agentv1.SetModelConfigResponse, error) {
+	return &agentv1.SetModelConfigResponse{
+		Model:         "confirmed:" + req.GetModel(),
+		ConfigOptions: `[{"key":"model","options":[{"label":"sonnet","value":"sonnet"}]}]`,
+	}, nil
+}
+
 func (s *shimImpl) AsideQuestion(ctx context.Context, req *agentv1.AsideQuestionRequest) (*agentv1.AsideQuestionResponse, error) {
 	return &agentv1.AsideQuestionResponse{
 		Text:        "aside from shim: " + req.GetQuestion(),
