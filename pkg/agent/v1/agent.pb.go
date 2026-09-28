@@ -519,9 +519,18 @@ type SessionTurn struct {
 	// role identifies the author of the turn, typically "user" or "model".
 	Role string `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
 	// parts contains the ordered sequence of content parts comprising this turn.
+	// NOTE(D112 v1): Deprecated in favor of content_json. In v1, SessionPart omitted
+	// non-text/non-media parts (like tool calls and thought blocks). Retained for backward
+	// compatibility with older CLI readers.
+	//
+	// Deprecated: Marked as deprecated in agent.proto.
 	Parts []*SessionPart `protobuf:"bytes,2,rep,name=parts,proto3" json:"parts,omitempty"`
 	// seq is the strictly monotonic sequence counter assigned to this turn.
-	Seq           int64 `protobuf:"varint,3,opt,name=seq,proto3" json:"seq,omitempty"`
+	Seq int64 `protobuf:"varint,3,opt,name=seq,proto3" json:"seq,omitempty"`
+	// content_json contains the serialized JSON of google.golang.org/genai Content.
+	// Delivers genai.Content faithfully 1:1 (thought flags, function calls, inline data,
+	// and future fields) without lossy translation.
+	ContentJson   string `protobuf:"bytes,4,opt,name=content_json,json=contentJson,proto3" json:"content_json,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -563,6 +572,7 @@ func (x *SessionTurn) GetRole() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in agent.proto.
 func (x *SessionTurn) GetParts() []*SessionPart {
 	if x != nil {
 		return x.Parts
@@ -577,12 +587,19 @@ func (x *SessionTurn) GetSeq() int64 {
 	return 0
 }
 
+func (x *SessionTurn) GetContentJson() string {
+	if x != nil {
+		return x.ContentJson
+	}
+	return ""
+}
+
 // SessionPart represents one content component of a conversation turn (text or inline data).
 //
-// NOTE(D112 v1): In v1, SessionPart models plain text and inline data parts. Non-text parts
-// such as tool invocations (FunctionCall and FunctionResponse) stored in session.jsonl are
-// omitted during conversion. This lossy conversion is accepted for v1; this protobuf interface
-// is canonical going forward, and richer part schemas may be introduced in a future revision.
+// NOTE(D112 v1 / v1.1): In v1, SessionPart was used for text and inline data parts while
+// non-text parts were omitted. In v1.1+, SessionTurn.content_json delivers genai.Content
+// faithfully 1:1, rendering lossy SessionPart conversion obsolete while SessionPart remains
+// for legacy compatibility.
 type SessionPart struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// text contains the plain text content of this part, if applicable.
@@ -5045,11 +5062,12 @@ const file_agent_proto_rawDesc = "" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
 	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\"K\n" +
 	"\x13ReadSessionResponse\x124\n" +
-	"\x05turns\x18\x01 \x03(\v2\x1e.wackypub.agent.v1.SessionTurnR\x05turns\"i\n" +
+	"\x05turns\x18\x01 \x03(\v2\x1e.wackypub.agent.v1.SessionTurnR\x05turns\"\x90\x01\n" +
 	"\vSessionTurn\x12\x12\n" +
-	"\x04role\x18\x01 \x01(\tR\x04role\x124\n" +
-	"\x05parts\x18\x02 \x03(\v2\x1e.wackypub.agent.v1.SessionPartR\x05parts\x12\x10\n" +
-	"\x03seq\x18\x03 \x01(\x03R\x03seq\"_\n" +
+	"\x04role\x18\x01 \x01(\tR\x04role\x128\n" +
+	"\x05parts\x18\x02 \x03(\v2\x1e.wackypub.agent.v1.SessionPartB\x02\x18\x01R\x05parts\x12\x10\n" +
+	"\x03seq\x18\x03 \x01(\x03R\x03seq\x12!\n" +
+	"\fcontent_json\x18\x04 \x01(\tR\vcontentJson\"_\n" +
 	"\vSessionPart\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x1f\n" +
 	"\vinline_data\x18\x02 \x01(\fR\n" +

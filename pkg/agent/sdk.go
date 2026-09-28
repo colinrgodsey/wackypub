@@ -15,6 +15,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"iter"
 	"os"
@@ -162,6 +163,9 @@ func (s *AgentSDK) AddUserTurn(ctx context.Context, req *agentv1.AddUserTurnRequ
 		},
 		Seq: seq,
 	}
+	if contentJSON, err := json.Marshal(content); err == nil {
+		turn.ContentJson = string(contentJSON)
+	}
 	return &agentv1.AddUserTurnResponse{
 		Turn:     turn,
 		Text:     finalMsg,
@@ -246,6 +250,9 @@ func (s *AgentSDK) AddMedia(ctx context.Context, req *agentv1.AddMediaRequest) (
 			},
 		},
 		Seq: seq,
+	}
+	if contentJSON, err := json.Marshal(content); err == nil {
+		turn.ContentJson = string(contentJSON)
 	}
 	return &agentv1.AddMediaResponse{
 		Turn:     turn,
@@ -1368,6 +1375,9 @@ func (s *AgentSDK) ReadSession(ctx context.Context, req *agentv1.ReadSessionRequ
 		st := &agentv1.SessionTurn{
 			Role: t.Content.Role,
 			Seq:  t.Seq,
+		}
+		if contentJSON, err := json.Marshal(&t.Content); err == nil {
+			st.ContentJson = string(contentJSON)
 		}
 		for _, p := range t.Parts {
 			if p == nil {

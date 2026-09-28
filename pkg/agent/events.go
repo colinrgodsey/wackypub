@@ -110,6 +110,9 @@ func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64,
 				Role: pt.Role,
 				Seq:  seq,
 			}
+			if contentJSON, err := json.Marshal(&pt.Content); err == nil {
+				st.ContentJson = string(contentJSON)
+			}
 			var isCompaction bool
 			var compactionText string
 			for _, p := range pt.Parts {
