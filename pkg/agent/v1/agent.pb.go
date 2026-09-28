@@ -4326,6 +4326,7 @@ type ReadSessionEventsRequest struct {
 	//	*ReadSessionEventsRequest_SinceSeq
 	//	*ReadSessionEventsRequest_LastN
 	//	*ReadSessionEventsRequest_HeadOnly
+	//	*ReadSessionEventsRequest_FromSeq
 	Cursor        isReadSessionEventsRequest_Cursor `protobuf_oneof:"cursor"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4409,6 +4410,15 @@ func (x *ReadSessionEventsRequest) GetHeadOnly() bool {
 	return false
 }
 
+func (x *ReadSessionEventsRequest) GetFromSeq() int64 {
+	if x != nil {
+		if x, ok := x.Cursor.(*ReadSessionEventsRequest_FromSeq); ok {
+			return x.FromSeq
+		}
+	}
+	return 0
+}
+
 type isReadSessionEventsRequest_Cursor interface {
 	isReadSessionEventsRequest_Cursor()
 }
@@ -4429,19 +4439,29 @@ type ReadSessionEventsRequest_HeadOnly struct {
 	HeadOnly bool `protobuf:"varint,5,opt,name=head_only,json=headOnly,proto3,oneof"`
 }
 
+type ReadSessionEventsRequest_FromSeq struct {
+	// from_seq requests events starting from sequence number from_seq (inclusive, ev.seq >= from_seq).
+	// Note contrast with since_seq which is strictly exclusive (ev.seq > since_seq).
+	// Allows consumers to skip ahead without replaying earlier events.
+	FromSeq int64 `protobuf:"varint,6,opt,name=from_seq,json=fromSeq,proto3,oneof"`
+}
+
 func (*ReadSessionEventsRequest_SinceSeq) isReadSessionEventsRequest_Cursor() {}
 
 func (*ReadSessionEventsRequest_LastN) isReadSessionEventsRequest_Cursor() {}
 
 func (*ReadSessionEventsRequest_HeadOnly) isReadSessionEventsRequest_Cursor() {}
 
+func (*ReadSessionEventsRequest_FromSeq) isReadSessionEventsRequest_Cursor() {}
+
 // ReadSessionEventsResponse returns a batch of session events and stream cursor state.
 type ReadSessionEventsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// events contains the batch of session events in strictly increasing sequence order.
 	Events []*SessionEvent `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
-	// rewound indicates that the requested since_seq cursor is invalid against current session history:
-	// either since_seq < baseline_seq (compacted away) or since_seq > latest_seq (rollback / restored directory).
+	// rewound indicates that the requested cursor (since_seq or from_seq) is invalid against current session history:
+	// either below baseline_seq (compacted away: since_seq < baseline_seq or from_seq < baseline_seq)
+	// or beyond latest_seq (rollback / restored directory: since_seq > latest_seq or from_seq > latest_seq + 1).
 	// When true, the consumer must reset its local cursor to baseline_seq (or latest_seq).
 	Rewound bool `protobuf:"varint,2,opt,name=rewound,proto3" json:"rewound,omitempty"`
 	// baseline_seq is the earliest available sequence number for this agent's session.
@@ -4450,7 +4470,7 @@ type ReadSessionEventsResponse struct {
 	LatestSeq int64 `protobuf:"varint,4,opt,name=latest_seq,json=latestSeq,proto3" json:"latest_seq,omitempty"`
 	// latest_turn_seq is the sequence number of the most recent persisted turn in this agent's session (0 if none).
 	LatestTurnSeq int64 `protobuf:"varint,5,opt,name=latest_turn_seq,json=latestTurnSeq,proto3" json:"latest_turn_seq,omitempty"`
-	// rolled_back indicates that since_seq was strictly greater than latest_seq,
+	// rolled_back indicates that since_seq or from_seq was ahead of latest_seq,
 	// signalling that the session shrank or was restored from an earlier checkpoint.
 	RolledBack    bool `protobuf:"varint,6,opt,name=rolled_back,json=rolledBack,proto3" json:"rolled_back,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -5339,13 +5359,14 @@ const file_agent_proto_rawDesc = "" +
 	"\x0ftarget_agent_id\x18\x01 \x01(\tR\rtargetAgentId\x12#\n" +
 	"\rtarget_commit\x18\x02 \x01(\tR\ftargetCommit\x12\x19\n" +
 	"\btrace_id\x18\x03 \x01(\tR\atraceId\x122\n" +
-	"\x05steps\x18\x04 \x03(\v2\x1c.wackypub.agent.v1.TraceStepR\x05steps\"\xbb\x01\n" +
+	"\x05steps\x18\x04 \x03(\v2\x1c.wackypub.agent.v1.TraceStepR\x05steps\"\xd8\x01\n" +
 	"\x18ReadSessionEventsRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
 	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\x12\x1d\n" +
 	"\tsince_seq\x18\x03 \x01(\x03H\x00R\bsinceSeq\x12\x17\n" +
 	"\x06last_n\x18\x04 \x01(\x05H\x00R\x05lastN\x12\x1d\n" +
-	"\thead_only\x18\x05 \x01(\bH\x00R\bheadOnlyB\b\n" +
+	"\thead_only\x18\x05 \x01(\bH\x00R\bheadOnly\x12\x1b\n" +
+	"\bfrom_seq\x18\x06 \x01(\x03H\x00R\afromSeqB\b\n" +
 	"\x06cursor\"\xf9\x01\n" +
 	"\x19ReadSessionEventsResponse\x127\n" +
 	"\x06events\x18\x01 \x03(\v2\x1f.wackypub.agent.v1.SessionEventR\x06events\x12\x18\n" +
@@ -5614,6 +5635,7 @@ func file_agent_proto_init() {
 		(*ReadSessionEventsRequest_SinceSeq)(nil),
 		(*ReadSessionEventsRequest_LastN)(nil),
 		(*ReadSessionEventsRequest_HeadOnly)(nil),
+		(*ReadSessionEventsRequest_FromSeq)(nil),
 	}
 	file_agent_proto_msgTypes[61].OneofWrappers = []any{
 		(*SubscribeSessionRequest_SinceSeq)(nil),

@@ -248,7 +248,24 @@ func (s *AgentSDK) ReadSessionEvents(ctx context.Context, req *agentv1.ReadSessi
 	rewound := false
 	rolledBack := false
 
-	if req != nil && req.GetSinceSeq() > 0 {
+	if req != nil && req.GetFromSeq() > 0 {
+		from := req.GetFromSeq()
+		if baselineSeq > 0 && from < baselineSeq {
+			rewound = true
+			filtered = events
+		} else if latestSeq < from-1 {
+			// Rollback or restored directory: client cursor is ahead of current session head!
+			rewound = true
+			rolledBack = true
+			filtered = events
+		} else {
+			for _, ev := range events {
+				if ev.Seq >= from {
+					filtered = append(filtered, ev)
+				}
+			}
+		}
+	} else if req != nil && req.GetSinceSeq() > 0 {
 		since := req.GetSinceSeq()
 		if since < baselineSeq {
 			rewound = true
