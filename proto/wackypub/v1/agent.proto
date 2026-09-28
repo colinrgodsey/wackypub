@@ -323,10 +323,11 @@ message SessionTurn {
 
 // SessionPart represents one content component of a conversation turn (text or inline data).
 //
-// NOTE(D112 v1): In v1, SessionPart models plain text and inline data parts. Non-text parts
-// such as tool invocations (FunctionCall and FunctionResponse) stored in session.jsonl are
-// omitted during conversion. This lossy conversion is accepted for v1; this protobuf interface
-// is canonical going forward, and richer part schemas may be introduced in a future revision.
+// NOTE(D112 v1): In v1, SessionPart models plain text, inline data parts, and thought/reasoning
+// parts (preserved via the thought field). Non-text parts such as tool invocations (FunctionCall
+// and FunctionResponse) stored in session.jsonl are omitted during conversion. This lossy
+// conversion is accepted for v1; this protobuf interface is canonical going forward, and richer
+// part schemas may be introduced in a future revision.
 message SessionPart {
   // text contains the plain text content of this part, if applicable.
   string text = 1;
@@ -336,6 +337,10 @@ message SessionPart {
 
   // mime_type specifies the MIME media type of inline_data (e.g. "image/png").
   string mime_type = 3;
+
+  // thought indicates whether this part represents the model's internal reasoning or thought
+  // process (carries genai Part.Thought so UI consumers can filter reasoning).
+  bool thought = 4;
 }
 
 // ReadMemoryRequest specifies parameters for reading an agent's long-term memory.

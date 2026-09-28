@@ -94,7 +94,8 @@ func TraceResultToProto(res *TraceResult) *agentv1.TraceResponse {
 					continue
 				}
 				sp := &agentv1.SessionPart{
-					Text: p.Text,
+					Text:    p.Text,
+					Thought: p.Thought,
 				}
 				if p.InlineData != nil {
 					sp.InlineData = p.InlineData.Data
@@ -148,7 +149,8 @@ func TraceProtoToResult(resp *agentv1.TraceResponse) *TraceResult {
 					continue
 				}
 				gp := &genai.Part{
-					Text: p.GetText(),
+					Text:    p.GetText(),
+					Thought: p.GetThought(),
 				}
 				if len(p.GetInlineData()) > 0 {
 					gp.InlineData = &genai.Blob{

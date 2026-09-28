@@ -579,10 +579,11 @@ func (x *SessionTurn) GetSeq() int64 {
 
 // SessionPart represents one content component of a conversation turn (text or inline data).
 //
-// NOTE(D112 v1): In v1, SessionPart models plain text and inline data parts. Non-text parts
-// such as tool invocations (FunctionCall and FunctionResponse) stored in session.jsonl are
-// omitted during conversion. This lossy conversion is accepted for v1; this protobuf interface
-// is canonical going forward, and richer part schemas may be introduced in a future revision.
+// NOTE(D112 v1): In v1, SessionPart models plain text, inline data parts, and thought/reasoning
+// parts (preserved via the thought field). Non-text parts such as tool invocations (FunctionCall
+// and FunctionResponse) stored in session.jsonl are omitted during conversion. This lossy
+// conversion is accepted for v1; this protobuf interface is canonical going forward, and richer
+// part schemas may be introduced in a future revision.
 type SessionPart struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// text contains the plain text content of this part, if applicable.
@@ -590,7 +591,10 @@ type SessionPart struct {
 	// inline_data contains raw binary data for media attachments (e.g. image payloads).
 	InlineData []byte `protobuf:"bytes,2,opt,name=inline_data,json=inlineData,proto3" json:"inline_data,omitempty"`
 	// mime_type specifies the MIME media type of inline_data (e.g. "image/png").
-	MimeType      string `protobuf:"bytes,3,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
+	MimeType string `protobuf:"bytes,3,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
+	// thought indicates whether this part represents the model's internal reasoning or thought
+	// process (carries genai Part.Thought so UI consumers can filter reasoning).
+	Thought       bool `protobuf:"varint,4,opt,name=thought,proto3" json:"thought,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -644,6 +648,13 @@ func (x *SessionPart) GetMimeType() string {
 		return x.MimeType
 	}
 	return ""
+}
+
+func (x *SessionPart) GetThought() bool {
+	if x != nil {
+		return x.Thought
+	}
+	return false
 }
 
 // ReadMemoryRequest specifies parameters for reading an agent's long-term memory.
@@ -5049,12 +5060,13 @@ const file_agent_proto_rawDesc = "" +
 	"\vSessionTurn\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x124\n" +
 	"\x05parts\x18\x02 \x03(\v2\x1e.wackypub.agent.v1.SessionPartR\x05parts\x12\x10\n" +
-	"\x03seq\x18\x03 \x01(\x03R\x03seq\"_\n" +
+	"\x03seq\x18\x03 \x01(\x03R\x03seq\"y\n" +
 	"\vSessionPart\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x1f\n" +
 	"\vinline_data\x18\x02 \x01(\fR\n" +
 	"inlineData\x12\x1b\n" +
-	"\tmime_type\x18\x03 \x01(\tR\bmimeType\"S\n" +
+	"\tmime_type\x18\x03 \x01(\tR\bmimeType\x12\x18\n" +
+	"\athought\x18\x04 \x01(\bR\athought\"S\n" +
 	"\x11ReadMemoryRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
 	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\"1\n" +

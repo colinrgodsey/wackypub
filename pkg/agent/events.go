@@ -117,7 +117,8 @@ func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64,
 					continue
 				}
 				sp := &agentv1.SessionPart{
-					Text: p.Text,
+					Text:    p.Text,
+					Thought: p.Thought,
 				}
 				if p.InlineData != nil {
 					sp.InlineData = p.InlineData.Data

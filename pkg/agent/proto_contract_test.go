@@ -472,3 +472,115 @@ func TestTrace_OneofTarget(t *testing.T) {
 		t.Fatalf("expected error for empty trace_id, got: %v", err)
 	}
 }
+
+func TestProtoContract_SessionPartThoughtPreserved(t *testing.T) {
+	wsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), []byte(""), 0644); err != nil {
+		t.Fatalf("failed to create root marker: %v", err)
+	}
+
+	agentID := "thoughtagent"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte("thoughtagent\n"), 0644); err != nil {
+		t.Fatalf("failed to create allowed agents file: %v", err)
+	}
+	t.Chdir(agentDir)
+
+	// Seed session with a turn containing both thought and non-thought parts
+	turn := &genai.Content{
+		Role: "model",
+		Parts: []*genai.Part{
+			{Text: "Thinking step 1: analyze input", Thought: true},
+			{Text: "Here is the final answer.", Thought: false},
+		},
+	}
+	if _, err := AppendSessionContentGetSeq(agentDir, turn); err != nil {
+		t.Fatalf("AppendSessionContentGetSeq failed: %v", err)
+	}
+
+	sdk := NewSDK(wsDir)
+	ctx := context.Background()
+
+	// 1. ReadSession preserves Thought flag
+	readResp, err := sdk.ReadSession(ctx, &agentv1.ReadSessionRequest{AgentId: agentID})
+	if err != nil {
+		t.Fatalf("ReadSession failed: %v", err)
+	}
+	if len(readResp.GetTurns()) != 1 {
+		t.Fatalf("expected 1 turn, got %d", len(readResp.GetTurns()))
+	}
+	parts := readResp.GetTurns()[0].GetParts()
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(parts))
+	}
+	if !parts[0].GetThought() {
+		t.Errorf("part 0 thought = false, want true")
+	}
+	if parts[0].GetText() != "Thinking step 1: analyze input" {
+		t.Errorf("part 0 text = %q, want 'Thinking step 1: analyze input'", parts[0].GetText())
+	}
+	if parts[1].GetThought() {
+		t.Errorf("part 1 thought = true, want false")
+	}
+	if parts[1].GetText() != "Here is the final answer." {
+		t.Errorf("part 1 text = %q, want 'Here is the final answer.'", parts[1].GetText())
+	}
+
+	// 2. ReadSessionEvents preserves Thought flag
+	eventsResp, err := sdk.ReadSessionEvents(ctx, &agentv1.ReadSessionEventsRequest{AgentId: agentID})
+	if err != nil {
+		t.Fatalf("ReadSessionEvents failed: %v", err)
+	}
+	var turnEvent *agentv1.SessionTurn
+	for _, ev := range eventsResp.GetEvents() {
+		if t := ev.GetTurn(); t != nil {
+			turnEvent = t
+			break
+		}
+	}
+	if turnEvent == nil {
+		t.Fatalf("expected a turn event in ReadSessionEvents")
+	}
+	evParts := turnEvent.GetParts()
+	if len(evParts) != 2 {
+		t.Fatalf("expected 2 parts in turn event, got %d", len(evParts))
+	}
+	if !evParts[0].GetThought() {
+		t.Errorf("event part 0 thought = false, want true")
+	}
+	if evParts[1].GetThought() {
+		t.Errorf("event part 1 thought = true, want false")
+	}
+
+	// 3. Trace conversions preserve Thought flag in both directions
+	traceResult := &TraceResult{
+		Steps: []TraceStep{
+			{
+				AgentID: agentID,
+				TurnContents: []*genai.Content{
+					turn,
+				},
+			},
+		},
+	}
+	protoTrace := TraceResultToProto(traceResult)
+	if len(protoTrace.GetSteps()) != 1 || len(protoTrace.GetSteps()[0].GetTurnContents()) != 1 {
+		t.Fatalf("TraceResultToProto steps mismatch: %+v", protoTrace)
+	}
+	trParts := protoTrace.GetSteps()[0].GetTurnContents()[0].GetParts()
+	if len(trParts) != 2 || !trParts[0].GetThought() || trParts[1].GetThought() {
+		t.Fatalf("TraceResultToProto thought mismatch: %+v", trParts)
+	}
+
+	roundtrip := TraceProtoToResult(protoTrace)
+	if len(roundtrip.Steps) != 1 || len(roundtrip.Steps[0].TurnContents) != 1 {
+		t.Fatalf("TraceProtoToResult steps mismatch: %+v", roundtrip)
+	}
+	rtParts := roundtrip.Steps[0].TurnContents[0].Parts
+	if len(rtParts) != 2 || !rtParts[0].Thought || rtParts[1].Thought {
+		t.Fatalf("TraceProtoToResult thought roundtrip mismatch: %+v", rtParts)
+	}
+}

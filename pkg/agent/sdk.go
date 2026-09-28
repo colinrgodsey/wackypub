@@ -1374,7 +1374,8 @@ func (s *AgentSDK) ReadSession(ctx context.Context, req *agentv1.ReadSessionRequ
 				continue
 			}
 			sp := &agentv1.SessionPart{
-				Text: p.Text,
+				Text:    p.Text,
+				Thought: p.Thought,
 			}
 			if p.InlineData != nil {
 				sp.InlineData = p.InlineData.Data
