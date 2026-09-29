@@ -8,7 +8,6 @@ package slug
 import (
 	"crypto/rand"
 	"strings"
-	"time"
 )
 
 const (
@@ -18,12 +17,18 @@ const (
 )
 
 // New returns an 8-character pronounceable slug like "katoruvo": 4 CVCV
-// syllables packed from 24 bits (3 crypto/rand bytes).
+// syllables packed from 24 bits (3 crypto/rand bytes). crypto/rand's Read never
+// returns an error, so there is no fallback path (Colin 2026-09-29).
 func New() string {
 	var b [3]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return fallback()
-	}
+	_, _ = rand.Read(b[:])
+	return NewWith(b)
+}
+
+// NewWith renders an 8-character slug from exactly 3 entropy bytes (24 bits).
+// It exists so tests can be fully deterministic while sharing the real packing
+// logic.
+func NewWith(b [3]byte) string {
 	u := uint32(b[0])<<16 | uint32(b[1])<<8 | uint32(b[2])
 	var sb strings.Builder
 	sb.Grow(syllables * 2)
@@ -34,18 +39,3 @@ func New() string {
 	}
 	return sb.String()
 }
-
-func fallback() string {
-	var sb strings.Builder
-	sb.Grow(syllables * 2)
-	n := uint32(int64(0x9e3779b9) * (1 + timeNow()))
-	for i := 0; i < syllables; i++ {
-		slice := (n >> (6 * i)) & 0x3f
-		sb.WriteByte(consonants[(slice>>2)&0x0f])
-		sb.WriteByte(vowels[slice&0x03])
-	}
-	return sb.String()
-}
-
-// timeNow is separated so tests can fix the fallback scramble deterministically.
-var timeNow = func() int64 { return time.Now().UnixNano() }
