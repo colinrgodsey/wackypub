@@ -926,13 +926,13 @@ func TestSeqMonotonicityCrossProcessWriters(t *testing.T) {
 	}
 }
 
-// TestOrphanedSeqFileIgnored verifies that a leftover session.seq from a pre-D118-amendment
-// session - even a corrupt one - is entirely ignored. NextSeq infers 4 from the log and
-// removes the orphan; CurrentSeq reports the log's highest appended seq (3), which a
-// watermark file no longer advances.
-func TestOrphanedSeqFileIgnored(t *testing.T) {
+// TestStaleSeqFileInert verifies that a session.seq file left on disk by an earlier
+// release is COMPLETELY ignored: it is never read, written, deleted, or checked. Inference
+// comes from session.jsonl alone, and the stale file stays exactly where it was (deleting
+// it would still be adapting to the convention - session.seq never existed).
+func TestStaleSeqFileInert(t *testing.T) {
 	tempDir := t.TempDir()
-	agentDir := filepath.Join(tempDir, "corrupted-seq-agent")
+	agentDir := filepath.Join(tempDir, "seq-inert-agent")
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -942,33 +942,28 @@ func TestOrphanedSeqFileIgnored(t *testing.T) {
 		_ = AppendSessionTurn(agentDir, "user", fmt.Sprintf("Turn %d", i))
 	}
 
-	// Write an orphaned (garbage) session.seq as a pre-D118 session would leave.
-	seqPath := filepath.Join(agentDir, SeqFileName)
+	// Plant a stale session.seq exactly as an earlier release would have left it.
+	seqPath := filepath.Join(agentDir, "session.seq")
 	if err := os.WriteFile(seqPath, []byte("garbage_not_a_number\n"), 0644); err != nil {
-		t.Fatalf("write orphan seq: %v", err)
+		t.Fatalf("write stale seq: %v", err)
 	}
 
-	// NextSeq must not read the watermark; it infers 4 from the log.
+	// Inference is unaffected: NextSeq infers 4 from the log, ignoring the stale file.
 	seq, err := NextSeq(agentDir)
 	if err != nil {
-		t.Fatalf("NextSeq failed with an orphaned session.seq: %v", err)
+		t.Fatalf("NextSeq failed with a stale session.seq present: %v", err)
 	}
 	if seq != 4 {
 		t.Errorf("expected inferred seq=4, got %d", seq)
 	}
 
-	// CurrentSeq sees the last allocation (the in-process bump for the 4 handed out above)
-	// and never the orphaned watermark.
-	cur, err := CurrentSeq(agentDir)
+	// The stale file is left INERT - untouched, not deleted. This is the "never existed"
+	// contract: no code path may reference it.
+	data, err := os.ReadFile(seqPath)
 	if err != nil {
-		t.Fatalf("CurrentSeq failed: %v", err)
+		t.Fatalf("stale session.seq should remain untouched: %v", err)
 	}
-	if cur != 4 {
-		t.Errorf("expected CurrentSeq=4 (last handed out by NextSeq), got %d", cur)
-	}
-
-	// NextSeq removes the orphaned file best-effort.
-	if _, err := os.Stat(seqPath); !os.IsNotExist(err) {
-		t.Errorf("session.seq should have been removed after allocation, stat err=%v", err)
+	if string(data) != "garbage_not_a_number\n" {
+		t.Errorf("stale session.seq content changed: %q", data)
 	}
 }

@@ -161,9 +161,9 @@ func TestSDKReadSession_LegacyLinesRoundTripAsSeqZero(t *testing.T) {
 	if len(turns) != 3 {
 		t.Fatalf("want 3 turns (1 legacy + 2 stamped), got %d", len(turns))
 	}
-	// Post-gut contract: the legacy line is seq 0; every stamped line is > 0 and
-	// strictly monotonic. There is no RecoverSeq offset for unsequenced lines - each
-	// new allocation infers from the last line, so the first stamped turn is seq 1.
+	// Migration contract: the legacy line is seq 0; every stamped line is > 0 and
+	// strictly monotonic (RecoverSeq resumes the counter past the unsequenced group,
+	// so the exact first value is 2 here, not 1 - only the relationship matters).
 	if turns[0].GetSeq() != 0 {
 		t.Errorf("legacy turn seq = %d, want 0 (authored before seq existed)", turns[0].GetSeq())
 	}
@@ -175,8 +175,8 @@ func TestSDKReadSession_LegacyLinesRoundTripAsSeqZero(t *testing.T) {
 			t.Errorf("stamped turn %d seq = %d must be > previous %d", i, turns[i].GetSeq(), turns[i-1].GetSeq())
 		}
 	}
-	if turns[1].GetSeq() != 1 || turns[2].GetSeq() != 2 {
-		t.Errorf("stamped seqs = %d,%d; want 1,2 (no RecoverSeq offset)", turns[1].GetSeq(), turns[2].GetSeq())
+	if turns[1].GetSeq() != 2 || turns[2].GetSeq() != 3 {
+		t.Errorf("stamped seqs = %d,%d; want 2,3 (RecoverSeq offsets past the 0-group)", turns[1].GetSeq(), turns[2].GetSeq())
 	}
 }
 
@@ -589,16 +589,16 @@ func TestSDKAddUserTurn_EchoesAllocatedSeqWithLegacyAndStampedHistory(t *testing
 		t.Fatalf("failed to write legacy session lines: %v", err)
 	}
 
-	// 2. Append a turn via AppendSessionTurn. Post-gut there is NO recovery of legacy turns
-	// (no back-compat): the tail line carries no seq, so the next allocation is 1.
-	if err := AppendSessionTurn(agentDir, "user", "stamped turn 1"); err != nil {
+	// 2. Append a turn via AppendSessionTurn; this forces recovery of the legacy turns (maxSeq=2),
+	// allocating seq 3 for this turn.
+	if err := AppendSessionTurn(agentDir, "user", "stamped turn 3"); err != nil {
 		t.Fatalf("AppendSessionTurn failed: %v", err)
 	}
 
-	// 3. Call sdk.AddUserTurn. It must echo the allocated seq (2) on AddUserTurnResponse.Turn.Seq.
+	// 3. Call sdk.AddUserTurn. It must echo the allocated seq (4) on AddUserTurnResponse.Turn.Seq.
 	res4, err := sdk.AddUserTurn(context.Background(), &agentv1.AddUserTurnRequest{
 		AgentId: agentID,
-		Message: "new user turn 2",
+		Message: "new user turn 4",
 	})
 	if err != nil {
 		t.Fatalf("AddUserTurn failed: %v", err)
@@ -606,8 +606,8 @@ func TestSDKAddUserTurn_EchoesAllocatedSeqWithLegacyAndStampedHistory(t *testing
 	if res4.GetTurn() == nil {
 		t.Fatalf("expected non-nil Turn in AddUserTurnResponse")
 	}
-	if res4.GetTurn().GetSeq() != 2 {
-		t.Errorf("AddUserTurnResponse.Turn.Seq = %d, want 2", res4.GetTurn().GetSeq())
+	if res4.GetTurn().GetSeq() != 4 {
+		t.Errorf("AddUserTurnResponse.Turn.Seq = %d, want 4", res4.GetTurn().GetSeq())
 	}
 
 	// Verify against persisted row on disk
@@ -622,16 +622,16 @@ func TestSDKAddUserTurn_EchoesAllocatedSeqWithLegacyAndStampedHistory(t *testing
 		t.Errorf("persisted seq %d does not match echoed seq %d", persisted[3].Seq, res4.GetTurn().GetSeq())
 	}
 
-	// 4. Consecutive AddUserTurn must allocate and echo seq 3
+	// 4. Consecutive AddUserTurn must allocate and echo seq 5
 	res5, err := sdk.AddUserTurn(context.Background(), &agentv1.AddUserTurnRequest{
 		AgentId: agentID,
-		Message: "new user turn 3",
+		Message: "new user turn 5",
 	})
 	if err != nil {
 		t.Fatalf("AddUserTurn consecutive failed: %v", err)
 	}
-	if res5.GetTurn().GetSeq() != 3 {
-		t.Errorf("AddUserTurnResponse.Turn.Seq = %d, want 3", res5.GetTurn().GetSeq())
+	if res5.GetTurn().GetSeq() != 5 {
+		t.Errorf("AddUserTurnResponse.Turn.Seq = %d, want 5", res5.GetTurn().GetSeq())
 	}
 	persisted, err = ReadPersistedTurns(agentDir)
 	if err != nil {
@@ -644,7 +644,7 @@ func TestSDKAddUserTurn_EchoesAllocatedSeqWithLegacyAndStampedHistory(t *testing
 		t.Errorf("persisted seq %d does not match echoed seq %d", persisted[4].Seq, res5.GetTurn().GetSeq())
 	}
 
-	// 5. AddMedia sibling surface must allocate and echo seq 4
+	// 5. AddMedia sibling surface must allocate and echo seq 6
 	testImgData := createTestImage(100, 100, false)
 	mediaRes, err := sdk.AddMedia(context.Background(), &agentv1.AddMediaRequest{
 		AgentId:   agentID,
@@ -653,8 +653,8 @@ func TestSDKAddUserTurn_EchoesAllocatedSeqWithLegacyAndStampedHistory(t *testing
 	if err != nil {
 		t.Fatalf("AddMedia failed: %v", err)
 	}
-	if mediaRes.GetTurn().GetSeq() != 4 {
-		t.Errorf("AddMediaResponse.Turn.Seq = %d, want 4", mediaRes.GetTurn().GetSeq())
+	if mediaRes.GetTurn().GetSeq() != 6 {
+		t.Errorf("AddMediaResponse.Turn.Seq = %d, want 6", mediaRes.GetTurn().GetSeq())
 	}
 	persisted, err = ReadPersistedTurns(agentDir)
 	if err != nil {
@@ -668,18 +668,18 @@ func TestSDKAddUserTurn_EchoesAllocatedSeqWithLegacyAndStampedHistory(t *testing
 	}
 
 	// 6. Test AppendSessionTurnGetSeq and AppendSessionContentGetSeq helper directly
-	seq7, err := AppendSessionTurnGetSeq(agentDir, "user", "turn 5")
+	seq7, err := AppendSessionTurnGetSeq(agentDir, "user", "turn 7")
 	if err != nil {
 		t.Fatalf("AppendSessionTurnGetSeq failed: %v", err)
 	}
-	if seq7 != 5 {
-		t.Errorf("AppendSessionTurnGetSeq seq = %d, want 5", seq7)
+	if seq7 != 7 {
+		t.Errorf("AppendSessionTurnGetSeq seq = %d, want 7", seq7)
 	}
 	persisted, err = ReadPersistedTurns(agentDir)
 	if err != nil {
 		t.Fatalf("ReadPersistedTurns failed: %v", err)
 	}
-	if len(persisted) != 7 || persisted[6].Seq != 5 {
-		t.Errorf("persisted turn 5 seq = %d, want 5", persisted[6].Seq)
+	if len(persisted) != 7 || persisted[6].Seq != 7 {
+		t.Errorf("persisted turn 7 seq = %d, want 7", persisted[6].Seq)
 	}
 }

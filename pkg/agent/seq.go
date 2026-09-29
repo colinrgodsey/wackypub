@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -12,10 +13,8 @@ import (
 	"sync"
 )
 
-// SeqFileName is the dead session.seq watermark file. It existed for one release and no
-// consumer depends on it; a stray file from that window is deleted on sight but never read.
-const SeqFileName = "session.seq"
-
+// session.seq never existed as far as this code is concerned (Colin 2026-09-29): no
+// read, write, delete, or check. The source of truth is session.jsonl alone.
 var seqMu sync.Mutex
 
 // seqAllocBump is a per-process record of the highest seq handed out by NextSeq, so that
@@ -29,6 +28,55 @@ var seqAllocBump = map[string]int64{}
 // last line of a session.jsonl is almost always a few hundred bytes, so one small window
 // suffices; a D101-capped line fits within this bound.
 const tailReadWindow = 4096
+
+// recoverMaxSeqFromLog scans session.jsonl for the highest sequence number, treating each
+// unsequenced (pre-#65) row as occupying 1..N. This is NOT a compatibility shim for the
+// dead session.seq file - it is correctness for the log format: a session whose rows have
+// no seq key is a legitimate log, and its next allocation must not collide with the turns
+// those rows conceptually occupy. Called only when the tail line carries no seq.
+func recoverMaxSeqFromLog(agentDir string) (int64, error) {
+	var maxSeq int64
+	var unsequencedTurns int64
+
+	sessionPath := filepath.Join(agentDir, SessionFileName)
+	f, err := os.Open(sessionPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("opening %s: %w", SessionFileName, err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var rec struct {
+			Seq int64 `json:"seq"`
+		}
+		if err := json.Unmarshal(line, &rec); err == nil {
+			if rec.Seq > 0 {
+				if rec.Seq > maxSeq {
+					maxSeq = rec.Seq
+				}
+			} else {
+				unsequencedTurns++
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, fmt.Errorf("reading %s: %w", SessionFileName, err)
+	}
+
+	if maxSeq < unsequencedTurns {
+		maxSeq = unsequencedTurns
+	}
+	return maxSeq, nil
+}
 
 // tailMaxSeq returns the highest sequence number stamped in session.jsonl by seeking to
 // the last line rather than scanning the whole file. The session log is append-only and
@@ -90,11 +138,16 @@ func tailMaxSeq(agentDir string) (int64, error) {
 		Seq int64 `json:"seq"`
 	}
 	if err := json.Unmarshal([]byte(s), &rec); err != nil {
-		// The tail window did not hold a parseable turn (an over-long or corrupt line).
-		// Do NOT scan the file looking for a usable line: a line over the read bound is not
-		// a legitimate persisted turn. Returning 0 lets the caller allocate fresh; the D101
-		// over-long-line test asserts the post-turn read surfaces the corruption instead.
+		// The tail window did not hold a parseable turn (an over-long or corrupt line). Do
+		// NOT scan the file - a line over the read bound is not a legitimate persisted turn,
+		// and the D101 over-long-line test asserts the post-turn read surfaces the corruption
+		// instead of the allocator. Treat it as no usable tail.
 		return 0, nil
+	}
+	if rec.Seq == 0 {
+		// The last line is a pre-#65 row with no seq key. Infer the max from the whole log
+		// (unsequenced rows occupy 1..N) - log-format correctness, not file back-compat.
+		return recoverMaxSeqFromLog(agentDir)
 	}
 	return rec.Seq, nil
 }
@@ -103,9 +156,7 @@ func tailMaxSeq(agentDir string) (int64, error) {
 // It acquires the cross-process session lock flock (if not already held by the current
 // process) and infers the next value from the LAST LINE of session.jsonl, which carries
 // the highest seq. Callers that hold the session lock across the append (the normal turn
-// path) get atomicity: the append serializes against next-allocation the same way the old
-// watermark write did, with fewer moving parts. A stray session.seq from the brief window
-// it existed is deleted on sight; it is never a source of truth.
+// path) get atomicity: the append serializes against next-allocation.
 func NextSeq(agentDir string) (int64, error) {
 	seqMu.Lock()
 	defer seqMu.Unlock()
@@ -128,7 +179,6 @@ func NextSeq(agentDir string) (int64, error) {
 	}
 	next := cur + 1
 	seqAllocBump[key] = next
-	_ = os.Remove(filepath.Join(agentDir, SeqFileName))
 	return next, nil
 }
 
