@@ -21,6 +21,14 @@ type shimImpl struct {
 	behavior string
 }
 
+func (s *shimImpl) InspectAgent(ctx context.Context, req *agentv1.InspectAgentRequest) (*agentv1.InspectAgentResponse, error) {
+	return &agentv1.InspectAgentResponse{
+		AgentId:        req.GetAgentId(),
+		AgentDir:       "/tmp/shim/" + req.GetAgentId(),
+		AgentDirExists: true,
+	}, nil
+}
+
 func (s *shimImpl) ReadSession(ctx context.Context, req *agentv1.ReadSessionRequest) (*agentv1.ReadSessionResponse, error) {
 	return &agentv1.ReadSessionResponse{
 		Turns: []*agentv1.SessionTurn{

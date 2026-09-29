@@ -84,9 +84,9 @@ func (b *tailBuffer) String() string {
 	return string(b.buf)
 }
 
-// dialBridge spawns the bridge process configured for route, establishes a gRPC client
-// over stdio pipes, and returns the client and a cleanup function (D116 §4).
-func dialBridge(ctx context.Context, wsDir, agentID string, route RemoteRoute) (AgentClient, func() error, error) {
+// dialBridgeConn spawns the bridge process configured for route, establishes a gRPC client
+// connection over stdio pipes, and returns the *grpc.ClientConn and a cleanup function (D116 §4).
+func dialBridgeConn(ctx context.Context, wsDir, agentID string, route RemoteRoute) (*grpc.ClientConn, func() error, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -177,8 +177,6 @@ func dialBridge(ctx context.Context, wsDir, agentID string, route RemoteRoute) (
 		return nil, nil, fmt.Errorf("constructing bridge grpc client: %w", err)
 	}
 
-	client := agentv1.NewAgentServiceClient(gc)
-
 	var closeOnce sync.Once
 	var closeErr error
 	cleanup := func() error {
@@ -188,7 +186,17 @@ func dialBridge(ctx context.Context, wsDir, agentID string, route RemoteRoute) (
 		return closeErr
 	}
 
-	return client, cleanup, nil
+	return gc, cleanup, nil
+}
+
+// dialBridge spawns the bridge process configured for route, establishes a gRPC client
+// over stdio pipes, and returns the client and a cleanup function (D116 §4).
+func dialBridge(ctx context.Context, wsDir, agentID string, route RemoteRoute) (AgentClient, func() error, error) {
+	gc, cleanup, err := dialBridgeConn(ctx, wsDir, agentID, route)
+	if err != nil {
+		return nil, nil, err
+	}
+	return agentv1.NewAgentServiceClient(gc), cleanup, nil
 }
 
 type bridgeClientStream struct {

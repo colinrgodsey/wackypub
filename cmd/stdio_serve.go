@@ -11,7 +11,6 @@ import (
 	"google.golang.org/grpc"
 
 	adkAgent "github.com/colinrgodsey/wackypub/pkg/agent"
-	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 	"github.com/colinrgodsey/wackypub/pkg/stdio"
 )
 
@@ -49,8 +48,8 @@ stdout carries gRPC only; all diagnostics go to stderr.`,
 		sdk.MaxToolTurns = GetMaxToolTurns()
 		sdk.CommandTimeoutSeconds = GetCommandTimeoutSeconds()
 
-		grpcServer := grpc.NewServer()
-		agentv1.RegisterAgentServiceServer(grpcServer, sdk)
+		router := adkAgent.NewRoutingServer(sdk)
+		grpcServer := grpc.NewServer(router.UnknownServiceHandler())
 
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
