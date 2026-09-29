@@ -737,14 +737,6 @@ func TestScannerErrorPropagation(t *testing.T) {
 		t.Errorf("expected error to mention 'token too long', got: %v", err)
 	}
 
-	// RecoverSeq must also fail loudly rather than recovering a low sequence number
-	_, err = RecoverSeq(agentDir)
-	if err == nil {
-		t.Fatalf("expected RecoverSeq to return scanner error on 17MB line, got nil")
-	}
-	if !strings.Contains(err.Error(), "token too long") {
-		t.Errorf("expected error to mention 'token too long', got: %v", err)
-	}
 }
 
 // TestSubscribeSessionBurstDeliveryWithoutLoss verifies that when a burst of events
@@ -801,7 +793,6 @@ func TestSubscribeSessionBurstDeliveryWithoutLoss(t *testing.T) {
 		t.Fatalf("write session lines: %v", err)
 	}
 	_ = f.Close()
-	_ = SetSeq(agentDir, 101)
 	NotifySessionActivity(agentDir)
 
 	// Wait for stream to deliver all 101 buffered events without loss
