@@ -829,6 +829,12 @@ func TestSubscribeSessionBurstDeliveryWithoutLoss(t *testing.T) {
 }
 
 // TestSeqCrossProcessWorker is invoked as a subprocess by TestSeqMonotonicityCrossProcessWriters.
+//
+// Each allocation is an ATOMIC alloc+append: under the D118 amendment next-seq is inferred
+// from the last line of session.jsonl, so the stamped turn must be appended WHILE the session
+// lock is held (AppendSessionTurn does exactly that). A bare NextSeq without an append would
+// return the same inferred value every call by design - the log is the source of truth, not a
+// watermark.
 func TestSeqCrossProcessWorker(t *testing.T) {
 	agentDir := os.Getenv("TEST_SEQ_WORKER_AGENT_DIR")
 	if agentDir == "" {
@@ -840,7 +846,7 @@ func TestSeqCrossProcessWorker(t *testing.T) {
 		attempts = 25
 	}
 	for i := 0; i < attempts; i++ {
-		seq, err := NextSeq(agentDir)
+		seq, err := AppendSessionTurnGetSeq(agentDir, "user", fmt.Sprintf("worker turn %d", i+1))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "worker error: %v\n", err)
 			os.Exit(1)
@@ -851,7 +857,9 @@ func TestSeqCrossProcessWorker(t *testing.T) {
 }
 
 // TestSeqMonotonicityCrossProcessWriters verifies that sequence numbers allocated across
-// multiple independent OS processes are strictly monotonic, unique, and free of temp-file collisions.
+// multiple independent OS processes are strictly monotonic and unique under the D118
+// inference path: each allocation is an atomic alloc+append under the session lock, and
+// the last-line inference must never hand out a duplicate.
 func TestSeqMonotonicityCrossProcessWriters(t *testing.T) {
 	tempDir := t.TempDir()
 	agentDir := filepath.Join(tempDir, "cross-proc-agent")
@@ -927,9 +935,11 @@ func TestSeqMonotonicityCrossProcessWriters(t *testing.T) {
 	}
 }
 
-// TestCorruptedSeqFileRecovery verifies that a corrupted session.seq file is automatically
-// recovered using RecoverSeq rather than permanently bricking sequence number allocation.
-func TestCorruptedSeqFileRecovery(t *testing.T) {
+// TestOrphanedSeqFileIgnored verifies that a leftover session.seq from a pre-D118-amendment
+// session - even a corrupt one - is entirely ignored. NextSeq infers 4 from the log and
+// removes the orphan; CurrentSeq reports the log's highest appended seq (3), which a
+// watermark file no longer advances.
+func TestOrphanedSeqFileIgnored(t *testing.T) {
 	tempDir := t.TempDir()
 	agentDir := filepath.Join(tempDir, "corrupted-seq-agent")
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
@@ -941,27 +951,33 @@ func TestCorruptedSeqFileRecovery(t *testing.T) {
 		_ = AppendSessionTurn(agentDir, "user", fmt.Sprintf("Turn %d", i))
 	}
 
-	// Corrupt session.seq with garbage text
+	// Write an orphaned (garbage) session.seq as a pre-D118 session would leave.
 	seqPath := filepath.Join(agentDir, SeqFileName)
 	if err := os.WriteFile(seqPath, []byte("garbage_not_a_number\n"), 0644); err != nil {
-		t.Fatalf("write corrupt seq: %v", err)
+		t.Fatalf("write orphan seq: %v", err)
 	}
 
-	// NextSeq must not fail permanently; it must recover from session.jsonl and yield 4
+	// NextSeq must not read the watermark; it infers 4 from the log.
 	seq, err := NextSeq(agentDir)
 	if err != nil {
-		t.Fatalf("NextSeq failed on corrupt session.seq: %v", err)
+		t.Fatalf("NextSeq failed with an orphaned session.seq: %v", err)
 	}
 	if seq != 4 {
-		t.Errorf("expected recovered seq=4, got %d", seq)
+		t.Errorf("expected inferred seq=4, got %d", seq)
 	}
 
-	// Verify session.seq on disk is now healed
+	// CurrentSeq sees the last allocation (the in-process bump for the 4 handed out above)
+	// and never the orphaned watermark.
 	cur, err := CurrentSeq(agentDir)
 	if err != nil {
-		t.Fatalf("CurrentSeq failed after heal: %v", err)
+		t.Fatalf("CurrentSeq failed: %v", err)
 	}
 	if cur != 4 {
-		t.Errorf("expected CurrentSeq=4, got %d", cur)
+		t.Errorf("expected CurrentSeq=4 (last handed out by NextSeq), got %d", cur)
+	}
+
+	// NextSeq removes the orphaned file best-effort.
+	if _, err := os.Stat(seqPath); !os.IsNotExist(err) {
+		t.Errorf("session.seq should have been removed after allocation, stat err=%v", err)
 	}
 }

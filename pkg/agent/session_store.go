@@ -198,7 +198,20 @@ func sanitizeContentForPersistWithSeq(content *genai.Content, seq int64) ([]byte
 // AppendSessionContentGetSeq appends a genai.Content turn to <agent_dir>/session.jsonl,
 // allocating a new strictly monotonic sequence number stamped on the persisted turn,
 // and returns the allocated sequence number.
+//
+// Under the D118 amendment next-seq is inferred from the LAST LINE of session.jsonl, so
+// correctness requires the session lock to be held across BOTH the inference and the append:
+// the tail only advances when the stamped turn is written, and the lock is what serializes
+// writers against each other. NextSeq skips re-acquiring when the lock is already held, so
+// callers that already hold it (the whole-turn lock in generation) are unaffected.
 func AppendSessionContentGetSeq(agentDir string, content *genai.Content) (int64, error) {
+	if !IsSessionLockedByCurrentProcess(agentDir) {
+		lock, err := AcquireSessionLock(agentDir)
+		if err != nil {
+			return 0, fmt.Errorf("acquiring session lock for append: %w", err)
+		}
+		defer lock.Release()
+	}
 	seq, err := NextSeq(agentDir)
 	if err != nil {
 		return 0, fmt.Errorf("allocating sequence number for turn: %w", err)
