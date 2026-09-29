@@ -737,14 +737,6 @@ func TestScannerErrorPropagation(t *testing.T) {
 		t.Errorf("expected error to mention 'token too long', got: %v", err)
 	}
 
-	// RecoverSeq must also fail loudly rather than recovering a low sequence number
-	_, err = RecoverSeq(agentDir)
-	if err == nil {
-		t.Fatalf("expected RecoverSeq to return scanner error on 17MB line, got nil")
-	}
-	if !strings.Contains(err.Error(), "token too long") {
-		t.Errorf("expected error to mention 'token too long', got: %v", err)
-	}
 }
 
 // TestSubscribeSessionBurstDeliveryWithoutLoss verifies that when a burst of events
@@ -801,7 +793,6 @@ func TestSubscribeSessionBurstDeliveryWithoutLoss(t *testing.T) {
 		t.Fatalf("write session lines: %v", err)
 	}
 	_ = f.Close()
-	_ = SetSeq(agentDir, 101)
 	NotifySessionActivity(agentDir)
 
 	// Wait for stream to deliver all 101 buffered events without loss
@@ -829,6 +820,12 @@ func TestSubscribeSessionBurstDeliveryWithoutLoss(t *testing.T) {
 }
 
 // TestSeqCrossProcessWorker is invoked as a subprocess by TestSeqMonotonicityCrossProcessWriters.
+//
+// Each allocation is an ATOMIC alloc+append: under the D118 amendment next-seq is inferred
+// from the last line of session.jsonl, so the stamped turn must be appended WHILE the session
+// lock is held (AppendSessionTurn does exactly that). A bare NextSeq without an append would
+// return the same inferred value every call by design - the log is the source of truth, not a
+// watermark.
 func TestSeqCrossProcessWorker(t *testing.T) {
 	agentDir := os.Getenv("TEST_SEQ_WORKER_AGENT_DIR")
 	if agentDir == "" {
@@ -840,7 +837,7 @@ func TestSeqCrossProcessWorker(t *testing.T) {
 		attempts = 25
 	}
 	for i := 0; i < attempts; i++ {
-		seq, err := NextSeq(agentDir)
+		seq, err := AppendSessionTurnGetSeq(agentDir, "user", fmt.Sprintf("worker turn %d", i+1))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "worker error: %v\n", err)
 			os.Exit(1)
@@ -851,7 +848,9 @@ func TestSeqCrossProcessWorker(t *testing.T) {
 }
 
 // TestSeqMonotonicityCrossProcessWriters verifies that sequence numbers allocated across
-// multiple independent OS processes are strictly monotonic, unique, and free of temp-file collisions.
+// multiple independent OS processes are strictly monotonic and unique under the D118
+// inference path: each allocation is an atomic alloc+append under the session lock, and
+// the last-line inference must never hand out a duplicate.
 func TestSeqMonotonicityCrossProcessWriters(t *testing.T) {
 	tempDir := t.TempDir()
 	agentDir := filepath.Join(tempDir, "cross-proc-agent")
@@ -927,11 +926,13 @@ func TestSeqMonotonicityCrossProcessWriters(t *testing.T) {
 	}
 }
 
-// TestCorruptedSeqFileRecovery verifies that a corrupted session.seq file is automatically
-// recovered using RecoverSeq rather than permanently bricking sequence number allocation.
-func TestCorruptedSeqFileRecovery(t *testing.T) {
+// TestStaleSeqFileInert verifies that a session.seq file left on disk by an earlier
+// release is COMPLETELY ignored: it is never read, written, deleted, or checked. Inference
+// comes from session.jsonl alone, and the stale file stays exactly where it was (deleting
+// it would still be adapting to the convention - session.seq never existed).
+func TestStaleSeqFileInert(t *testing.T) {
 	tempDir := t.TempDir()
-	agentDir := filepath.Join(tempDir, "corrupted-seq-agent")
+	agentDir := filepath.Join(tempDir, "seq-inert-agent")
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -941,27 +942,28 @@ func TestCorruptedSeqFileRecovery(t *testing.T) {
 		_ = AppendSessionTurn(agentDir, "user", fmt.Sprintf("Turn %d", i))
 	}
 
-	// Corrupt session.seq with garbage text
-	seqPath := filepath.Join(agentDir, SeqFileName)
+	// Plant a stale session.seq exactly as an earlier release would have left it.
+	seqPath := filepath.Join(agentDir, "session.seq")
 	if err := os.WriteFile(seqPath, []byte("garbage_not_a_number\n"), 0644); err != nil {
-		t.Fatalf("write corrupt seq: %v", err)
+		t.Fatalf("write stale seq: %v", err)
 	}
 
-	// NextSeq must not fail permanently; it must recover from session.jsonl and yield 4
+	// Inference is unaffected: NextSeq infers 4 from the log, ignoring the stale file.
 	seq, err := NextSeq(agentDir)
 	if err != nil {
-		t.Fatalf("NextSeq failed on corrupt session.seq: %v", err)
+		t.Fatalf("NextSeq failed with a stale session.seq present: %v", err)
 	}
 	if seq != 4 {
-		t.Errorf("expected recovered seq=4, got %d", seq)
+		t.Errorf("expected inferred seq=4, got %d", seq)
 	}
 
-	// Verify session.seq on disk is now healed
-	cur, err := CurrentSeq(agentDir)
+	// The stale file is left INERT - untouched, not deleted. This is the "never existed"
+	// contract: no code path may reference it.
+	data, err := os.ReadFile(seqPath)
 	if err != nil {
-		t.Fatalf("CurrentSeq failed after heal: %v", err)
+		t.Fatalf("stale session.seq should remain untouched: %v", err)
 	}
-	if cur != 4 {
-		t.Errorf("expected CurrentSeq=4, got %d", cur)
+	if string(data) != "garbage_not_a_number\n" {
+		t.Errorf("stale session.seq content changed: %q", data)
 	}
 }
