@@ -58,17 +58,11 @@ func NextSeq(agentDir string) (int64, error) {
 }
 
 // CurrentSeq returns the current assigned sequence number for agentDir without incrementing.
+// It is read-only and lock-free; it never acquires the cross-process session lock flock,
+// so watch, event readers, and status inspectors never block behind writers.
 func CurrentSeq(agentDir string) (int64, error) {
 	seqMu.Lock()
 	defer seqMu.Unlock()
-
-	if !IsSessionLockedByCurrentProcess(agentDir) {
-		lock, err := AcquireSessionLock(agentDir)
-		if err != nil {
-			return 0, fmt.Errorf("acquiring session lock for seq: %w", err)
-		}
-		defer lock.Release()
-	}
 
 	cur, err := readSeqFile(agentDir)
 	if err != nil {

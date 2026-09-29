@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -963,5 +964,73 @@ func TestCorruptedSeqFileRecovery(t *testing.T) {
 	}
 	if cur != 4 {
 		t.Errorf("expected CurrentSeq=4, got %d", cur)
+	}
+}
+
+// TestCurrentSeqLockFree verifies that CurrentSeq and ReadSessionEventsFromDisk
+// are completely lock-free and never attempt to acquire session.lock, even when
+// another process holds the exclusive lock (D118).
+func TestCurrentSeqLockFree(t *testing.T) {
+	tempDir := t.TempDir()
+	agentDir := filepath.Join(tempDir, "lockfree-seq-agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	_ = AppendSessionTurn(agentDir, "user", "turn 1")
+	_ = AppendSessionTurn(agentDir, "model", "turn 2")
+
+	// Hold raw exclusive flock on session.lock without populating heldLocks map
+	lockPath := filepath.Join(agentDir, "session.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatalf("open lock file: %v", err)
+	}
+	defer f.Close()
+
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatalf("flock: %v", err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+
+	done := make(chan struct{})
+	var cur int64
+	var curErr error
+	go func() {
+		cur, curErr = CurrentSeq(agentDir)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		if curErr != nil {
+			t.Fatalf("CurrentSeq failed while lock held: %v", curErr)
+		}
+		if cur != 2 {
+			t.Errorf("expected seq 2, got %d", cur)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("CurrentSeq hung trying to acquire session.lock while lock was held")
+	}
+
+	// Also verify ReadSessionEventsFromDisk is lock-free
+	eventsDone := make(chan struct{})
+	var events []*agentv1.SessionEvent
+	var eventsErr error
+	go func() {
+		events, _, _, _, eventsErr = ReadSessionEventsFromDisk(agentDir)
+		close(eventsDone)
+	}()
+
+	select {
+	case <-eventsDone:
+		if eventsErr != nil {
+			t.Fatalf("ReadSessionEventsFromDisk failed while lock held: %v", eventsErr)
+		}
+		if len(events) != 2 {
+			t.Errorf("expected 2 events, got %d", len(events))
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("ReadSessionEventsFromDisk hung trying to acquire session.lock while lock was held")
 	}
 }

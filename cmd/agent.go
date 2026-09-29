@@ -37,8 +37,12 @@ func stdinIsPipe() bool {
 	return (stat.Mode() & os.ModeCharDevice) == 0
 }
 
-func signalCtx() (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+func signalCtx(cmds ...*cobra.Command) (context.Context, context.CancelFunc) {
+	parent := context.Background()
+	if len(cmds) > 0 && cmds[0] != nil && cmds[0].Context() != nil {
+		parent = cmds[0].Context()
+	}
+	return signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 }
 
 func cmdCtx(cmd *cobra.Command) context.Context {
@@ -226,13 +230,16 @@ does not already exist.`,
 			return fmt.Errorf("user message is required. Provide via argument, --message flag, or stdin pipe")
 		}
 
-		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		ctx, stop := signalCtx(cmd)
+		defer stop()
+
+		client, cleanup, err := adkAgent.ResolveAgentClient(ctx, sdk, agentID)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
 
-		turnRes, err := client.AddUserTurn(cmdCtx(cmd), &agentv1.AddUserTurnRequest{
+		turnRes, err := client.AddUserTurn(ctx, &agentv1.AddUserTurnRequest{
 			AgentId:      agentID,
 			Message:      userMsg,
 			WorkspaceDir: wsDir,
@@ -296,13 +303,16 @@ Transparencies in PNG/GIF inputs are flattened onto a white background before JP
 			return fmt.Errorf("media payload exceeds 10MB limit (%d bytes > %d bytes)", len(data), adkAgent.MaxMediaPayloadBytes)
 		}
 
-		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		ctx, stop := signalCtx(cmd)
+		defer stop()
+
+		client, cleanup, err := adkAgent.ResolveAgentClient(ctx, sdk, agentID)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
 
-		resp, err := client.AddMedia(cmdCtx(cmd), &agentv1.AddMediaRequest{
+		resp, err := client.AddMedia(ctx, &agentv1.AddMediaRequest{
 			AgentId:      agentID,
 			MediaData:    data,
 			WorkspaceDir: wsDir,
@@ -361,7 +371,7 @@ Acquires the session lock for the duration of the operation.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> generate")
 		}
 
-		ctx, stop := signalCtx()
+		ctx, stop := signalCtx(cmd)
 		defer stop()
 		first := true
 		for text, err := range generateTurnStreamProto(sdk, ctx, agentID) {
@@ -416,13 +426,16 @@ the rewrite.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> strip-signatures")
 		}
 
-		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		ctx, stop := signalCtx(cmd)
+		defer stop()
+
+		client, cleanup, err := adkAgent.ResolveAgentClient(ctx, sdk, agentID)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
 
-		resp, err := client.StripSignatures(cmdCtx(cmd), &agentv1.StripSignaturesRequest{
+		resp, err := client.StripSignatures(ctx, &agentv1.StripSignaturesRequest{
 			AgentId:      agentID,
 			WorkspaceDir: wsDir,
 		})
@@ -449,8 +462,7 @@ conversion for v1).
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
 
-Read-only: does not modify session.jsonl. Acquires the session lock for the duration of the
-read.`,
+Read-only: does not modify session.jsonl. Does not acquire the session lock.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {
@@ -500,7 +512,7 @@ Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
 
 Prints nothing (empty output, no error) if the agent has no MEMORY.md yet. Read-only: does not
-modify anything. Acquires the session lock for the duration of the read.`,
+modify anything. Does not acquire the session lock.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {
@@ -690,7 +702,7 @@ operation.`,
 			compactCfg = cfg
 		}
 
-		ctx, stop := signalCtx()
+		ctx, stop := signalCtx(cmd)
 		defer stop()
 
 		var cfgOverride *agentv1.CompactConfigOverride
@@ -793,7 +805,7 @@ what's printed, though it is still persisted to session.jsonl).`,
 			return fmt.Errorf("user message is required. Provide via argument, --message flag, or stdin pipe")
 		}
 
-		ctx, stop := signalCtx()
+		ctx, stop := signalCtx(cmd)
 		defer stop()
 		if asyncFlag {
 			ctx = adkAgent.WithSkipCycleCheck(ctx, true)
@@ -871,7 +883,7 @@ byte-identical afterward.`,
 			return fmt.Errorf("message is required. Provide via argument, --message flag, or stdin pipe")
 		}
 
-		ctx, stop := signalCtx()
+		ctx, stop := signalCtx(cmd)
 		defer stop()
 		text, err := asideQuestionProto(sdk, ctx, agentID, userMsg, func(w string) {
 			cmd.PrintErrln(w)
@@ -923,7 +935,7 @@ real terminal, not something an agent should invoke on itself via run_command.`,
 		}
 
 		fmt.Printf("wackypub REPL - agent %q. Type \"exit\"/\"quit\" or press Ctrl+D to end.\n", agentID)
-		ctx, stop := signalCtx()
+		ctx, stop := signalCtx(cmd)
 		defer stop()
 		scanner := bufio.NewScanner(os.Stdin)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)

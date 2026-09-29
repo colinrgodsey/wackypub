@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -172,7 +175,9 @@ func GetCommandTimeoutSeconds() int {
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() {
-	if err := RootCmd.Execute(); err != nil {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if err := RootCmd.ExecuteContext(ctx); err != nil {
 		fmt.Println(err)
 		// A named scratchpad entry that does not exist is a usage error, so it exits 2 the way
 		// diff does. Everything else keeps the previous generic exit 1.
