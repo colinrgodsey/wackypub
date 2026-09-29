@@ -1135,6 +1135,11 @@ message ReadSessionEventsRequest {
     // head_only requests no events, returning only baseline_seq, latest_seq, and latest_turn_seq.
     // Cheap metadata-only request for cold-starting consumers (e.g. wackydiscord) that should not replay past events.
     bool head_only = 5;
+
+    // from_seq requests events starting from sequence number from_seq (inclusive, ev.seq >= from_seq).
+    // Note contrast with since_seq which is strictly exclusive (ev.seq > since_seq).
+    // Allows consumers to skip ahead without replaying earlier events.
+    int64 from_seq = 6;
   }
 }
 
@@ -1143,8 +1148,9 @@ message ReadSessionEventsResponse {
   // events contains the batch of session events in strictly increasing sequence order.
   repeated SessionEvent events = 1;
 
-  // rewound indicates that the requested since_seq cursor is invalid against current session history:
-  // either since_seq < baseline_seq (compacted away) or since_seq > latest_seq (rollback / restored directory).
+  // rewound indicates that the requested cursor (since_seq or from_seq) is invalid against current session history:
+  // either below baseline_seq (compacted away: since_seq < baseline_seq or from_seq < baseline_seq)
+  // or beyond latest_seq (rollback / restored directory: since_seq > latest_seq or from_seq > latest_seq + 1).
   // When true, the consumer must reset its local cursor to baseline_seq (or latest_seq).
   bool rewound = 2;
 
@@ -1157,7 +1163,7 @@ message ReadSessionEventsResponse {
   // latest_turn_seq is the sequence number of the most recent persisted turn in this agent's session (0 if none).
   int64 latest_turn_seq = 5;
 
-  // rolled_back indicates that since_seq was strictly greater than latest_seq,
+  // rolled_back indicates that since_seq or from_seq was ahead of latest_seq,
   // signalling that the session shrank or was restored from an earlier checkpoint.
   bool rolled_back = 6;
 }
