@@ -973,7 +973,7 @@ var scratchpadCmd = &cobra.Command{
 var scratchpadCreateCmd = &cobra.Command{
 	Use:   "create [agent_id] [message]",
 	Short: "Store a text payload into an agent's persistent scratchpad",
-	Long: `Creates a new scratchpad entry in <ws_dir>/<agent_id>/scratchpad/ with a generated 4-character ID.
+	Long: `Creates a new scratchpad entry in <ws_dir>/<agent_id>/scratchpad/ with a generated 8-character pronounceable slug ID (e.g. katoruvo).
 
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
@@ -1057,7 +1057,7 @@ var scratchpadReadCmd = &cobra.Command{
 
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
-  entry_id   Required. The 4-character scratchpad entry ID to read.
+  entry_id   Required. The scratchpad entry ID to read (legacy 4-char or 8-char slug).
 
 Pass --skip-lines N and/or --num-lines M for line-based pagination. Rejects binary (.dat) entries outright per D48.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -1234,7 +1234,7 @@ var scratchpadSearchCmd = &cobra.Command{
 
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
-  entry_id   Required. The 4-character scratchpad entry ID to search.
+  entry_id   Required. The scratchpad entry ID to search (legacy 4-char or 8-char slug).
   query      Required. The text substring or regex pattern to search for.
 
 Returns 1-indexed line numbers, precomputed skip_lines for get_scratchpad pagination, and truncated line text.
@@ -1307,7 +1307,7 @@ var scratchpadDeleteCmd = &cobra.Command{
 
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
-  entry_id   Required. The 4-character scratchpad entry ID to delete.`,
+  entry_id   Required. The scratchpad entry ID to delete (legacy 4-char or 8-char slug).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {
