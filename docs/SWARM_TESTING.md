@@ -57,7 +57,7 @@ indicates a pure application-level logic vulnerability.
 
 ## Setup: the local trusted agent's job, not a fixed script
 
-**Prerequisite: load `skills/wackypub-a2a/SKILL.md` and `skills/wackypub-ws/SKILL.md` first.** Standing up a
+**Prerequisite: load `skills/wackypub-ws/SKILL.md` first.** Standing up a
 swarm test means driving the `wackypub` CLI yourself - through `docker compose run`
 or `docker exec`, to configure the coordinator and every worker, and to sanity-check
 the sandbox before handing it to the swarm - not just describing it. That

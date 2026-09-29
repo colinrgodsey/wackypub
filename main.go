@@ -7,9 +7,6 @@ import (
 	adkAgent "github.com/colinrgodsey/wackypub/pkg/agent"
 )
 
-//go:embed skills/wackypub-a2a/SKILL.md
-var bundledA2ASkill string
-
 //go:embed skills/wackypub-ws/SKILL.md
 var bundledWSSkill string
 
@@ -33,7 +30,6 @@ var bundledDefaultCompactMD string
 var bundledDefaultRuntimeJSON string
 
 func main() {
-	cmd.BundledA2ASkill = bundledA2ASkill
 	cmd.BundledWSSkill = bundledWSSkill
 	cmd.BundledScratchpadSkill = bundledScratchpadSkill
 	adkAgent.DefaultCompactMD = bundledDefaultCompactMD

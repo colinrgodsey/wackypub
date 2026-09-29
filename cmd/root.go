@@ -22,8 +22,6 @@ var (
 	commandTimeoutSeconds int
 	cfg                   *config.Config
 
-	// BundledA2ASkill holds embedded skills/wackypub-a2a/SKILL.md text passed from main.go (D34).
-	BundledA2ASkill string
 	// BundledWSSkill holds embedded skills/wackypub-ws/SKILL.md text passed from main.go (D34).
 	BundledWSSkill string
 	// BundledScratchpadSkill holds embedded skills/scratchpad-efficiency/SKILL.md text
@@ -42,10 +40,6 @@ type bundledSkill struct {
 // description from frontmatter rather than a separately hardcoded copy (D40). ShortName
 // is the form GetSkillContent actually accepts, kept in sync with the Use: line below.
 func bundledSkills() ([]bundledSkill, error) {
-	a2a, err := adkAgent.ParseSkillContent(BundledA2ASkill, "wackypub-a2a")
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse bundled a2a skill: %w", err)
-	}
 	ws, err := adkAgent.ParseSkillContent(BundledWSSkill, "wackypub-ws")
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse bundled ws skill: %w", err)
@@ -55,34 +49,30 @@ func bundledSkills() ([]bundledSkill, error) {
 		return nil, fmt.Errorf("failed to parse bundled scratchpad skill: %w", err)
 	}
 	return []bundledSkill{
-		{ShortName: "a2a", Skill: a2a},
 		{ShortName: "ws", Skill: ws},
 		{ShortName: "scratchpad", Skill: scratchpad},
 	}, nil
 }
 
-// GetSkillContent resolves and returns skill guidance by name (a2a, ws, scratchpad).
+// GetSkillContent resolves and returns skill guidance by name (ws, scratchpad).
 func GetSkillContent(name string) (string, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	switch name {
-	case "a2a", "wackypub-a2a":
-		return BundledA2ASkill, nil
 	case "ws", "workspace", "wackypub-ws":
 		return BundledWSSkill, nil
 	case "scratchpad", "scratchpad-efficiency":
 		return BundledScratchpadSkill, nil
 	default:
-		return "", fmt.Errorf("unknown skill %q. Available skills: a2a, ws, scratchpad", name)
+		return "", fmt.Errorf("unknown skill %q. Available skills: ws, scratchpad", name)
 	}
 }
 
 var skillCmd = &cobra.Command{
-	Use:   "skill [a2a|ws|scratchpad]",
+	Use:   "skill [ws|scratchpad]",
 	Short: "List bundled WackyPub skills, or print one - if you're an agent, you'll want to load one of these",
 	Long: `With no argument, lists the bundled WackyPub skills (name and description) and exits.
-With a name (a2a, ws, or scratchpad), prints that skill's full guidance
-(skills/wackypub-a2a/SKILL.md, skills/wackypub-ws/SKILL.md, or
-skills/scratchpad-efficiency/SKILL.md) directly to stdout.
+With a name (ws or scratchpad), prints that skill's full guidance
+(skills/wackypub-ws/SKILL.md, or skills/scratchpad-efficiency/SKILL.md) directly to stdout.
 
 If you're an agent driving this CLI cold, "wackypub skill" is a reasonable first move.`,
 	Args: cobra.MaximumNArgs(1),

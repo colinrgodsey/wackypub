@@ -25,7 +25,7 @@ const DefaultCompactionOverheadPct = 20.0
 // has - parsed through the exact same ParseCompactConfig path, according to D44.
 //
 // Set from main.go (D45), which embeds examples/compaction/COMPACT-append.md and assigns
-// it here before cmd.Execute() runs - mirrors cmd.BundledA2ASkill/BundledWSSkill (D34),
+// it here before cmd.Execute() runs - mirrors cmd.BundledWSSkill (D34),
 // required because examples/ isn't reachable by a //go:embed directive living
 // in pkg/agent (embed patterns can't use ".." to leave their own package
 // directory, and a symlink pointing back into pkg/agent doesn't work either -

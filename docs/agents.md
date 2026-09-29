@@ -491,7 +491,7 @@ wackypub agent <agent_id> scratchpad search <entry_id> <query> [--regex] [--case
 - CLI-level access to an agent's persistent scratchpad (`<ws_dir>/<agent_id>/scratchpad/`) (see DECISIONS.md D27).
 - `create`: accepts text via positional argument, `--message` flag, or piped stdin. Acquires session lock for atomic write.
 - `read`, `list`, `search`: pure reads against atomic temp-file replacement, executing without session lock.
-- Supports both `wackypub agent <agent_id> scratchpad <subverb>` and `wackypub agent scratchpad <subverb> <agent_id>` syntaxes for positional arguments - but flags (`--skip-lines`, `--regex`, etc.) only work in the second form (`wackypub agent scratchpad <subverb> <agent_id> ... --flag`); see `skills/wackypub-a2a/SKILL.md`'s Flag Ordering Caveat.
+- Supports both `wackypub agent <agent_id> scratchpad <subverb>` and `wackypub agent scratchpad <subverb> <agent_id>` syntaxes for positional arguments - but flags (`--skip-lines`, `--regex`, etc.) only work in the second form (`wackypub agent scratchpad <subverb> <agent_id> ... --flag`). This mirrors the general flag-ordering caveat: flags do not work with agent-id-first ordering (the outer `agent` command's own flag parsing runs before the agent-id-first form dispatches to the subcommand). If a command takes a flag, put the subcommand name directly after `agent`, agent ID after that.
 
 ### Workspace Diagnostics & Git Versioning (`workspace`)
 ```bash

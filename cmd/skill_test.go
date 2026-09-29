@@ -9,14 +9,13 @@ import (
 // the way main.go does. Kept minimal: this asserts the CLI surface (names and
 // resolution), not the skill contents.
 func initBundledSkillsForTest() {
-	BundledA2ASkill = "---\nname: wackypub-a2a\ndescription: a2a skill\n---\nbody\n"
 	BundledWSSkill = "---\nname: wackypub-ws\ndescription: ws skill\n---\nbody\n"
 	BundledScratchpadSkill = "---\nname: scratchpad-efficiency\ndescription: scratchpad skill\n---\nbody\n"
 }
 
 func TestGetSkillContent_ResolvesEveryBundledSkill(t *testing.T) {
 	initBundledSkillsForTest()
-	for _, name := range []string{"a2a", "wackypub-a2a", "ws", "workspace", "scratchpad", "scratchpad-efficiency"} {
+	for _, name := range []string{"ws", "workspace", "scratchpad", "scratchpad-efficiency"} {
 		got, err := GetSkillContent(name)
 		if err != nil {
 			t.Fatalf("GetSkillContent(%q) returned error: %v", name, err)
@@ -47,7 +46,7 @@ func TestBundledSkills_IncludesScratchpad(t *testing.T) {
 	for _, sk := range skills {
 		names = append(names, sk.ShortName)
 	}
-	for _, want := range []string{"a2a", "ws", "scratchpad"} {
+	for _, want := range []string{"ws", "scratchpad"} {
 		found := false
 		for _, n := range names {
 			if n == want {
