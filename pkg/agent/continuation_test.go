@@ -511,9 +511,9 @@ func TestD88_ColdStartPreTurnEmergencyValve(t *testing.T) {
 }
 
 // TestD88_MaxAutoContinuationBudgetCap verifies that runaway loops hit the budget guard
-// (MaxAutoContinuations = 2 standard, 1 A2A) and emit an explicit incomplete status response.
+// (MaxAutoContinuations = 4 standard, 2 A2A) and emit an explicit incomplete status response.
 func TestD88_MaxAutoContinuationBudgetCap(t *testing.T) {
-	t.Run("Standard_Cap2", func(t *testing.T) {
+	t.Run("Standard_Cap4", func(t *testing.T) {
 		wsDir := t.TempDir()
 		agentID := "d88-cap2-bot"
 		agentDir := filepath.Join(wsDir, agentID)
@@ -559,7 +559,7 @@ func TestD88_MaxAutoContinuationBudgetCap(t *testing.T) {
 			mu.Unlock()
 
 			w.Header().Set("Content-Type", "application/json")
-			if c == 2 || c == 4 {
+			if c%2 == 0 {
 				// Compaction calls
 				respJSON := `{
 					"choices":[{"message":{"role":"assistant","content":"- Compacted memory step."},"finish_reason":"stop"}],
@@ -598,13 +598,14 @@ func TestD88_MaxAutoContinuationBudgetCap(t *testing.T) {
 			t.Fatalf("GenerateTurn failed: %v", err)
 		}
 
-		expectedCapMsg := "[Reached maximum auto-continuations (2) - stopping with incomplete status.]"
-		if !strings.Contains(resp, expectedCapMsg) {
-			t.Errorf("expected response to contain %q, got: %q", expectedCapMsg, resp)
+		for _, want := range []string{"4 of 4", "incomplete status", "maxAutoContinuations", "runtime.json"} {
+			if !strings.Contains(resp, want) {
+				t.Errorf("expected response to contain %q, got: %q", want, resp)
+			}
 		}
 	})
 
-	t.Run("A2A_Cap1", func(t *testing.T) {
+	t.Run("A2A_Cap2", func(t *testing.T) {
 		wsDir := t.TempDir()
 		agentID := "d88-cap1-a2a-bot"
 		agentDir := filepath.Join(wsDir, agentID)
@@ -645,7 +646,7 @@ func TestD88_MaxAutoContinuationBudgetCap(t *testing.T) {
 			mu.Unlock()
 
 			w.Header().Set("Content-Type", "application/json")
-			if c == 2 {
+			if c%2 == 0 {
 				// Compaction call
 				respJSON := `{
 					"choices":[{"message":{"role":"assistant","content":"- Compacted memory step."},"finish_reason":"stop"}],
@@ -686,9 +687,10 @@ func TestD88_MaxAutoContinuationBudgetCap(t *testing.T) {
 			t.Fatalf("GenerateTurn failed: %v", err)
 		}
 
-		expectedCapMsg := "[Reached maximum auto-continuations (1) - stopping with incomplete status.]"
-		if !strings.Contains(resp, expectedCapMsg) {
-			t.Errorf("expected response to contain %q, got: %q", expectedCapMsg, resp)
+		for _, want := range []string{"2 of 2", "incomplete status", "maxAutoContinuations", "runtime.json"} {
+			if !strings.Contains(resp, want) {
+				t.Errorf("expected response to contain %q, got: %q", want, resp)
+			}
 		}
 	})
 }
@@ -1094,5 +1096,57 @@ func TestD101_ErrorTransparency_ReadSessionError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "token too long") {
 		t.Errorf("expected token-too-long in error, got: %v", err)
+	}
+}
+
+// TestD88_DefaultAutoContinuationCaps pins the D88 budget guard defaults. These are
+// runaway-loop guards, not feature limits: image-queue and compaction continuations
+// consume from the same per-turn budget, so the cap must leave room for a
+// multi-image turn plus its follow-up work.
+func TestD88_DefaultAutoContinuationCaps(t *testing.T) {
+	if DefaultMaxAutoContinuations != 4 {
+		t.Errorf("DefaultMaxAutoContinuations = %d, want 4", DefaultMaxAutoContinuations)
+	}
+	if DefaultMaxAutoContinuationsA2A != 2 {
+		t.Errorf("DefaultMaxAutoContinuationsA2A = %d, want 2", DefaultMaxAutoContinuationsA2A)
+	}
+}
+
+// TestD88_BudgetExhaustedStopIsLoud verifies the cap-exhausted stop names the count,
+// the cap, and the runtime.json knob, so an operator can raise the budget on purpose
+// instead of wondering why a multi-image turn stalled.
+func TestD88_BudgetExhaustedStopIsLoud(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		max  int
+		want string
+	}{
+		{"standard cap 4", 4, "4 of 4"},
+		{"a2a cap 2", 2, "2 of 2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fa := &FolderAgent{RuntimeConfig: &RuntimeConfig{MaxImageDimension: 1024}}
+			count := tc.max
+			reason := ContinuationNone
+			var out []string
+			yield := func(chunk string, err error) bool {
+				if err != nil {
+					t.Fatalf("unexpected yield error: %v", err)
+				}
+				out = append(out, chunk)
+				return true
+			}
+
+			ok := fa.handleContinuationOrCompaction(context.Background(), t.TempDir(), []string{"img1"}, &reason, &count, tc.max, yield)
+			if ok {
+				t.Fatal("expected the budget gate to stop the continuation")
+			}
+			msg := strings.Join(out, "")
+			for _, want := range []string{tc.want, "incomplete status", "maxAutoContinuations", "runtime.json"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("budget-exhausted stop missing %q, got %s", want, msg)
+				}
+			}
+		})
 	}
 }

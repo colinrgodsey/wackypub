@@ -383,10 +383,10 @@ const (
 	ContinuationDeferredImage ContinuationReason = "deferred_image"
 	ContinuationCompactedBail ContinuationReason = "compacted_bail"
 
-	// DefaultMaxAutoContinuations is the budget guard cap (2) for standard sessions (D88).
-	DefaultMaxAutoContinuations = 2
-	// DefaultMaxAutoContinuationsA2A is the budget guard cap (1) for A2A sessions (D88).
-	DefaultMaxAutoContinuationsA2A = 1
+	// DefaultMaxAutoContinuations is the budget guard cap (4) for standard sessions (D88).
+	DefaultMaxAutoContinuations = 4
+	// DefaultMaxAutoContinuationsA2A is the budget guard cap (2) for A2A sessions (D88).
+	DefaultMaxAutoContinuationsA2A = 2
 )
 
 // FolderAgent encapsulates an agent loaded from a folder environment (<ws_dir>/<agent_id>).
@@ -927,7 +927,7 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 	if hasCompactedBail || hasDeferredImages {
 		if *continuationCount >= maxContinuations {
 			fa.checkPostTurnCompaction(ctx, wsDir)
-			yield(fmt.Sprintf("\n\n[Reached maximum auto-continuations (%d) - stopping with incomplete status.]", maxContinuations), nil)
+			yield(fmt.Sprintf("\n\n[Auto-continuation budget exhausted: %d of %d used - stopping with incomplete status. Raise maxAutoContinuations in runtime.json to allow more.]", *continuationCount, maxContinuations), nil)
 			return false
 		}
 	}
@@ -1038,8 +1038,8 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 			return
 		}
 
-		// Budget Guard: MaxAutoContinuations = 2 for standard sessions.
-		// For A2A-context turns (A2AMeta != nil), MaxAutoContinuations = 1 to prevent caller turn timeouts.
+		// Budget Guard: MaxAutoContinuations = 4 for standard sessions.
+		// For A2A-context turns (A2AMeta != nil), MaxAutoContinuations = 2 to prevent caller turn timeouts.
 		// Resets on every external user message.
 		maxContinuations := DefaultMaxAutoContinuations
 		if fa.A2AMeta != nil {
