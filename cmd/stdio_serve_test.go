@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,7 +20,9 @@ import (
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 	"github.com/colinrgodsey/wackypub/pkg/stdio"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 var (
@@ -98,11 +101,20 @@ func stdioWorkspaceSlow(t *testing.T, answer string, delay time.Duration) (strin
 // spawnStdioServe starts the real wackypub binary with cwd=wsDir and returns
 // a grpc client over its stdio plus a cleanup that closes and reaps.
 func spawnStdioServe(t *testing.T, wsDir string) (agentv1.AgentServiceClient, func()) {
+	client, _, cleanup := spawnStdioServeWithEnv(t, wsDir)
+	return client, cleanup
+}
+
+// spawnStdioServeWithEnv is spawnStdioServe with optional environment variable overrides.
+func spawnStdioServeWithEnv(t *testing.T, wsDir string, extraEnv ...string) (agentv1.AgentServiceClient, *exec.Cmd, func()) {
 	t.Helper()
 	bin := getWackypubBin(t)
 	cmd := exec.Command(bin, "stdio-serve")
 	cmd.Dir = wsDir
 	cmd.Stderr = os.Stderr
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	conn, err := stdio.DialCommand(ctx, cmd, 3*time.Second)
@@ -131,7 +143,7 @@ func spawnStdioServe(t *testing.T, wsDir string) (agentv1.AgentServiceClient, fu
 		cancel()
 	}
 	t.Cleanup(cleanup)
-	return client, cleanup
+	return client, cmd, cleanup
 }
 
 // TestStdioServe_CWDWorkspaceCarryOver is THE test for the one place a silent
@@ -494,5 +506,232 @@ func TestStdioServe_BridgedAgentRouting(t *testing.T) {
 	}
 	if chunk.GetText() != "echo: hello over stdio" {
 		t.Errorf("expected 'echo: hello over stdio', got %q", chunk.GetText())
+	}
+}
+
+// TestStdioServe_TurnPanicRecovery_ServerStaysAlive verifies that a turn panic
+// in a spawned stdio-serve process returns codes.Internal over the protocol and
+// leaves the child process alive to serve subsequent requests.
+func TestStdioServe_TurnPanicRecovery_ServerStaysAlive(t *testing.T) {
+	wsDir, agentID := stdioWorkspace(t, "healthy post-panic answer")
+	client, _, cleanup := spawnStdioServeWithEnv(t, wsDir, "WACKYPUB_FAULT_INJECT=turn_panic")
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 1. Injected turn panic: must return protocol error (codes.Internal), not kill child
+	stream, err := client.AddAndGenerateTurnStream(ctx, &agentv1.AddAndGenerateTurnStreamRequest{
+		AgentId:     agentID,
+		UserMessage: "__FAULT_INJECT_PANIC__",
+	})
+	if err != nil {
+		t.Fatalf("AddAndGenerateTurnStream call setup: %v", err)
+	}
+
+	_, recvErr := stream.Recv()
+	if recvErr == nil {
+		t.Fatal("expected recv error from turn panic, got nil")
+	}
+	st, ok := status.FromError(recvErr)
+	if !ok || st.Code() != codes.Internal {
+		t.Fatalf("expected codes.Internal status from turn panic, got %v (err: %v)", st.Code(), recvErr)
+	}
+	if !contains(st.Message(), "panic during turn generation") {
+		t.Fatalf("expected error message to mention 'panic during turn generation', got %q", st.Message())
+	}
+
+	// 2. Subsequent turn on SAME client connection must succeed without server restart
+	stream2, err := client.AddAndGenerateTurnStream(ctx, &agentv1.AddAndGenerateTurnStreamRequest{
+		AgentId:     agentID,
+		UserMessage: "subsequent healthy message",
+	})
+	if err != nil {
+		t.Fatalf("subsequent AddAndGenerateTurnStream failed: %v", err)
+	}
+
+	var reply string
+	for {
+		chunk, err := stream2.Recv()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("stream2 recv failed: %v", err)
+		}
+		reply += chunk.GetText()
+	}
+	if !contains(reply, "healthy post-panic answer") {
+		t.Fatalf("expected mock answer on subsequent turn, got: %q", reply)
+	}
+}
+
+// TestStdioServe_UnaryPanicRecovery_ServerStaysAlive verifies that a unary panic
+// in stdio-serve returns codes.Internal and leaves the server alive for subsequent calls.
+func TestStdioServe_UnaryPanicRecovery_ServerStaysAlive(t *testing.T) {
+	wsDir, agentID := stdioWorkspace(t, "healthy answer")
+	client, _, cleanup := spawnStdioServeWithEnv(t, wsDir, "WACKYPUB_FAULT_INJECT=unary_panic")
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 1. Injected panic on unary method
+	_, err := client.InspectAgent(ctx, &agentv1.InspectAgentRequest{
+		AgentId: "__PANIC_AGENT__",
+	})
+	if err == nil {
+		t.Fatal("expected error on panic agent, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Internal {
+		t.Fatalf("expected codes.Internal, got %v (err: %v)", st.Code(), err)
+	}
+
+	// 2. Normal unary call on same client succeeds
+	insp, err := client.InspectAgent(ctx, &agentv1.InspectAgentRequest{
+		AgentId: agentID,
+	})
+	if err != nil {
+		t.Fatalf("InspectAgent after recovered panic: %v", err)
+	}
+	if !insp.GetAgentDirExists() {
+		t.Fatal("expected agent dir to exist")
+	}
+}
+
+// TestStdioServe_UnrecoverablePanic_ProcessDies verifies the contract that
+// unrecoverable internal corruption panics do NOT get swallowed; the process terminates.
+func TestStdioServe_UnrecoverablePanic_ProcessDies(t *testing.T) {
+	wsDir, agentID := stdioWorkspace(t, "should not be reached")
+	client, cmd, cleanup := spawnStdioServeWithEnv(t, wsDir, "WACKYPUB_FAULT_INJECT=turn_unrecoverable")
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stream, err := client.AddAndGenerateTurnStream(ctx, &agentv1.AddAndGenerateTurnStreamRequest{
+		AgentId:     agentID,
+		UserMessage: "__FAULT_INJECT_UNRECOVERABLE__",
+	})
+	if err == nil {
+		_, _ = stream.Recv()
+	}
+
+	// Child must terminate with non-zero exit status
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+
+	select {
+	case err := <-waitDone:
+		if err == nil {
+			t.Fatal("expected non-zero exit on unrecoverable panic, got exit 0")
+		}
+	case <-time.After(5 * time.Second):
+		_ = killChild(cmd)
+		t.Fatal("stdio-serve child did not terminate on unrecoverable panic within 5s")
+	}
+}
+
+// TestStdioServe_SessionLockTimeout_ServerStaysAlive verifies that an agent lock contention
+// timeout returns an error over the protocol and keeps stdio-serve alive.
+func TestStdioServe_SessionLockTimeout_ServerStaysAlive(t *testing.T) {
+	wsDir, agentID := stdioWorkspace(t, "post lock answer")
+	agentDir := filepath.Join(wsDir, agentID)
+
+	// External process / test thread holds session.lock
+	holder, err := adkAgent.AcquireSessionLock(agentDir)
+	if err != nil {
+		t.Fatalf("AcquireSessionLock: %v", err)
+	}
+
+	client, cleanup := spawnStdioServe(t, wsDir)
+	defer cleanup()
+
+	// 1. Call AddAndGenerateTurnStream with short 200ms timeout
+	callCtx, callCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer callCancel()
+
+	stream, err := client.AddAndGenerateTurnStream(callCtx, &agentv1.AddAndGenerateTurnStreamRequest{
+		AgentId:     agentID,
+		UserMessage: "contended message",
+	})
+	if err != nil {
+		t.Fatalf("AddAndGenerateTurnStream setup: %v", err)
+	}
+
+	_, recvErr := stream.Recv()
+	if recvErr == nil {
+		holder.Release()
+		t.Fatal("expected error due to session lock contention, got nil")
+	}
+
+	// 2. Release external lock; subsequent call on SAME stdio-serve process succeeds
+	holder.Release()
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel2()
+
+	stream2, err := client.AddAndGenerateTurnStream(ctx2, &agentv1.AddAndGenerateTurnStreamRequest{
+		AgentId:     agentID,
+		UserMessage: "uncontended message",
+	})
+	if err != nil {
+		t.Fatalf("second AddAndGenerateTurnStream failed: %v", err)
+	}
+
+	var reply string
+	for {
+		chunk, err := stream2.Recv()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("stream2 recv failed: %v", err)
+		}
+		reply += chunk.GetText()
+	}
+	if !contains(reply, "post lock answer") {
+		t.Fatalf("expected mock answer, got: %q", reply)
+	}
+}
+
+// TestStdioServe_StreamCancellation_ServerStaysAlive verifies that client cancellation
+// mid-stream cleanly aborts the call, releases the lock, and keeps stdio-serve alive.
+func TestStdioServe_StreamCancellation_ServerStaysAlive(t *testing.T) {
+	wsDir, agentID := stdioWorkspaceSlow(t, "slow answer", 3*time.Second)
+	client, cleanup := spawnStdioServe(t, wsDir)
+	defer cleanup()
+
+	// 1. Start stream and cancel early
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	stream, err := client.AddAndGenerateTurnStream(ctx1, &agentv1.AddAndGenerateTurnStreamRequest{
+		AgentId:     agentID,
+		UserMessage: "abort turn",
+	})
+	if err != nil {
+		t.Fatalf("AddAndGenerateTurnStream call 1: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	cancel1()
+
+	for {
+		_, err := stream.Recv()
+		if err != nil {
+			break
+		}
+	}
+
+	// 2. Subsequent call to ListAgents on SAME client succeeds
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel2()
+
+	resp, err := client.ListAgents(ctx2, &agentv1.ListAgentsRequest{})
+	if err != nil {
+		t.Fatalf("ListAgents after cancellation: %v", err)
+	}
+	if len(resp.GetAgentIds()) == 0 {
+		t.Fatal("expected at least 1 agent")
 	}
 }

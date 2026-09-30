@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"reflect"
+	"runtime/debug"
 	"sort"
 	"strings"
 
@@ -56,11 +58,25 @@ func (s *genericServerStream[T]) Send(m *T) error {
 }
 
 // StreamHandler handles all incoming RPCs dynamically without per-method maintenance.
-func (s *RoutingServer) StreamHandler(srv any, stream grpc.ServerStream) error {
+func (s *RoutingServer) StreamHandler(srv any, stream grpc.ServerStream) (err error) {
 	fullMethod, ok := grpc.Method(stream.Context())
 	if !ok {
 		return status.Errorf(codes.Internal, "no method in context")
 	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			if IsUnrecoverable(r) {
+				fmt.Fprintf(os.Stderr, "wackypub stdio-serve: fatal unrecoverable panic in RPC %s: %v\n", fullMethod, r)
+				panic(r)
+			}
+			stack := debug.Stack()
+			fmt.Fprintf(os.Stderr, "wackypub stdio-serve: recovered panic in RPC %s: %v\n%s\n", fullMethod, r, stack)
+			err = status.Errorf(codes.Internal, "internal server error: %v", r)
+		} else if err != nil {
+			err = ToGRPCError(err)
+		}
+	}()
 
 	parts := strings.Split(strings.TrimPrefix(fullMethod, "/"), "/")
 	if len(parts) != 2 {
@@ -104,6 +120,15 @@ func (s *RoutingServer) StreamHandler(srv any, stream grpc.ServerStream) error {
 	}
 
 	targetSDK := s.sdkFor(wsDir)
+
+	if testHookRoutingPreDispatch != nil {
+		testHookRoutingPreDispatch(methodName, req)
+	}
+	if os.Getenv("WACKYPUB_FAULT_INJECT") == "unary_panic" {
+		if agentID == "__PANIC_AGENT__" || methodName == "FaultInjectPanic" {
+			panic("fault injected: simulated unary panic")
+		}
+	}
 
 	// Special case: InspectAgentLocks stays local (workspace-level query)
 	if methodName == "InspectAgentLocks" {
@@ -207,14 +232,26 @@ func (s *RoutingServer) StreamHandler(srv any, stream grpc.ServerStream) error {
 	if methodDesc.IsStreamingServer() {
 		switch methodName {
 		case "GenerateTurnStream":
+			reqTyped, ok := req.(*agentv1.GenerateTurnStreamRequest)
+			if !ok {
+				return status.Errorf(codes.InvalidArgument, "expected GenerateTurnStreamRequest, got %T", req)
+			}
 			st := &genericServerStream[agentv1.GenerateTurnStreamResponse]{ServerStream: stream}
-			return targetSDK.GenerateTurnStream(req.(*agentv1.GenerateTurnStreamRequest), st)
+			return targetSDK.GenerateTurnStream(reqTyped, st)
 		case "AddAndGenerateTurnStream":
+			reqTyped, ok := req.(*agentv1.AddAndGenerateTurnStreamRequest)
+			if !ok {
+				return status.Errorf(codes.InvalidArgument, "expected AddAndGenerateTurnStreamRequest, got %T", req)
+			}
 			st := &genericServerStream[agentv1.AddAndGenerateTurnStreamResponse]{ServerStream: stream}
-			return targetSDK.AddAndGenerateTurnStream(req.(*agentv1.AddAndGenerateTurnStreamRequest), st)
+			return targetSDK.AddAndGenerateTurnStream(reqTyped, st)
 		case "SubscribeSession":
+			reqTyped, ok := req.(*agentv1.SubscribeSessionRequest)
+			if !ok {
+				return status.Errorf(codes.InvalidArgument, "expected SubscribeSessionRequest, got %T", req)
+			}
 			st := &genericServerStream[agentv1.SubscribeSessionResponse]{ServerStream: stream}
-			return targetSDK.SubscribeSession(req.(*agentv1.SubscribeSessionRequest), st)
+			return targetSDK.SubscribeSession(reqTyped, st)
 		default:
 			return status.Errorf(codes.Unimplemented, "streaming method %q not implemented on AgentSDK", methodName)
 		}
@@ -226,13 +263,25 @@ func (s *RoutingServer) StreamHandler(srv any, stream grpc.ServerStream) error {
 		return status.Errorf(codes.Unimplemented, "method %q not implemented on AgentSDK", methodName)
 	}
 
+	mType := m.Type()
+	if mType.NumIn() != 2 || mType.NumOut() != 2 {
+		return status.Errorf(codes.Internal, "method %q has unexpected signature", methodName)
+	}
+
 	inArgs := []reflect.Value{
 		reflect.ValueOf(stream.Context()),
 		reflect.ValueOf(req),
 	}
+	if !inArgs[1].Type().AssignableTo(mType.In(1)) {
+		return status.Errorf(codes.InvalidArgument, "request type %s not assignable to %s for method %s", inArgs[1].Type(), mType.In(1), methodName)
+	}
+
 	results := m.Call(inArgs)
-	if errVal := results[1]; !errVal.IsNil() {
-		return errVal.Interface().(error)
+	if !results[1].IsNil() {
+		if errVal, ok := results[1].Interface().(error); ok {
+			return errVal
+		}
+		return status.Errorf(codes.Internal, "method %q returned non-error in second position", methodName)
 	}
 	return stream.SendMsg(results[0].Interface())
 }

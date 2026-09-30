@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -14,6 +15,8 @@ import (
 
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // SessionBroker manages in-process notification for live session events.
@@ -309,7 +312,7 @@ func (s *AgentSDK) ReadSessionEvents(ctx context.Context, req *agentv1.ReadSessi
 }
 
 // SubscribeSession implements agentv1.AgentServiceServer.SubscribeSession.
-func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream grpc.ServerStreamingServer[agentv1.SubscribeSessionResponse]) error {
+func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream grpc.ServerStreamingServer[agentv1.SubscribeSessionResponse]) (err error) {
 	wsDir := s.WorkspaceDir
 	if req != nil && req.GetWorkspaceDir() != "" {
 		wsDir = req.GetWorkspaceDir()
@@ -318,6 +321,19 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 	if req != nil {
 		agentID = req.GetAgentId()
 	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			if IsUnrecoverable(r) {
+				fmt.Fprintf(os.Stderr, "wackypub: fatal unrecoverable panic in SubscribeSession for agent %s: %v\n", agentID, r)
+				panic(r)
+			}
+			stack := debug.Stack()
+			fmt.Fprintf(os.Stderr, "wackypub: recovered panic in SubscribeSession for agent %s: %v\n%s\n", agentID, r, stack)
+			err = status.Errorf(codes.Internal, "panic in SubscribeSession: %v", r)
+		}
+	}()
+
 	if agentID == "" {
 		return fmt.Errorf("agentID cannot be empty")
 	}
