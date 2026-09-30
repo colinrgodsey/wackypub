@@ -25,9 +25,15 @@ var seqMu sync.Mutex
 var seqAllocBump = map[string]int64{}
 
 // tailReadWindow is the increment we back up per read when seeking to the final line. The
-// last line of a session.jsonl is almost always a few hundred bytes, so one small window
-// suffices; a D101-capped line fits within this bound.
+// last line of a session.jsonl is almost always a few hundred bytes, so one window suffices
+// for the common case; the seek keeps going, window at a time, until tailMaxSeek.
 const tailReadWindow = 4096
+
+// tailMaxSeek bounds the total back-seek. The persist layer hard-caps every line it writes
+// at MaxPersistTurnBytes (sanitizeContentForPersist), so seeking this far guarantees the
+// final COMPLETE line on every legitimate file. A final line longer than the cap cannot be
+// a legitimately persisted turn - the unmarshal fallback below recovers from it.
+const tailMaxSeek = MaxPersistTurnBytes + 4096
 
 // recoverMaxSeqFromLog scans session.jsonl for the highest sequence number, treating each
 // unsequenced (pre-#65) row as occupying 1..N. This is NOT a compatibility shim for the
@@ -81,7 +87,9 @@ func recoverMaxSeqFromLog(agentDir string) (int64, error) {
 // tailMaxSeq returns the highest sequence number stamped in session.jsonl by seeking to
 // the last line rather than scanning the whole file. The session log is append-only and
 // every stamped turn carries its seq, so the LAST line holds the highest seq. On an empty
-// / missing file or a corrupt tail it returns 0.
+// / missing file it returns 0. If the final line is corrupt or over the persist bound it
+// falls back to a full scan of the recoverable lines, so a damaged tail can never reset
+// the allocator to 0.
 func tailMaxSeq(agentDir string) (int64, error) {
 	sessionPath := filepath.Join(agentDir, SessionFileName)
 	f, err := os.Open(sessionPath)
@@ -104,7 +112,7 @@ func tailMaxSeq(agentDir string) (int64, error) {
 	// Back up from EOF in tailReadWindow chunks until we hold the final complete line.
 	pos := fi.Size()
 	var tail []byte
-	for len(tail) < tailReadWindow*2 && pos > 0 {
+	for len(tail) < tailMaxSeek && pos > 0 {
 		window := int64(tailReadWindow)
 		if pos < window {
 			window = pos
@@ -138,11 +146,16 @@ func tailMaxSeq(agentDir string) (int64, error) {
 		Seq int64 `json:"seq"`
 	}
 	if err := json.Unmarshal([]byte(s), &rec); err != nil {
-		// The tail window did not hold a parseable turn (an over-long or corrupt line). Do
-		// NOT scan the file - a line over the read bound is not a legitimate persisted turn,
-		// and the D101 over-long-line test asserts the post-turn read surfaces the corruption
-		// instead of the allocator. Treat it as no usable tail.
-		return 0, nil
+		// The final line is not a parseable turn. With the seek sized to MaxPersistTurnBytes,
+		// every legitimately persisted line is found and parsed here, so reaching this branch
+		// means the final line is corrupt or over the persist bound. Recover the max over every
+		// parseable line in the log: the read path skips unparseable lines too, so the
+		// allocator and the reader agree on which lines are real. A line over the scanner cap
+		// (16MiB) makes the scan fail closed: a log the read path cannot even scan cannot
+		// be safely allocated from, so the append reports the scanner error. The old behavior here
+		// (return 0, nil) was fail-open: a fresh process inferred max=0 and re-allocated seq
+		// 1 into a non-empty log, duplicating stamps (Sept-29 audit finding F1).
+		return recoverMaxSeqFromLog(agentDir)
 	}
 	if rec.Seq == 0 {
 		// The last line is a pre-#65 row with no seq key. Infer the max from the whole log
