@@ -175,16 +175,16 @@ func TestCompactionEndsOnModelTurn(t *testing.T) {
 	if remaining[0].Role != "user" {
 		t.Errorf("expected remaining session to start with a user turn, got a dangling %q turn: %+v", remaining[0].Role, remaining[0])
 	}
-	// 50% cut (index 3) extends forward to index 4 (through "m1"), leaving
-	// u2, m2 - plus the D46 compaction-notice turn prepended in front of them.
+	// F2 fix (audit note sept-29): the notice goes at the TAIL so line order stays
+	// seq-monotonic (surviving u2/m2 first, notice after).
 	if len(remaining) != 3 {
-		t.Errorf("expected 3 remaining turns (compaction notice, u2, m2), got %d: %+v", len(remaining), remaining)
+		t.Errorf("expected 3 remaining turns (u2, m2, compaction notice), got %d: %+v", len(remaining), remaining)
 	}
-	if len(remaining) > 0 && !strings.Contains(ContentText(remaining[0]), "<COMPACTION_NOTICE>") {
-		t.Errorf("expected remaining[0] to be the D46 compaction notice turn, got: %+v", remaining[0])
+	if len(remaining) > 0 && ContentText(remaining[0]) != "u2" {
+		t.Errorf("expected remaining[0] to be the surviving \"u2\" turn, got: %+v", remaining[0])
 	}
-	if len(remaining) > 1 && ContentText(remaining[1]) != "u2" {
-		t.Errorf("expected remaining[1] to be the surviving \"u2\" turn, got: %+v", remaining[1])
+	if len(remaining) > 2 && !strings.Contains(ContentText(remaining[2]), "<COMPACTION_NOTICE>") {
+		t.Errorf("expected remaining[2] to be the D46 compaction notice turn (at tail), got: %+v", remaining[2])
 	}
 }
 
@@ -519,10 +519,13 @@ func TestTokenWeightedCompactionPercentage(t *testing.T) {
 		t.Fatalf("ReadSessionTurns failed: %v", err)
 	}
 
-	// Clean remaining turns (merging any synthetic notice turn into the first real user turn)
+	// F2 fix (audit note sept-29): the notice is at the TAIL, so after cleaning the
+	// survivors are u2, m2 and the standalone notice; with the OLD head placement the
+	// notice merged into u2 (user+user). Tail placement keeps line-order monotonicity;
+	// the notice folds into the NEXT appended user turn instead.
 	cleanedRemaining := CleanSessionTurns(remaining)
-	if len(cleanedRemaining) != 2 {
-		t.Fatalf("expected 2 cleaned remaining turns (u2, m2) after token-weighted compaction, got %d (raw remaining: %d)", len(cleanedRemaining), len(remaining))
+	if len(cleanedRemaining) != 3 {
+		t.Fatalf("expected 3 cleaned remaining turns (u2, m2, notice) after token-weighted compaction, got %d (raw remaining: %d)", len(cleanedRemaining), len(remaining))
 	}
 	if cleanedRemaining[0].Role != "user" || !strings.Contains(ContentText(cleanedRemaining[0]), "u2") {
 		t.Errorf("expected first remaining turn to be u2, got: %+v", cleanedRemaining[0])
@@ -530,8 +533,11 @@ func TestTokenWeightedCompactionPercentage(t *testing.T) {
 	if cleanedRemaining[1].Role != "model" || !strings.Contains(ContentText(cleanedRemaining[1]), "m2") {
 		t.Errorf("expected second remaining turn to be m2, got: %+v", cleanedRemaining[1])
 	}
-}
+	if cleanedRemaining[2].Role != "user" || !strings.Contains(ContentText(cleanedRemaining[2]), "<COMPACTION_NOTICE>") {
+		t.Errorf("expected third remaining turn to be the compaction notice, got: %+v", cleanedRemaining[2])
+	}
 
+}
 func TestMidTurnContextShortCircuit(t *testing.T) {
 	tempDir := filepath.Join(t.TempDir(), "test-short-circuit")
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
@@ -1532,5 +1538,146 @@ func TestCompactSessionWithOptions_RuntimeOverride(t *testing.T) {
 	}
 	if !strings.Contains(mem, "* compact summary") {
 		t.Errorf("expected MEMORY.md to contain compact summary, got: %q", mem)
+	}
+}
+
+// TestCompactionNoticeAtTail_FreshProcessSeqNoCollision is the F2 regression test from
+// notes/sept-29-wackypub-code-audit: after compaction writes the notice at the TAIL,
+// a fresh process (new SDK, no shared seqAllocBump) infers the next seq from the last
+// line and must NOT re-allocate the notice's seq.
+func TestCompactionNoticeAtTail_FreshProcessSeqNoCollision(t *testing.T) {
+	tempDir := t.TempDir()
+	turns := []*genai.Content{
+		genai.NewContentFromText("u0", "user"),
+		genai.NewContentFromText("m0", "model"),
+		genai.NewContentFromText("u1", "user"),
+		genai.NewContentFromText("m1", "model"),
+		genai.NewContentFromText("u2", "user"),
+		genai.NewContentFromText("m2", "model"),
+	}
+	if err := WriteSessionTurns(tempDir, turns); err != nil {
+		t.Fatalf("failed to write session turns: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"* addendum"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+
+	llmModel := NewOpenAIModel(&RuntimeConfig{Model: "test-model", Endpoint: srv.URL})
+	runtimeCfg := &RuntimeConfig{ContextWindow: 1}
+	adkAgent := mustBuildTestADKAgent(t, tempDir, "system prompt", runtimeCfg, llmModel)
+
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false, nil, nil)
+	if err != nil {
+		t.Fatalf("CheckAndCompactSession failed: %v", err)
+	}
+	if !compacted {
+		t.Fatalf("expected compaction to occur")
+	}
+
+	// The notice is the LAST line; its seq is the current max.
+	persisted, err := ReadPersistedTurns(tempDir)
+	if err != nil {
+		t.Fatalf("ReadPersistedTurns: %v", err)
+	}
+	if len(persisted) == 0 {
+		t.Fatalf("expected turns after compaction")
+	}
+	last := persisted[len(persisted)-1]
+	if !strings.Contains(ContentText(&last.Content), "<COMPACTION_NOTICE>") {
+		t.Fatalf("expected the LAST persisted turn to be the compaction notice, got role=%s parts=%+v", last.Content.Role, last.Content.Parts)
+	}
+	noticeSeq := last.Seq
+
+	// Simulate a FRESH process: a new SDK has its own heap; the only shared state is
+	// the session file + lock. NextSeq must infer noticeSeq+1, not reallocate noticeSeq.
+	seq, err := NextSeq(tempDir)
+	if err != nil {
+		t.Fatalf("NextSeq after compaction: %v", err)
+	}
+	if seq != noticeSeq+1 {
+		t.Errorf("NextSeq after compaction = %d, want %d (notice seq %d must not collide)", seq, noticeSeq+1, noticeSeq)
+	}
+
+	// Appending the next turn in the SAME process bumps past the allocation above
+	// (seqAllocBump guarantees in-process monotonicity), so assert only non-collision
+	// here; the fresh-process exact value is covered by the NextSeq check.
+	got, err := AppendSessionTurnGetSeq(tempDir, "user", "post-compaction turn")
+	if err != nil {
+		t.Fatalf("AppendSessionTurnGetSeq: %v", err)
+	}
+	if got <= noticeSeq {
+		t.Fatalf("allocated seq %d must exceed the compaction notice seq %d", got, noticeSeq)
+	}
+}
+
+// TestCompactionNoticeAtTail_WatcherNotDropping is the F2 watcher regression: a cursor
+// sitting at the notice's seq must still receive the next real turn (strict since_seq >).
+func TestCompactionNoticeAtTail_WatcherNotDropping(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	agentID := "f2-watcher-agent"
+	agentDir := filepath.Join(tempDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	turns := []*genai.Content{
+		genai.NewContentFromText("u0", "user"),
+		genai.NewContentFromText("m0", "model"),
+		genai.NewContentFromText("u1", "user"),
+		genai.NewContentFromText("m1", "model"),
+		genai.NewContentFromText("u2", "user"),
+		genai.NewContentFromText("m2", "model"),
+	}
+	if err := WriteSessionTurns(agentDir, turns); err != nil {
+		t.Fatalf("WriteSessionTurns: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"* addendum"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+
+	llmModel := NewOpenAIModel(&RuntimeConfig{Model: "test-model", Endpoint: srv.URL})
+	runtimeCfg := &RuntimeConfig{ContextWindow: 1}
+	adkAgent := mustBuildTestADKAgent(t, agentDir, "system prompt", runtimeCfg, llmModel)
+
+	compacted, err := CheckAndCompactSession(context.Background(), agentDir, runtimeCfg, adkAgent, false, nil, nil)
+	if err != nil {
+		t.Fatalf("CheckAndCompactSession failed: %v", err)
+	}
+	if !compacted {
+		t.Fatalf("expected compaction to occur")
+	}
+
+	persisted, err := ReadPersistedTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadPersistedTurns: %v", err)
+	}
+	noticeSeq := persisted[len(persisted)-1].Seq
+
+	// Fresh process appends the next real turn.
+	if _, err := AppendSessionTurnGetSeq(agentDir, "user", "next real turn"); err != nil {
+		t.Fatalf("AppendSessionTurnGetSeq: %v", err)
+	}
+
+	sdk := NewSDK(tempDir)
+	// Watcher cursor sits exactly at the notice seq (consumed it as the compaction event).
+	resp, err := sdk.ReadSessionEvents(context.Background(), &agentv1.ReadSessionEventsRequest{
+		AgentId:      agentID,
+		WorkspaceDir: tempDir,
+		Cursor:       &agentv1.ReadSessionEventsRequest_SinceSeq{SinceSeq: noticeSeq},
+	})
+	if err != nil {
+		t.Fatalf("ReadSessionEvents: %v", err)
+	}
+	if resp.Rewound {
+		t.Fatalf("cursor at notice seq %d should not be rewound (baseline %d)", noticeSeq, resp.BaselineSeq)
+	}
+	if len(resp.Events) != 1 || resp.Events[0].GetSeq() != noticeSeq+1 {
+		t.Fatalf("expected exactly the post-compaction turn (seq %d), got %d events: %+v", noticeSeq+1, len(resp.Events), resp.Events)
 	}
 }

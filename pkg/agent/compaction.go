@@ -805,7 +805,13 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 		baselineSeq = summarySeq
 	}
 
+	// F2 fix (audit note sept-29): the notice goes at the TAIL, AFTER surviving turns,
+	// so line order stays seq-monotonic (k..N, then N+1). The old head placement broke
+	// the "last line holds max seq" inference invariant: a fresh process read seq N from
+	// the tail and re-allocated N+1, duplicating the notice's seq and making watchers at
+	// cursor N+1 permanently drop the next real turn (events.go strict since_seq >).
 	var pTurns []PersistedTurn
+	pTurns = append(pTurns, survivingTurns...)
 	if len(remainingTurns) > 0 && notice != "" {
 		noticeTurn := genai.NewContentFromText(FormatCompactionNotice(notice), "user")
 		pTurns = append(pTurns, PersistedTurn{
@@ -813,8 +819,6 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 			Seq:     summarySeq,
 		})
 	}
-
-	pTurns = append(pTurns, survivingTurns...)
 
 	if err := WritePersistedTurns(agentDir, pTurns); err != nil {
 		return fail("write-session", fmt.Errorf("failed to update session.jsonl after compaction: %w", err))

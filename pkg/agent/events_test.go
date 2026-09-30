@@ -155,10 +155,10 @@ func TestCompactionRewindSignalling(t *testing.T) {
 
 	// Surviving turns kept their seqs: 6, 7, 8, 9, 10
 	var pTurns []PersistedTurn
-	pTurns = append(pTurns, PersistedTurn{Content: genai.Content{Role: "user", Parts: noticeTurn.Parts}, Seq: summarySeq})
 	for i, t := range remainingTurns {
 		pTurns = append(pTurns, PersistedTurn{Content: genai.Content{Role: t.Role, Parts: t.Parts}, Seq: int64(6 + i)})
 	}
+	pTurns = append(pTurns, PersistedTurn{Content: genai.Content{Role: "user", Parts: noticeTurn.Parts}, Seq: summarySeq})
 	if err := WritePersistedTurns(agentDir, pTurns); err != nil {
 		t.Fatalf("WritePersistedTurns: %v", err)
 	}
