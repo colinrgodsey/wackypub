@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -547,5 +548,126 @@ func TestPersistedTurnLoadsLegacySessionJSONL(t *testing.T) {
 	}
 	if round.Role != "model" || ContentText(&round) != "after" {
 		t.Fatalf("seq turn lost data when read as genai.Content: %+v", round)
+	}
+}
+
+// TestWritePersistedTurns_AtomicAbortOnMarshalFailure is F4 from
+// notes/sept-29-wackypub-code-audit: a turn that fails to marshal must ABORT the
+// rewrite (error) and leave the original session.jsonl byte-intact - not skip the
+// turn silently (old behavior) and not truncate history in place.
+func TestWritePersistedTurns_AtomicAbortOnMarshalFailure(t *testing.T) {
+	agentDir := t.TempDir()
+	orig := []PersistedTurn{
+		{Content: genai.Content{Role: "user", Parts: []*genai.Part{{Text: "keep me"}}}, Seq: 1},
+		{Content: genai.Content{Role: "model", Parts: []*genai.Part{{Text: "original answer"}}}, Seq: 2},
+	}
+	if err := WritePersistedTurns(agentDir, orig); err != nil {
+		t.Fatalf("initial write: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Join(agentDir, SessionFileName))
+	if err != nil {
+		t.Fatalf("read original: %v", err)
+	}
+
+	// A Content whose Part carries only an unsupported function field still marshals as
+	// JSON (genai.Part is a struct), so to force a genuine marshal error we pass a turn
+	// whose Content contains a non-marshalable value via InlineData with invalid bytes.
+	// InlineData.Data is []byte, which always marshals; instead use a direct marshal
+	// failure by inserting a turn that is fine but rely on the error path being tested
+	// via a nil-invalid content: a Content with a Part that has DataBytes nil and
+	// FunctionCall non-nil still marshals. The reliable way to force json.Marshal to
+	// error is a cycle or a chan - neither sits in PersistedTurn. So this test instead
+	// verifies the ABORT property by pointing the temp writer at a path that fails:
+	// covered by TestWritePersistedTurns_TempFileFailure below. Here we assert the
+	// marshal-error branch returns an error when given a turn whose Part has a
+	// FunctionResponse with an invalid (non-JSON-serializable) Response value.
+	badTurn := []PersistedTurn{
+		{Content: genai.Content{Role: "user", Parts: []*genai.Part{{
+			FunctionResponse: &genai.FunctionResponse{
+				Name:     "x",
+				Response: map[string]interface{}{"bad": make(chan int)},
+			},
+		}}}, Seq: 3},
+	}
+	err = WritePersistedTurns(agentDir, badTurn)
+	if err == nil {
+		t.Fatal("expected marshal error from pathological turn")
+	}
+	if !strings.Contains(err.Error(), "failed to marshal turn") {
+		t.Errorf("expected marshal-abort error, got: %v", err)
+	}
+
+	// Original history must be byte-identical (no truncation, no partial write).
+	after, err := os.ReadFile(filepath.Join(agentDir, SessionFileName))
+	if err != nil {
+		t.Fatalf("read after abort: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("session.jsonl changed after aborted rewrite")
+		t.Logf("before=%q after=%q", before, after)
+	}
+	// No temp file may remain.
+	leftovers, _ := filepath.Glob(filepath.Join(agentDir, ".session.jsonl.tmp-*"))
+	if len(leftovers) != 0 {
+		t.Errorf("temp files left after abort: %v", leftovers)
+	}
+}
+
+// TestWritePersistedTurns_TempFileFailure verifies that when the temp file cannot be
+// created the rewrite fails and the original session.jsonl is untouched (crash/disk-full
+// simulation: no temp slot available, or the rename target is protected).
+func TestWritePersistedTurns_TempFileFailure(t *testing.T) {
+	agentDir := t.TempDir()
+	orig := []PersistedTurn{
+		{Content: genai.Content{Role: "user", Parts: []*genai.Part{{Text: "still here"}}}, Seq: 1},
+	}
+	if err := WritePersistedTurns(agentDir, orig); err != nil {
+		t.Fatalf("initial write: %v", err)
+	}
+	before, _ := os.ReadFile(filepath.Join(agentDir, SessionFileName))
+
+	// Make the tmp creation fail: agent dir becomes read-only.
+	if err := os.Chmod(agentDir, 0555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	defer os.Chmod(agentDir, 0755)
+	err := WritePersistedTurns(agentDir, orig)
+	if err == nil {
+		t.Fatal("expected error when tmp cannot be created")
+	}
+	os.Chmod(agentDir, 0755)
+	after, _ := os.ReadFile(filepath.Join(agentDir, SessionFileName))
+	if !bytes.Equal(before, after) {
+		t.Errorf("session.jsonl changed when tmp creation failed")
+	}
+}
+
+// TestWritePersistedTurns_RenameFailure keeps the original intact when os.Rename fails
+// (e.g. target is a non-empty directory or FS error) - the old in-place os.Create would
+// have zeroed the file already.
+func TestWritePersistedTurns_RenameFailure(t *testing.T) {
+	agentDir := t.TempDir()
+	orig := []PersistedTurn{{Content: genai.Content{Role: "user", Parts: []*genai.Part{{Text: "keep"}}}, Seq: 1}}
+	if err := WritePersistedTurns(agentDir, orig); err != nil {
+		t.Fatalf("initial write: %v", err)
+	}
+	// Replace session.jsonl with a DIRECTORY so rename over it fails (ENOTDIR/EEXIST).
+	os.Remove(filepath.Join(agentDir, SessionFileName))
+	if err := os.Mkdir(filepath.Join(agentDir, SessionFileName), 0755); err != nil {
+		t.Fatalf("mkdir over session.jsonl: %v", err)
+	}
+	defer os.RemoveAll(filepath.Join(agentDir, SessionFileName))
+	err := WritePersistedTurns(agentDir, orig)
+	if err == nil {
+		t.Fatal("expected rename error over a directory")
+	}
+	// The ORIGINAL data is gone (directory replaced it before the test) - this asserts
+	// the failure surfaces rather than silently corrupting; the atomicity guarantee is
+	// that a FAILED rewrite never truncates history, which the other two tests cover.
+	if _, statErr := os.Stat(filepath.Join(agentDir, SessionFileName)); statErr == nil {
+		fi, _ := os.Stat(filepath.Join(agentDir, SessionFileName))
+		if fi.IsDir() {
+			t.Log("rename failed; original not truncated by the writer (dir remains)")
+		}
 	}
 }

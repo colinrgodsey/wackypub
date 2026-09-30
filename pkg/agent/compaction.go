@@ -770,7 +770,10 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 	// turn) - no special-casing needed. Skipped on an empty remaining session
 	// (nothing to attach it in front of) or an explicit opt-out.
 	notice := strings.TrimSpace(compactCfg.CompactionNotice)
-	existing, _ := ReadPersistedTurns(agentDir)
+	existing, readErr := ReadPersistedTurns(agentDir)
+	if readErr != nil {
+		return fail("read-session", fmt.Errorf("failed to read existing session for compaction: %w", readErr))
+	}
 	numCompacted := len(existing) - len(remainingTurns)
 	if numCompacted < 0 {
 		numCompacted = 0

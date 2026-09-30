@@ -320,20 +320,32 @@ func ReadPersistedTurns(agentDir string) ([]PersistedTurn, error) {
 }
 
 // WritePersistedTurns overwrites <agent_dir>/session.jsonl with a list of PersistedTurns.
+// The rewrite is ATOMIC: turns are marshaled to a temp file in the same directory, fsynced,
+// then os.Rename'd over session.jsonl. A crash, disk-full error, or SIGKILL mid-rewrite leaves
+// the original session history intact (Missed Gap 1 from notes/sept-29-wackypub-code-audit;
+// the old in-place os.Create truncated the history before writing). Callers are expected to
+// hold the session lock (compaction / signature-stripping / compact paths all do), which
+// serializes rewrites against concurrent writers.
 func WritePersistedTurns(agentDir string, turns []PersistedTurn) error {
 	sessionPath := filepath.Join(agentDir, "session.jsonl")
 
-	file, err := os.Create(sessionPath)
+	file, err := os.CreateTemp(agentDir, ".session.jsonl.tmp-*")
 	if err != nil {
-		return fmt.Errorf("failed to create session.jsonl: %w", err)
+		return fmt.Errorf("failed to create temp session file: %w", err)
 	}
-	defer file.Close()
+	tmpPath := file.Name()
+	defer func() {
+		file.Close()
+		// Best-effort cleanup of the temp file on every exit path (including errors);
+		// after a successful rename the tmp path no longer exists so Remove is a no-op.
+		os.Remove(tmpPath)
+	}()
 
 	writer := bufio.NewWriter(file)
 	for _, t := range turns {
 		data, err := json.Marshal(&t)
 		if err != nil {
-			continue
+			return fmt.Errorf("failed to marshal turn to session.jsonl (rewrite aborted, original intact): %w", err)
 		}
 		if _, err := writer.Write(data); err != nil {
 			return fmt.Errorf("failed writing turn to session.jsonl: %w", err)
@@ -346,6 +358,15 @@ func WritePersistedTurns(agentDir string, turns []PersistedTurn) error {
 	if err := writer.Flush(); err != nil {
 		return err
 	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("failed to sync temp session file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("failed to close temp session file: %w", err)
+	}
+	if err := os.Rename(tmpPath, sessionPath); err != nil {
+		return fmt.Errorf("failed to rename temp session file over session.jsonl: %w", err)
+	}
 	NotifySessionActivity(agentDir)
 	return nil
 }
@@ -353,7 +374,10 @@ func WritePersistedTurns(agentDir string, turns []PersistedTurn) error {
 // WriteSessionTurns overwrites <agent_dir>/session.jsonl with a new list of turns,
 // preserving existing sequence numbers where possible.
 func WriteSessionTurns(agentDir string, turns []*genai.Content) error {
-	existing, _ := ReadPersistedTurns(agentDir)
+	existing, readErr := ReadPersistedTurns(agentDir)
+	if readErr != nil {
+		return fmt.Errorf("reading existing session for rewrite: %w", readErr)
+	}
 	var pTurns []PersistedTurn
 	for i, t := range turns {
 		if t == nil {
