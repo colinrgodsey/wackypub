@@ -967,3 +967,68 @@ func TestStaleSeqFileInert(t *testing.T) {
 		t.Errorf("stale session.seq content changed: %q", data)
 	}
 }
+
+// TestWatchReadPath_DoesNotBlockOnSessionLock is the watch regression from
+// bugs/wackypub/watch-takes-session-lock-and-ignores-sigint: the watch/events read
+// path (ReadSessionEventsFromDisk / ReadSessionEvents) must be lock-free - it must
+// run promptly even while a writer holds the session lock (D118: N readers, one
+// writer over the shared log).
+func TestWatchReadPath_DoesNotBlockOnSessionLock(t *testing.T) {
+	t.Setenv("WACKYPUB_ALLOWED_AGENTS", "*")
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	agentID := "watch-lock-agent"
+	agentDir := filepath.Join(tempDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	for i := 1; i <= 3; i++ {
+		if err := AppendSessionTurn(agentDir, "user", fmt.Sprintf("turn %d", i)); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+
+	// A writer holds the session lock for the whole test.
+	holder, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		t.Fatalf("holder acquire: %v", err)
+	}
+	defer holder.Release()
+
+	// The watch read path must complete promptly despite the held lock.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, _, _, _, err := ReadSessionEventsFromDisk(agentDir); err != nil {
+			t.Errorf("ReadSessionEventsFromDisk while lock held: %v", err)
+		}
+	}()
+	select {
+	case <-done:
+		// Good: read completed without waiting on the lock.
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReadSessionEventsFromDisk blocked on the session lock - watch is not lock-free")
+	}
+
+	// The SDK read path (watch's SubscribeSession/ReadSessionEvents backend) too.
+	sdk := NewSDK(tempDir)
+	respDone := make(chan struct{})
+	go func() {
+		defer close(respDone)
+		resp, err := sdk.ReadSessionEvents(context.Background(), &agentv1.ReadSessionEventsRequest{
+			AgentId:      agentID,
+			WorkspaceDir: tempDir,
+		})
+		if err != nil {
+			t.Errorf("ReadSessionEvents while lock held: %v", err)
+		}
+		if len(resp.GetEvents()) != 3 {
+			t.Errorf("expected 3 events, got %d", len(resp.GetEvents()))
+		}
+	}()
+	select {
+	case <-respDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReadSessionEvents blocked on the session lock - watch is not lock-free")
+	}
+}
