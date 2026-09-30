@@ -26,8 +26,8 @@ func TestScratchpadCreationAndRetrieval(t *testing.T) {
 		t.Fatalf("CreateScratchpad failed: %v", err)
 	}
 
-	if len(entry.ID) != 4 {
-		t.Errorf("expected 4-character ID, got %q (len %d)", entry.ID, len(entry.ID))
+	if len(entry.ID) != 8 {
+		t.Errorf("expected 8-character slug ID, got %q (len %d)", entry.ID, len(entry.ID))
 	}
 	if entry.Size != len(text) {
 		t.Errorf("expected Size %d, got %d", len(text), entry.Size)
@@ -1266,5 +1266,53 @@ func TestSDKDiffScratchpadEntriesRejectsEmptyArguments(t *testing.T) {
 		AfterEntryId:  "",
 	}); err == nil {
 		t.Error("expected empty afterID to be refused")
+	}
+}
+
+// TestScratchpadSlugIDsAndLegacyCompat verifies the D-slug scheme: new entries get an
+// 8-char pronounceable slug, and a legacy 4-char entry still resolves through the same
+// validation + read path (IDs are opaque, no migration).
+func TestScratchpadSlugIDsAndLegacyCompat(t *testing.T) {
+	agentDir := t.TempDir()
+
+	// 1. New create yields an 8-char slug that is a valid CVCV-shaped lowercase string.
+	entry, err := CreateScratchpad(agentDir, "slug body", "slug_test")
+	if err != nil {
+		t.Fatalf("CreateScratchpad failed: %v", err)
+	}
+	if len(entry.ID) != 8 {
+		t.Fatalf("expected 8-char slug ID, got %q (len %d)", entry.ID, len(entry.ID))
+	}
+	if err := validateScratchpadID(entry.ID); err != nil {
+		t.Fatalf("new slug %q should validate: %v", entry.ID, err)
+	}
+
+	// 2. The new ID resolves through GetScratchpad.
+	val, err := GetScratchpad(agentDir, entry.ID, nil, nil)
+	if err != nil {
+		t.Fatalf("GetScratchpad(new slug): %v", err)
+	}
+	if val != "slug body" {
+		t.Errorf("read back body %q, want %q", val, "slug body")
+	}
+
+	// 3. A legacy 4-char ID placed directly must still validate and read (opaque).
+	legacyID := "gk92"
+	if err := validateScratchpadID(legacyID); err != nil {
+		t.Fatalf("legacy 4-char id %q should validate: %v", legacyID, err)
+	}
+	legacyPath := filepath.Join(agentDir, ScratchpadDirName, legacyID+"-4-legacy.txt")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("legacy body"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	legacyVal, err := GetScratchpad(agentDir, legacyID, nil, nil)
+	if err != nil {
+		t.Fatalf("GetScratchpad(legacy id): %v", err)
+	}
+	if legacyVal != "legacy body" {
+		t.Errorf("read back legacy body %q, want %q", legacyVal, "legacy body")
 	}
 }

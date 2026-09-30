@@ -1,11 +1,9 @@
 package agent
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/colinrgodsey/wackypub/pkg/slug"
 	"github.com/h2non/filetype"
 	"github.com/pmezard/go-difflib/difflib"
 )
@@ -107,25 +106,21 @@ func CountLines(text string) int {
 }
 
 func generateRandomID() string {
-	const charset = "0123456789abcdefghijklmnopqrstuvwxyz"
-	var result strings.Builder
-	for i := 0; i < 4; i++ {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
-		if err != nil {
-			result.WriteByte(charset[time.Now().UnixNano()%int64(len(charset))])
-			continue
-		}
-		result.WriteByte(charset[n.Int64()])
-	}
-	return result.String()
+	// New IDs are 8-char pronounceable slugs (pkg/slug). The function name is retained
+	// for minimal diff; it now delegates to the shared scheme.
+	return slug.New()
 }
 
-var scratchpadIDRegex = regexp.MustCompile(`^[0-9a-z]{4}$`)
+// scratchpadIDRegex accepts BOTH the legacy 4-char [0-9a-z] token (D81) and the new
+// 8-char lowercase pronounceable slug (pkg/slug). Old IDs stay valid - nothing parses
+// the format, so no migration is needed.
+var scratchpadIDRegex = regexp.MustCompile(`^(?:[0-9a-z]{4}|[a-z]{8})$`)
 
-// validateScratchpadID validates that id conforms to the required 4-character [0-9a-z] token shape per D81.
+// validateScratchpadID validates that id conforms to the legacy 4-character [0-9a-z]
+// token shape (D81) or the 8-character lowercase slug shape.
 func validateScratchpadID(id string) error {
 	if !scratchpadIDRegex.MatchString(id) {
-		return fmt.Errorf("invalid scratchpad entry ID %q: must be exactly 4 lowercase alphanumeric characters ([0-9a-z])", id)
+		return fmt.Errorf("invalid scratchpad entry ID %q: must be exactly 4 lowercase alphanumeric characters ([0-9a-z]) or an 8-character slug ([a-z])", id)
 	}
 	return nil
 }

@@ -250,7 +250,7 @@ An agent can concatenate, prefix, or stitch together multiple scratchpad entries
 }
 ```
 
-- Returns a single fresh 4-character ID (e.g. `"c9m3"`) holding the fully merged document.
+- Returns a single fresh 8-character pronounceable slug ID (e.g. `"katoruvo"`) holding the fully merged document.
 - **Token Efficiency**: Combines arbitrary-sized datasets with **zero LLM generation tokens** spent on the payload contents!
 
 ---

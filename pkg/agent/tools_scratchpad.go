@@ -22,7 +22,7 @@ type CreateScratchpadResult struct {
 }
 
 type GetScratchpadArgs struct {
-	ID        string `json:"id" jsonschema_description:"4-character ID of the scratchpad entry to read"`
+	ID        string `json:"id" jsonschema_description:"ID of the scratchpad entry to read (4-char legacy or 8-char pronounceable slug)"`
 	SkipLines *int   `json:"skip_lines,omitempty" jsonschema_description:"Optional number of lines to skip from the beginning"`
 	NumLines  *int   `json:"num_lines,omitempty" jsonschema_description:"Optional maximum number of lines to retrieve"`
 }
@@ -50,7 +50,7 @@ type SearchScratchpadArgs struct {
 }
 
 type DeleteScratchpadArgs struct {
-	ID string `json:"id" jsonschema_description:"4-character ID of the scratchpad entry to delete"`
+	ID string `json:"id" jsonschema_description:"ID of the scratchpad entry to delete (4-char legacy or 8-char pronounceable slug)"`
 }
 
 type DeleteScratchpadResult struct {
@@ -60,8 +60,8 @@ type DeleteScratchpadResult struct {
 // DiffScratchpadArgs names the two entries to compare. Both have to exist: there is no mode
 // where a missing side counts as empty, because that turns a typo into a whole-file patch.
 type DiffScratchpadArgs struct {
-	BeforeID string `json:"before_id" jsonschema_description:"4-character ID of the entry holding the earlier state"`
-	AfterID  string `json:"after_id" jsonschema_description:"4-character ID of the entry holding the later state"`
+	BeforeID string `json:"before_id" jsonschema_description:"ID of the entry holding the earlier state (4-char legacy or 8-char slug)"`
+	AfterID  string `json:"after_id" jsonschema_description:"ID of the entry holding the later state (4-char legacy or 8-char slug)"`
 }
 
 type DiffScratchpadResult struct {
@@ -85,7 +85,7 @@ func registerScratchpadTools(agentDir string, addTool func(tool.Tool)) error {
 	// 1. create_scratchpad
 	createTool, err := functiontool.New(functiontool.Config{
 		Name:        "create_scratchpad",
-		Description: "Store a text payload in a persistent, session-level scratchpad entry. Returns a freshly generated 4-character ID.",
+		Description: "Store a text payload in a persistent, session-level scratchpad entry. Returns a freshly generated 8-character pronounceable slug ID (e.g. katoruvo).",
 	}, func(ctx agent.Context, args CreateScratchpadArgs) (CreateScratchpadResult, error) {
 		entry, err := CreateScratchpad(agentDir, args.Text, "create_scratchpad")
 		if err != nil {
