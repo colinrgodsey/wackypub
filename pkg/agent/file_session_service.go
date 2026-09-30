@@ -124,12 +124,18 @@ func (s *FileSessionService) Get(ctx context.Context, req *session.GetRequest) (
 	agentDir := filepath.Join(s.wsDir, agentID)
 
 	// 1. Read MEMORY.md and format persistent memory turn
-	memContent, _ := ReadMemoryFile(agentDir)
+	memContent, err := ReadMemoryFile(agentDir)
+	if err != nil {
+		return nil, err
+	}
 	memTurnText := FormatPersistentMemoryTurn(memContent)
 	memContentTurn := genai.NewContentFromText(memTurnText, "user")
 
 	// 2. Read turns from session.jsonl
-	sessionTurns, _ := ReadSessionTurns(agentDir)
+	sessionTurns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		return nil, err
+	}
 
 	// Clean and normalize session turns (strip dangling function responses, prune empty turns, merge consecutive user turns)
 	var rawContents []*genai.Content

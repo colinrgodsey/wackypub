@@ -154,7 +154,10 @@ func (s *RoutingServer) StreamHandler(srv any, stream grpc.ServerStream) (err er
 			return err
 		}
 		manifest, err := LoadRemoteManifest(targetSDK.WorkspaceDir)
-		if err == nil && manifest != nil && len(manifest.Routes) > 0 {
+		if err != nil {
+			return fmt.Errorf("loading %s: %w", RemoteManifestFile, err)
+		}
+		if manifest != nil && len(manifest.Routes) > 0 {
 			seen := make(map[string]bool)
 			for _, id := range resp.GetAgentIds() {
 				seen[id] = true
