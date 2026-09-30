@@ -1084,21 +1084,15 @@ func TestD101_ErrorTransparency_ReadSessionError(t *testing.T) {
 		t.Fatalf("LoadFolderAgent failed: %v", err)
 	}
 
-	var resp string
-	stderrOut := captureStderr(func() {
-		resp, err = fa.GenerateTurn(context.Background())
-	})
-	if err != nil {
-		t.Fatalf("GenerateTurn failed: %v", err)
+	// A line over the scanner cap cannot be safely inferred, so the post-turn append
+	// fails CLOSED and surfaces the scanner error at allocation time, instead of the
+	// old fail-open (allocate a duplicate seq; surface the corruption only later, at
+	// the continuation read). The corruption is transparent either way, per D101.
+	_, err = fa.GenerateTurn(context.Background())
+	if err == nil {
+		t.Fatalf("GenerateTurn should fail when session.jsonl holds an over-cap line")
 	}
-
-	if !strings.Contains(stderrOut, "Warning: auto-continuation compaction error:") {
-		t.Errorf("expected stderr to contain 'Warning: auto-continuation compaction error:', got: %q", stderrOut)
-	}
-	if !strings.Contains(stderrOut, "token too long") {
-		t.Errorf("expected stderr to contain 'token too long', got: %q", stderrOut)
-	}
-	if !strings.Contains(resp, "[Auto-continuation aborted: failed to read session turns:") {
-		t.Errorf("expected response to contain '[Auto-continuation aborted: failed to read session turns:', got: %q", resp)
+	if !strings.Contains(err.Error(), "token too long") {
+		t.Errorf("expected token-too-long in error, got: %v", err)
 	}
 }
