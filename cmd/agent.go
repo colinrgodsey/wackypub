@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/genai"
 
 	adkAgent "github.com/colinrgodsey/wackypub/pkg/agent"
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
@@ -1470,10 +1471,14 @@ func init() {
 	agentWatchCmd.Flags().BoolVar(&watchRawFlag, "raw", false, "Emit JSONL-identical lines byte-for-byte")
 	agentWatchCmd.Flags().Int64Var(&watchSinceSeqFlag, "since-seq", 0, "Resume streaming strictly after sequence number N")
 	agentWatchCmd.Flags().Int32Var(&watchLastFlag, "last", 0, "Replay the last N events before live streaming")
+	agentWatchCmd.Flags().BoolVar(&watchThoughtsFlag, "thoughts", false, "Render thought parts wrapped as <thought>...</thought>")
+	agentWatchCmd.Flags().BoolVar(&watchToolCallsFlag, "tool-calls", false, "Render tool calls as [tool: name(args)] inline in turns")
 
 	agentCmd.Flags().BoolVar(&watchRawFlag, "raw", false, "Emit JSONL-identical lines byte-for-byte")
 	agentCmd.Flags().Int64Var(&watchSinceSeqFlag, "since-seq", 0, "Resume streaming strictly after sequence number N")
 	agentCmd.Flags().Int32Var(&watchLastFlag, "last", 0, "Replay the last N events before live streaming")
+	agentCmd.Flags().BoolVar(&watchThoughtsFlag, "thoughts", false, "Render thought parts wrapped as <thought>...</thought>")
+	agentCmd.Flags().BoolVar(&watchToolCallsFlag, "tool-calls", false, "Render tool calls as [tool: name(args)] inline in turns")
 	agentCmd.Flags().BoolVar(&asyncFlag, "async", false, "Skip call-chain cycle detection for supervised async dispatch")
 	agentCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
 	agentCmd.AddCommand(agentWatchCmd)
@@ -1549,9 +1554,11 @@ var agentContextCmd = &cobra.Command{
 }
 
 var (
-	watchRawFlag      bool
-	watchSinceSeqFlag int64
-	watchLastFlag     int32
+	watchRawFlag       bool
+	watchSinceSeqFlag  int64
+	watchLastFlag      int32
+	watchThoughtsFlag  bool
+	watchToolCallsFlag bool
 )
 
 var agentWatchCmd = &cobra.Command{
@@ -1566,12 +1573,19 @@ you receive the events of the turns still in the session, and nothing more.
 
 Caveats for consumers:
   1. Trailing newlines: In --raw mode, each emitted line is the exact byte-for-byte JSONL
-     record as persisted on disk, with newline termination normalized per line.`,
+     record as persisted on disk, with newline termination normalized per line.
+
+Human-mode flags (signal density). Both read the turn's content_json - the D120-faithful
+content - never the deprecated parts field, which dropped thought and tool-call parts:
+  --thoughts     render thought parts wrapped as <thought>...</thought> (default: off)
+  --tool-calls   render tool calls as [tool: name(args)] inline in the turn line (default: off)`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		defer func() {
 			watchRawFlag = false
 			watchSinceSeqFlag = 0
 			watchLastFlag = 0
+			watchThoughtsFlag = false
+			watchToolCallsFlag = false
 		}()
 
 		var agentID string
@@ -1637,27 +1651,21 @@ Caveats for consumers:
 					fmt.Println(ev.GetRaw())
 				}
 			} else {
-				renderHumanEvent(ev)
+				renderHumanEvent(ev, watchThoughtsFlag, watchToolCallsFlag)
 			}
 		}
 	},
 }
 
-func renderHumanEvent(ev *agentv1.SessionEvent) {
+func renderHumanEvent(ev *agentv1.SessionEvent, showThoughts, showToolCalls bool) {
 	if ev == nil {
 		return
 	}
 	switch e := ev.GetEvent().(type) {
 	case *agentv1.SessionEvent_Turn:
 		turn := e.Turn
-		var textParts []string
-		for _, p := range turn.GetParts() {
-			if p.GetText() != "" {
-				textParts = append(textParts, p.GetText())
-			}
-		}
-		text := strings.Join(textParts, " ")
-		fmt.Printf("[Turn #%d %s] %s\n", ev.GetSeq(), turn.GetRole(), strings.TrimSpace(text))
+		text := strings.TrimSpace(renderTurnBody(turn, showThoughts, showToolCalls))
+		fmt.Printf("[Turn #%d %s] %s\n", ev.GetSeq(), turn.GetRole(), text)
 
 	case *agentv1.SessionEvent_ToolCall:
 		tc := e.ToolCall
@@ -1688,4 +1696,61 @@ func renderHumanEvent(ev *agentv1.SessionEvent) {
 	case *agentv1.SessionEvent_Usage:
 		fmt.Printf("[Usage #%d] prompt=%d completion=%d total=%d\n", ev.GetSeq(), e.Usage.GetPromptTokens(), e.Usage.GetCompletionTokens(), e.Usage.GetTotalTokens())
 	}
+}
+
+// renderTurnBody renders a turn's content for human display. Parts are read from
+// content_json - the D120-faithful payload: thought flags and function calls survive
+// there, while the deprecated parts field dropped them (D112). Thought parts render
+// wrapped as <thought>...</thought> only when showThoughts is set, with the part text
+// bytes preserved exactly between the tags; function calls render as [tool: name(args)]
+// only when showToolCalls is set. Events without content_json (or with unparseable
+// content_json) fall back to the deprecated parts rendering.
+func renderTurnBody(turn *agentv1.SessionTurn, showThoughts, showToolCalls bool) string {
+	if cj := turn.GetContentJson(); cj != "" {
+		var content genai.Content
+		if err := json.Unmarshal([]byte(cj), &content); err == nil {
+			var segments []string
+			for _, p := range content.Parts {
+				if p == nil {
+					continue
+				}
+				switch {
+				case p.FunctionCall != nil:
+					if showToolCalls {
+						segments = append(segments, renderFunctionCall(p.FunctionCall))
+					}
+				case p.Thought:
+					if showThoughts {
+						segments = append(segments, "<thought>"+p.Text+"</thought>")
+					}
+				case p.Text != "":
+					segments = append(segments, p.Text)
+				}
+			}
+			return strings.Join(segments, " ")
+		}
+	}
+	var textParts []string
+	for _, p := range turn.GetParts() {
+		if p.GetText() != "" {
+			textParts = append(textParts, p.GetText())
+		}
+	}
+	return strings.Join(textParts, " ")
+}
+
+// renderFunctionCall renders a tool call as [tool: name(args)], with args as compact
+// JSON. encoding/json sorts map keys, so the output is deterministic for a given call.
+func renderFunctionCall(fc *genai.FunctionCall) string {
+	if fc == nil {
+		return ""
+	}
+	if fc.Args == nil {
+		return "[tool: " + fc.Name + "()]"
+	}
+	b, err := json.Marshal(fc.Args)
+	if err != nil {
+		return "[tool: " + fc.Name + "(<unserializable args>)]"
+	}
+	return "[tool: " + fc.Name + "(" + string(b) + ")]"
 }
