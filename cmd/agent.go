@@ -734,8 +734,9 @@ operation.`,
 
 // wackypub agent <agent_id> prompt [message] OR wackypub agent prompt <agent_id> [message]
 var agentPromptCmd = &cobra.Command{
-	Use:   "prompt [agent_id] [message]",
-	Short: "Atomically append user message and generate agent response under a single lock",
+	Use:     "prompt [agent_id] [message]",
+	Aliases: []string{"turn"},
+	Short:   "Atomically append user message and generate agent response under a single lock",
 	Long: `Appends a user-role turn and generates the assistant response in one call, holding the
 session lock for both steps - the recommended way to drive an agent turn, since it can't race
 with another process appending a turn in between the two steps the way separate "add" +
@@ -1393,6 +1394,8 @@ func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 				remainingArgs = append(remainingArgs, args[2:]...)
 			}
 			return agentAsideCmd.RunE(cmd, remainingArgs)
+		} else if subCmd == "hooks" {
+			return agentHooksCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "scratchpad" {
 			if len(args) < 3 {
 				return scratchpadCmd.Help()
@@ -1416,12 +1419,138 @@ func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 			case "delete":
 				return scratchpadDeleteCmd.RunE(cmd, rem)
 			default:
+				if isRegisteredSubcommand(scratchpadCmd, action) {
+					return fmt.Errorf("scratchpad subcommand %q is registered but not supported in agent-first syntax", action)
+				}
 				return scratchpadCmd.Help()
 			}
+		}
+
+		if reason, excluded := isAgentFirstExcluded(subCmd); excluded {
+			return fmt.Errorf("subcommand %q is not supported in agent-first syntax: %s", subCmd, reason)
+		}
+		if isRegisteredSubcommand(cmd, subCmd) {
+			return fmt.Errorf("subcommand %q is registered on 'agent' but not handled by agent-first dispatch", subCmd)
 		}
 	}
 
 	return cmd.Help()
+}
+
+// AgentFirstDispatchStatus describes how a registered cobra subcommand is classified
+// for agent-first syntax ("wackypub agent <agent_id> <subcommand>").
+type AgentFirstDispatchStatus string
+
+const (
+	AgentFirstHandled  AgentFirstDispatchStatus = "handled"
+	AgentFirstExcluded AgentFirstDispatchStatus = "excluded"
+)
+
+// AgentFirstClassification documents how a subcommand is classified for agent-first dispatch.
+type AgentFirstClassification struct {
+	Status    AgentFirstDispatchStatus
+	Rationale string // Explains how it is dispatched or why it is excluded
+}
+
+// agentFirstClassifications documents the handled / excluded classification
+// for every subcommand registered on agentCmd.
+//
+// Acceptance requirement (tasks/wackypub/agent-first-dispatch-drift):
+// Every cobra-registered subcommand on agentCmd must either be handled by
+// executeAgentDispatcher or explicitly excluded with a documented rationale.
+// TestAgentFirstDispatch_CoverageAgainstCobraTable enforces that this table
+// stays in sync with agentCmd.Commands(), eliminating silent two-sources-of-truth drift.
+var agentFirstClassifications = map[string]AgentFirstClassification{
+	"add": {
+		Status:    AgentFirstHandled,
+		Rationale: "Appends a user turn to <ws>/<agent_id>/session.jsonl via agentAddCmd.RunE",
+	},
+	"add-media": {
+		Status:    AgentFirstHandled,
+		Rationale: "Attaches media to the agent session via agentAddMediaCmd.RunE",
+	},
+	"generate": {
+		Status:    AgentFirstHandled,
+		Rationale: "Generates an assistant turn for <agent_id> via agentGenerateCmd.RunE",
+	},
+	"prompt": {
+		Status:    AgentFirstHandled,
+		Rationale: "Appends message and generates response for <agent_id> via agentPromptCmd.RunE (aliases: turn)",
+	},
+	"aside": {
+		Status:    AgentFirstHandled,
+		Rationale: "Asks a side question to <agent_id> without modifying session via agentAsideCmd.RunE",
+	},
+	"repl": {
+		Status:    AgentFirstHandled,
+		Rationale: "Starts an interactive REPL session with <agent_id> via agentReplCmd.RunE",
+	},
+	"cancel": {
+		Status:    AgentFirstHandled,
+		Rationale: "Cancels an in-flight turn for <agent_id> via agentCancelCmd.RunE",
+	},
+	"strip-signatures": {
+		Status:    AgentFirstHandled,
+		Rationale: "Strips thought signatures from <agent_id>'s session via agentStripSignaturesCmd.RunE",
+	},
+	"read-session": {
+		Status:    AgentFirstHandled,
+		Rationale: "Reads session history for <agent_id> via agentReadSessionCmd.RunE",
+	},
+	"read-memory": {
+		Status:    AgentFirstHandled,
+		Rationale: "Reads memory for <agent_id> via agentReadMemoryCmd.RunE",
+	},
+	"render-prompt": {
+		Status:    AgentFirstHandled,
+		Rationale: "Renders the next LLM prompt for <agent_id> via agentRenderPromptCmd.RunE",
+	},
+	"compact": {
+		Status:    AgentFirstHandled,
+		Rationale: "Compacts session history for <agent_id> via agentCompactCmd.RunE",
+	},
+	"context": {
+		Status:    AgentFirstHandled,
+		Rationale: "Inspects context usage and headroom for <agent_id> via agentContextCmd.RunE",
+	},
+	"watch": {
+		Status:    AgentFirstHandled,
+		Rationale: "Live-streams session events for <agent_id> via agentWatchCmd.RunE",
+	},
+	"scratchpad": {
+		Status:    AgentFirstHandled,
+		Rationale: "Dispatches scratchpad CRUD subcommands for <agent_id> (create/read/diff/list/search/delete)",
+	},
+	"hooks": {
+		Status:    AgentFirstHandled,
+		Rationale: "Inspects installed lifecycle hooks for <agent_id> via agentHooksCmd.RunE",
+	},
+}
+
+func isAgentFirstExcluded(name string) (string, bool) {
+	if classification, ok := agentFirstClassifications[name]; ok {
+		if classification.Status == AgentFirstExcluded {
+			return classification.Rationale, true
+		}
+	}
+	return "", false
+}
+
+func isRegisteredSubcommand(parent *cobra.Command, name string) bool {
+	if parent == nil {
+		return false
+	}
+	for _, c := range parent.Commands() {
+		if c.Name() == name {
+			return true
+		}
+		for _, alias := range c.Aliases {
+			if alias == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func init() {
