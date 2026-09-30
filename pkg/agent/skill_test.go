@@ -211,6 +211,12 @@ Step 1: Check logs.
 	if !strings.Contains(desc, "- debugging: Debugging steps") {
 		t.Errorf("expected description to contain '- debugging: Debugging steps', got: %s", desc)
 	}
+	if !strings.Contains(desc, "Load a skill when it applies to a task you are working on") {
+		t.Errorf("expected description to contain when-to-load guidance, got: %s", desc)
+	}
+	if !strings.Contains(desc, "Loading a skill is cheap; missing its guidance is expensive") {
+		t.Errorf("expected description to contain cheap/expensive guidance, got: %s", desc)
+	}
 
 	// Test loading valid skill via GenerateTurn
 	fa, err := LoadFolderAgent(wsDir, "bob", 1)
