@@ -76,7 +76,10 @@ func registerSkillTools(agentDir string, a2aMeta *A2AMetadata, timeoutSeconds in
 	}
 
 	loadSkillDesc := fmt.Sprintf(
-		"Loads an authoritative skill. Output rules and execution workflows are strictly binding.\n\n"+
+		"Loads an authoritative skill into context. Output rules and execution workflows are strictly binding. "+
+			"Load a skill when it applies to a task you are working on. Check available skill names and descriptions before starting unfamiliar work; "+
+			"if a skill covers the domain (or the user asks for a skill by name), load it first and follow its instructions. "+
+			"Loading a skill is cheap; missing its guidance is expensive.\n\n"+
 			"Available skills:\n%s",
 		skillListStr,
 	)
