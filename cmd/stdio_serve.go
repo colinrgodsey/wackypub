@@ -24,9 +24,18 @@ import (
 // spawning wackypub in the workspace root makes the served SDK serve exactly
 // that workspace - no new identity or authorization surface.
 //
+// Protocol & Error Resilience Contract (tasks/wackypub/stdio-serve-robustness):
 // stdout is the PROTOCOL channel. Every diagnostic in this command must go to
 // stderr; a stray line on stdout corrupts the gRPC framing. Writers of this
 // file, keep it that way.
+//
+// Stdio-serve recovers from per-turn failures (panics in RPC handlers/generation,
+// model runtime errors, session lock contention timeouts, client stream cancellations)
+// and returns them as protocol errors over gRPC (codes.Internal, codes.DeadlineExceeded,
+// codes.Canceled) so the server process keeps serving subsequent RPCs.
+// Die-on-panic behavior is deliberately preserved ONLY for unrecoverable states
+// (e.g. corrupt internal state implementing agent.Unrecoverable), where the process
+// cannot safely continue serving and should terminate for supervision restart.
 var stdioServeCmd = &cobra.Command{
 	Use:   "stdio-serve",
 	Short: "Serve the AgentService protocol over stdio (CLI lifecycle, per-call process)",

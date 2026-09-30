@@ -20,6 +20,7 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +31,8 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
@@ -528,6 +531,10 @@ func (s *AgentSDK) generateTurnStreamImplWorkspace(ctx context.Context, workspac
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer registerInFlightTurn(agentID, cancel)()
 
+		if testHookTurnPreGenerate != nil {
+			testHookTurnPreGenerate(agentID, "")
+		}
+
 		wsDir := s.WorkspaceDir
 		if workspaceDir != "" {
 			wsDir = workspaceDir
@@ -586,6 +593,20 @@ func (s *AgentSDK) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, st
 	items := make(chan genItem, 8)
 	go func() {
 		defer close(items)
+		defer func() {
+			if r := recover(); r != nil {
+				if IsUnrecoverable(r) {
+					fmt.Fprintf(os.Stderr, "wackypub: fatal unrecoverable panic in GenerateTurnStream for agent %s: %v\n", agentID, r)
+					panic(r)
+				}
+				stack := debug.Stack()
+				fmt.Fprintf(os.Stderr, "wackypub: recovered panic in GenerateTurnStream for agent %s: %v\n%s\n", agentID, r, stack)
+				select {
+				case items <- genItem{err: status.Errorf(codes.Internal, "panic during turn generation: %v", r)}:
+				case <-ctx.Done():
+				}
+			}
+		}()
 		for chunk, err := range s.generateTurnStreamImplWorkspace(ctx, wsDir, agentID) {
 			select {
 			case items <- genItem{chunk: chunk, err: err}:
@@ -739,6 +760,22 @@ func (s *AgentSDK) addAndGenerateTurnStreamImplWorkspace(ctx context.Context, wo
 
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer registerInFlightTurn(agentID, cancel)()
+
+		if testHookTurnPreGenerate != nil {
+			testHookTurnPreGenerate(agentID, userMessage)
+		}
+		if os.Getenv("WACKYPUB_FAULT_INJECT") != "" {
+			switch os.Getenv("WACKYPUB_FAULT_INJECT") {
+			case "turn_panic":
+				if userMessage == "__FAULT_INJECT_PANIC__" {
+					panic("fault injected: simulated turn panic")
+				}
+			case "turn_unrecoverable":
+				if userMessage == "__FAULT_INJECT_UNRECOVERABLE__" {
+					panic(MarkUnrecoverable("fault injected: unrecoverable state corruption"))
+				}
+			}
+		}
 
 		// Run hooks on userMessage
 		finalMsg, hookEnv, warnings, _ := RunUserMessageHooksWithContext(turnCtx, agentDir, userMessage)
@@ -1137,6 +1174,20 @@ func (s *AgentSDK) AddAndGenerateTurnStream(req *agentv1.AddAndGenerateTurnStrea
 	go func() {
 		defer close(items)
 		defer close(warnings)
+		defer func() {
+			if r := recover(); r != nil {
+				if IsUnrecoverable(r) {
+					fmt.Fprintf(os.Stderr, "wackypub: fatal unrecoverable panic in AddAndGenerateTurnStream for agent %s: %v\n", agentID, r)
+					panic(r)
+				}
+				stack := debug.Stack()
+				fmt.Fprintf(os.Stderr, "wackypub: recovered panic in AddAndGenerateTurnStream for agent %s: %v\n%s\n", agentID, r, stack)
+				select {
+				case items <- aagItem{err: status.Errorf(codes.Internal, "panic during turn generation: %v", r)}:
+				case <-ctx.Done():
+				}
+			}
+		}()
 		onWarning := func(w string) {
 			if w == "" {
 				return
