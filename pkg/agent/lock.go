@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sync"
 	"syscall"
@@ -37,12 +38,30 @@ func IsSessionLockedByCurrentProcess(agentDir string) bool {
 	return heldLocks[cleanLockDir(agentDir)] > 0
 }
 
+// shutdownSignalContext is a process-wide context cancelled by SIGINT/SIGTERM, created
+// once. Bare lock acquisitions routed through it stay abortable on Ctrl+C even though
+// they carry no caller ctx (bugs/wackypub/watch-takes-session-lock-and-ignores-sigint:
+// lock acquisition must be context-cancellable everywhere; the old background context
+// made a contended wait uninterruptible).
+var (
+	shutdownOnce sync.Once
+	shutdownCtx  context.Context
+)
+
+func shutdownSignalContext() context.Context {
+	shutdownOnce.Do(func() {
+		shutdownCtx, _ = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	})
+	return shutdownCtx
+}
+
 // AcquireSessionLock acquires an exclusive POSIX lock (flock) on <agent_dir>/session.lock
-// with no cancellation. It is a thin wrapper over AcquireSessionLockContext with a
-// background context; call sites that already hold a ctx (all SDK turn paths) should use
-// the ctx variant so a contended lock does not hang shutdown.
+// with no caller ctx. It is a thin wrapper over AcquireSessionLockContext using a
+// process-wide signal-cancelled context (SIGINT/SIGTERM abort the wait); call sites that
+// already hold a ctx (all SDK turn paths) should use the ctx variant so a contended lock
+// does not hang shutdown or wait on signals they already converted to cancellation.
 func AcquireSessionLock(agentDir string) (*SessionLock, error) {
-	return AcquireSessionLockContext(context.Background(), agentDir)
+	return AcquireSessionLockContext(shutdownSignalContext(), agentDir)
 }
 
 // AcquireSessionLockContext acquires an exclusive POSIX lock (flock) on <agent_dir>/session.lock,
