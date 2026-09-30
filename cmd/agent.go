@@ -449,8 +449,8 @@ conversion for v1).
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
 
-Read-only: does not modify session.jsonl. Acquires the session lock for the duration of the
-read.`,
+Read-only: does not modify session.jsonl. Lock-free - never acquires the session lock (D118
+readers run concurrently with writers).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {
@@ -500,7 +500,8 @@ Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
 
 Prints nothing (empty output, no error) if the agent has no MEMORY.md yet. Read-only: does not
-modify anything. Acquires the session lock for the duration of the read.`,
+modify anything. Lock-free - never acquires the session lock (D118 readers run
+concurrently with writers).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {
