@@ -1386,6 +1386,12 @@ func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 				remainingArgs = append(remainingArgs, args[2:]...)
 			}
 			return agentWatchCmd.RunE(cmd, remainingArgs)
+		} else if subCmd == "aside" {
+			remainingArgs := []string{agentID}
+			if len(args) > 2 {
+				remainingArgs = append(remainingArgs, args[2:]...)
+			}
+			return agentAsideCmd.RunE(cmd, remainingArgs)
 		} else if subCmd == "scratchpad" {
 			if len(args) < 3 {
 				return scratchpadCmd.Help()
@@ -1423,6 +1429,7 @@ func init() {
 	// panics on the collision as soon as --help (or completion) merges the two flag sets.
 	agentAddCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
 	agentPromptCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
+	agentAsideCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
 	agentPromptCmd.Flags().BoolVar(&asyncFlag, "async", false, "Skip call-chain cycle detection for supervised async dispatch")
 	agentCompactCmd.Flags().StringVar(&compactMDFile, "md-file", "", "Path to alternate COMPACT.md file to use for compaction recipe")
 	agentCompactCmd.Flags().StringVar(&compactRuntimeFile, "runtime", "", "Path to alternate runtime.json file to use for compaction")
@@ -1468,6 +1475,7 @@ func init() {
 	agentCmd.Flags().Int64Var(&watchSinceSeqFlag, "since-seq", 0, "Resume streaming strictly after sequence number N")
 	agentCmd.Flags().Int32Var(&watchLastFlag, "last", 0, "Replay the last N events before live streaming")
 	agentCmd.Flags().BoolVar(&asyncFlag, "async", false, "Skip call-chain cycle detection for supervised async dispatch")
+	agentCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
 	agentCmd.AddCommand(agentWatchCmd)
 
 	RootCmd.AddCommand(agentCmd)
