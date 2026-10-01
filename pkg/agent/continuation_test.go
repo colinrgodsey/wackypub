@@ -1115,18 +1115,30 @@ func TestD88_DefaultAutoContinuationCaps(t *testing.T) {
 // TestD88_BudgetExhaustedStopIsLoud verifies the cap-exhausted stop names the count,
 // the cap, and the runtime.json knob, so an operator can raise the budget on purpose
 // instead of wondering why a multi-image turn stalled.
+// TestD88_BudgetExhaustedStopIsLoud unit-drives the D88 budget gate at exhaustion for
+// both budget classes: the stop must be emitted (never silent) and must name the
+// exhausted budget, the count and cap, and its runtime.json knob.
 func TestD88_BudgetExhaustedStopIsLoud(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		max  int
-		want string
+		name    string
+		bail    bool
+		images  []string
+		maxGen  int
+		maxImg  int
+		wantCap string
+		knob    string
 	}{
-		{"standard cap 4", 4, "4 of 4"},
-		{"a2a cap 2", 2, "2 of 2"},
+		{"general budget standard", true, nil, 4, 300, "4 of 4", "maxAutoContinuations"},
+		{"general budget a2a", true, nil, 2, 300, "2 of 2", "maxAutoContinuations"},
+		{"image budget", false, []string{"img1"}, 4, 4, "4 of 4", "maxAutoContinuationsImages"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fa := &FolderAgent{RuntimeConfig: &RuntimeConfig{MaxImageDimension: 1024}}
-			count := tc.max
+			if tc.bail {
+				fa.UsageTracker = &TurnUsageTracker{StoppedEarlyForCompaction: true}
+			}
+			genCount := tc.maxGen
+			imgCount := tc.maxImg
 			reason := ContinuationNone
 			var out []string
 			yield := func(chunk string, err error) bool {
@@ -1137,16 +1149,214 @@ func TestD88_BudgetExhaustedStopIsLoud(t *testing.T) {
 				return true
 			}
 
-			ok := fa.handleContinuationOrCompaction(context.Background(), t.TempDir(), []string{"img1"}, &reason, &count, tc.max, yield)
+			ok := fa.handleContinuationOrCompaction(context.Background(), t.TempDir(), tc.images, &reason, &genCount, &imgCount, tc.maxGen, tc.maxImg, yield)
 			if ok {
 				t.Fatal("expected the budget gate to stop the continuation")
 			}
 			msg := strings.Join(out, "")
-			for _, want := range []string{tc.want, "incomplete status", "maxAutoContinuations", "runtime.json"} {
+			for _, want := range []string{tc.wantCap, "incomplete status", tc.knob, "runtime.json"} {
 				if !strings.Contains(msg, want) {
 					t.Errorf("budget-exhausted stop missing %q, got %s", want, msg)
 				}
 			}
+			if tc.bail {
+				if strings.Contains(msg, "(images)") {
+					t.Errorf("general budget stop wrongly labels (images), got %s", msg)
+				}
+			} else if !strings.Contains(msg, "(images)") {
+				t.Errorf("image budget stop missing (images) label, got %s", msg)
+			}
 		})
 	}
+}
+
+// TestD88_AutoContinuationBudgets pins the D88 budget resolution rules: general
+// defaults (4 standard / 2 A2A), the image budget defaulting to the agent maxToolTurns
+// (so every action a turn can take can queue an image), explicit runtime.json knobs,
+// and DisableAutoContinuation zeroing both.
+func TestD88_AutoContinuationBudgets(t *testing.T) {
+	pi := func(v int) *int { return &v }
+	for _, tc := range []struct {
+		name string
+		fa   *FolderAgent
+		gen  int
+		img  int
+	}{
+		{"standard defaults", &FolderAgent{MaxToolTurns: 300}, 4, 300},
+		{"a2a general default", &FolderAgent{A2AMeta: &A2AMetadata{}, MaxToolTurns: 300}, 2, 300},
+		{"general knob", &FolderAgent{MaxAutoContinuations: pi(7), MaxToolTurns: 300}, 7, 300},
+		{"image knob", &FolderAgent{MaxAutoContinuationsImages: pi(105), MaxToolTurns: 300}, 4, 105},
+		{"image default ties to maxToolTurns", &FolderAgent{MaxToolTurns: 120}, 4, 120},
+		{"disable zeroes both", &FolderAgent{DisableAutoContinuation: true, MaxAutoContinuations: pi(7), MaxAutoContinuationsImages: pi(105), MaxToolTurns: 300}, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, i := tc.fa.autoContinuationBudgets()
+			if g != tc.gen || i != tc.img {
+				t.Errorf("autoContinuationBudgets = (%d, %d), want (%d, %d)", g, i, tc.gen, tc.img)
+			}
+		})
+	}
+}
+
+// newImageBudgetAgent builds a FolderAgent whose deferred-image path works against a
+// temp workspace, plus the png bytes shared by all test images.
+func newImageBudgetAgent(t *testing.T) (*FolderAgent, string, []byte) {
+	t.Helper()
+	wsDir := t.TempDir()
+	agentDir := filepath.Join(wsDir, "img-agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir agent dir: %v", err)
+	}
+	fa := &FolderAgent{AgentDir: agentDir, AgentID: "img-agent", RuntimeConfig: &RuntimeConfig{MaxImageDimension: 400}, MaxToolTurns: 300}
+	pngBytes := createTestImage(100, 100, false)
+	return fa, wsDir, pngBytes
+}
+
+func makeImageIDs(t *testing.T, fa *FolderAgent, pngBytes []byte, n int) []string {
+	t.Helper()
+	ids := make([]string, n)
+	for i := range ids {
+		entry, err := CreateBinaryScratchpad(fa.AgentDir, pngBytes, "test", "image/png")
+		if err != nil {
+			t.Fatalf("create scratchpad image %d: %v", i, err)
+		}
+		ids[i] = entry.ID
+	}
+	return ids
+}
+
+// TestD88_ImageBudgetSeparateFromGeneral proves the two D88 budgets are independent:
+// 110 image-driven continuations burn only the image budget (the general counter stays
+// at 0), and the general budget still exhausts at its own cap regardless of how many
+// image continuations preceded it.
+func TestD88_ImageBudgetSeparateFromGeneral(t *testing.T) {
+	fa, wsDir, pngBytes := newImageBudgetAgent(t)
+	genCap, imgCap := fa.autoContinuationBudgets()
+	if genCap != 4 || imgCap != 300 {
+		t.Fatalf("unexpected default budgets: general=%d image=%d", genCap, imgCap)
+	}
+	const rounds = 110
+	ids := makeImageIDs(t, fa, pngBytes, rounds)
+	reason := ContinuationNone
+	gen, img := 0, 0
+	for i := range ids {
+		ok := fa.handleContinuationOrCompaction(context.Background(), wsDir, []string{ids[i]}, &reason, &gen, &img, genCap, imgCap, yieldNoop)
+		if !ok {
+			t.Fatalf("round %d: expected image continuation to fire under the image budget", i)
+		}
+		if gen != 0 {
+			t.Fatalf("round %d: image continuation burned the general budget (gen=%d)", i, gen)
+		}
+	}
+	if img != rounds {
+		t.Fatalf("image counter = %d, want %d", img, rounds)
+	}
+	// General exhaustion point is unchanged by the image volume: general budget at its
+	// cap, 110 image continuations already on the clock, fresh reason (not an image
+	// re-inflation turn). A bail-only turn must be denied with the general message.
+	fa.UsageTracker = &TurnUsageTracker{StoppedEarlyForCompaction: true}
+	reason2 := ContinuationNone
+	gen = genCap
+	var out []string
+	yieldMsg := func(chunk string, err error) bool {
+		out = append(out, chunk)
+		return true
+	}
+	ok := fa.handleContinuationOrCompaction(context.Background(), wsDir, nil, &reason2, &gen, &img, genCap, imgCap, yieldMsg)
+	if ok {
+		t.Fatal("expected general budget to exhaust at its cap despite image volume")
+	}
+	msg := strings.Join(out, "")
+	for _, want := range []string{"4 of 4", "incomplete status", "maxAutoContinuations"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("general budget stop missing %q, got %s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "(images)") {
+		t.Errorf("general budget stop wrongly labels (images), got %s", msg)
+	}
+}
+
+// TestD88_ImageBudgetCapWithManyImageLoads is the acceptance for the separate image
+// budget: 100+ image-driven continuations in one session all fire under the image
+// budget (knob set to 105), and the cap denial is loud with the image knob named.
+func TestD88_ImageBudgetCapWithManyImageLoads(t *testing.T) {
+	fa, wsDir, pngBytes := newImageBudgetAgent(t)
+	fa.MaxAutoContinuationsImages = pi105()
+	genCap, imgCap := fa.autoContinuationBudgets()
+	if genCap != 4 || imgCap != 105 {
+		t.Fatalf("unexpected budgets with knob: general=%d image=%d", genCap, imgCap)
+	}
+	const rounds = 106
+	ids := makeImageIDs(t, fa, pngBytes, rounds)
+	reason := ContinuationNone
+	gen, img := 0, 0
+	for i := 0; i < 105; i++ {
+		ok := fa.handleContinuationOrCompaction(context.Background(), wsDir, []string{ids[i]}, &reason, &gen, &img, genCap, imgCap, yieldNoop)
+		if !ok {
+			t.Fatalf("round %d: expected image continuation to fire under the image budget", i)
+		}
+	}
+	if gen != 0 {
+		t.Fatalf("image continuations burned the general budget (gen=%d)", gen)
+	}
+	var out []string
+	yieldMsg := func(chunk string, err error) bool {
+		out = append(out, chunk)
+		return true
+	}
+	ok := fa.handleContinuationOrCompaction(context.Background(), wsDir, []string{ids[105]}, &reason, &gen, &img, genCap, imgCap, yieldMsg)
+	if ok {
+		t.Fatal("expected the image budget to exhaust at its cap")
+	}
+	msg := strings.Join(out, "")
+	for _, want := range []string{"105 of 105", "(images)", "incomplete status", "maxAutoContinuationsImages"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("image budget stop missing %q, got %s", want, msg)
+		}
+	}
+}
+
+func pi105() *int {
+	v := 105
+	return &v
+}
+
+// TestD88_ImageBudgetDefaultsToMaxToolTurns proves the default image budget is the
+// agent maxToolTurns itself (not the 300 constant): with MaxToolTurns 3 and no knob,
+// exactly 3 image continuations fire and the 4th is the loud image-budget stop.
+func TestD88_ImageBudgetDefaultsToMaxToolTurns(t *testing.T) {
+	fa, wsDir, pngBytes := newImageBudgetAgent(t)
+	fa.MaxToolTurns = 3
+	genCap, imgCap := fa.autoContinuationBudgets()
+	if genCap != 4 || imgCap != 3 {
+		t.Fatalf("unexpected budgets tied to maxToolTurns: general=%d image=%d", genCap, imgCap)
+	}
+	ids := makeImageIDs(t, fa, pngBytes, 4)
+	reason := ContinuationNone
+	gen, img := 0, 0
+	for i := 0; i < 3; i++ {
+		ok := fa.handleContinuationOrCompaction(context.Background(), wsDir, []string{ids[i]}, &reason, &gen, &img, genCap, imgCap, yieldNoop)
+		if !ok {
+			t.Fatalf("round %d: expected image continuation to fire under the default budget", i)
+		}
+	}
+	var out []string
+	yieldMsg := func(chunk string, err error) bool {
+		out = append(out, chunk)
+		return true
+	}
+	ok := fa.handleContinuationOrCompaction(context.Background(), wsDir, []string{ids[3]}, &reason, &gen, &img, genCap, imgCap, yieldMsg)
+	if ok {
+		t.Fatal("expected the default image budget to exhaust at maxToolTurns")
+	}
+	msg := strings.Join(out, "")
+	for _, want := range []string{"3 of 3", "(images)", "incomplete status", "maxAutoContinuationsImages"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("image budget stop missing %q, got %s", want, msg)
+		}
+	}
+}
+func yieldNoop(chunk string, err error) bool {
+	return true
 }

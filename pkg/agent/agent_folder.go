@@ -406,16 +406,17 @@ type FolderAgent struct {
 	// CompactionToolDenials points at the counter the deny callback increments (shared with
 	// the compaction-scoped agent's BeforeToolCallback) so callers can read the denial count
 	// after a compaction run and include it in the post-compact payload.
-	CompactionAgent         agent.Agent
-	CompactionToolDenials   *int64
-	MaxToolTurns            int
-	CommandTimeoutSeconds   int
-	A2AMeta                 *A2AMetadata
-	UsageTracker            *TurnUsageTracker
-	HookEnv                 map[string]string
-	Tools                   []tool.Tool
-	MaxAutoContinuations    *int
-	DisableAutoContinuation bool
+	CompactionAgent            agent.Agent
+	CompactionToolDenials      *int64
+	MaxToolTurns               int
+	CommandTimeoutSeconds      int
+	A2AMeta                    *A2AMetadata
+	UsageTracker               *TurnUsageTracker
+	HookEnv                    map[string]string
+	Tools                      []tool.Tool
+	MaxAutoContinuations       *int
+	MaxAutoContinuationsImages *int
+	DisableAutoContinuation    bool
 	// ToolEvents, when set, receives tool_call/tool_call_update protocol events from the
 	// ADK Before/AfterTool callbacks during generation (D112 tool-call visibility). The field
 	// is attached at load time; stream handlers drain it between chunks.
@@ -538,10 +539,14 @@ func loadFolderAgentFromRuntime(agentDir, wsDir, agentID string, a2aMeta *A2AMet
 	}
 
 	var maxAutoCont *int
+	var maxAutoContImages *int
 	disableAutoCont := false
 	if runtimeCfg != nil {
 		if runtimeCfg.MaxAutoContinuations != nil {
 			maxAutoCont = runtimeCfg.MaxAutoContinuations
+		}
+		if runtimeCfg.MaxAutoContinuationsImages != nil {
+			maxAutoContImages = runtimeCfg.MaxAutoContinuationsImages
 		}
 		if runtimeCfg.DisableAutoContinuation {
 			disableAutoCont = true
@@ -566,25 +571,26 @@ func loadFolderAgentFromRuntime(agentDir, wsDir, agentID string, a2aMeta *A2AMet
 	}
 
 	return &FolderAgent{
-		AgentID:                 agentID,
-		AgentDir:                agentDir,
-		DotEnv:                  dotEnv,
-		RuntimeConfig:           runtimeCfg,
-		SystemPrompt:            expandedPrompt,
-		MemoryPrompt:            memoryContent,
-		Model:                   llmModel,
-		ADKAgent:                ag,
-		CompactionAgent:         compactionAgent,
-		CompactionToolDenials:   &compactionDenials,
-		MaxToolTurns:            maxToolTurns,
-		CommandTimeoutSeconds:   resolvedTimeout,
-		A2AMeta:                 a2aMeta,
-		UsageTracker:            tracker,
-		HookEnv:                 hookEnv,
-		Tools:                   toolsList,
-		ToolEvents:              toolEvents,
-		MaxAutoContinuations:    maxAutoCont,
-		DisableAutoContinuation: disableAutoCont,
+		AgentID:                    agentID,
+		AgentDir:                   agentDir,
+		DotEnv:                     dotEnv,
+		RuntimeConfig:              runtimeCfg,
+		SystemPrompt:               expandedPrompt,
+		MemoryPrompt:               memoryContent,
+		Model:                      llmModel,
+		ADKAgent:                   ag,
+		CompactionAgent:            compactionAgent,
+		CompactionToolDenials:      &compactionDenials,
+		MaxToolTurns:               maxToolTurns,
+		CommandTimeoutSeconds:      resolvedTimeout,
+		A2AMeta:                    a2aMeta,
+		UsageTracker:               tracker,
+		HookEnv:                    hookEnv,
+		Tools:                      toolsList,
+		ToolEvents:                 toolEvents,
+		MaxAutoContinuations:       maxAutoCont,
+		MaxAutoContinuationsImages: maxAutoContImages,
+		DisableAutoContinuation:    disableAutoCont,
 	}, nil
 }
 
@@ -897,6 +903,33 @@ func (fa *FolderAgent) compactForContinuation(ctx context.Context, yield func(st
 	return true
 }
 
+// autoContinuationBudgets returns the two D88 continuation budgets for this turn:
+// (generalCap, imageCap). The general budget guards compaction bails and other
+// continuation causes; the image budget guards deferred-image continuations and
+// defaults to the agent maxToolTurns, so every action a turn can take is an image
+// load the budget can cover. Explicit runtime.json values override.
+func (fa *FolderAgent) autoContinuationBudgets() (int, int) {
+	generalCap := DefaultMaxAutoContinuations
+	if fa.A2AMeta != nil {
+		generalCap = DefaultMaxAutoContinuationsA2A
+	}
+	if fa.MaxAutoContinuations != nil {
+		generalCap = *fa.MaxAutoContinuations
+	}
+	imageCap := fa.MaxToolTurns
+	if imageCap <= 0 {
+		imageCap = DefaultMaxToolTurns
+	}
+	if fa.MaxAutoContinuationsImages != nil {
+		imageCap = *fa.MaxAutoContinuationsImages
+	}
+	if fa.DisableAutoContinuation {
+		generalCap = 0
+		imageCap = 0
+	}
+	return generalCap, imageCap
+}
+
 // handleContinuationOrCompaction determines whether to continue generation (due to mid-turn compaction bail
 // or deferred images) or finish and run post-turn compaction. Returns true if another turn iteration should run.
 func (fa *FolderAgent) handleContinuationOrCompaction(
@@ -905,7 +938,9 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 	deferredScratchpadIDs []string,
 	lastContinuationReason *ContinuationReason,
 	continuationCount *int,
+	imageContinuationCount *int,
 	maxContinuations int,
+	maxImageContinuations int,
 	yield func(string, error) bool,
 ) bool {
 	hasDeferredImages := fa.RuntimeConfig != nil && fa.RuntimeConfig.MaxImageDimension > 0 && len(deferredScratchpadIDs) > 0
@@ -924,10 +959,19 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 		return false
 	}
 
+	// Budget gate: image-driven continuations (deferred images, including the image+bail
+	// coincidence) draw from the image budget; compaction-bail-only continuations draw
+	// from the general budget. Every denial is loud and names the budget and its knob.
 	if hasCompactedBail || hasDeferredImages {
-		if *continuationCount >= maxContinuations {
+		if hasCompactedBail && !hasDeferredImages {
+			if *continuationCount >= maxContinuations {
+				fa.checkPostTurnCompaction(ctx, wsDir)
+				yield(fmt.Sprintf("\n\n[Auto-continuation budget exhausted: %d of %d used - stopping with incomplete status. Raise maxAutoContinuations in runtime.json to allow more.]", *continuationCount, maxContinuations), nil)
+				return false
+			}
+		} else if *imageContinuationCount >= maxImageContinuations {
 			fa.checkPostTurnCompaction(ctx, wsDir)
-			yield(fmt.Sprintf("\n\n[Auto-continuation budget exhausted: %d of %d used - stopping with incomplete status. Raise maxAutoContinuations in runtime.json to allow more.]", *continuationCount, maxContinuations), nil)
+			yield(fmt.Sprintf("\n\n[Auto-continuation budget exhausted (images): %d of %d used - stopping with incomplete status. Raise maxAutoContinuationsImages in runtime.json to allow more.]", *imageContinuationCount, maxImageContinuations), nil)
 			return false
 		}
 	}
@@ -949,7 +993,7 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 		}
 
 		*lastContinuationReason = ContinuationDeferredImage
-		*continuationCount++
+		*imageContinuationCount++
 		return true
 	}
 
@@ -985,7 +1029,7 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 		}
 
 		*lastContinuationReason = ContinuationDeferredImage
-		*continuationCount++
+		*imageContinuationCount++
 		return true
 	}
 
@@ -1038,21 +1082,13 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 			return
 		}
 
-		// Budget Guard: MaxAutoContinuations = 4 for standard sessions.
-		// For A2A-context turns (A2AMeta != nil), MaxAutoContinuations = 2 to prevent caller turn timeouts.
-		// Resets on every external user message.
-		maxContinuations := DefaultMaxAutoContinuations
-		if fa.A2AMeta != nil {
-			maxContinuations = DefaultMaxAutoContinuationsA2A
-		}
-		if fa.MaxAutoContinuations != nil {
-			maxContinuations = *fa.MaxAutoContinuations
-		}
-		if fa.DisableAutoContinuation {
-			maxContinuations = 0
-		}
+		// Budget Guard (D88): two budgets, so image-driven work and compaction-driven
+		// work cannot starve each other. General: compaction bails and other causes.
+		// Image: deferred-image continuations, defaults to maxToolTurns. Resets on every external user message.
+		maxContinuations, maxImageContinuations := fa.autoContinuationBudgets()
 
 		continuationCount := 0
+		imageContinuationCount := 0
 		lastContinuationReason := ContinuationNone
 
 		for {
@@ -1143,7 +1179,7 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 			// Commit workspace event per turn boundary ("assistant")
 			commitEventBestEffort(wsDir, fa.AgentID, "assistant")
 
-			if !fa.handleContinuationOrCompaction(ctx, wsDir, deferredScratchpadIDs, &lastContinuationReason, &continuationCount, maxContinuations, yield) {
+			if !fa.handleContinuationOrCompaction(ctx, wsDir, deferredScratchpadIDs, &lastContinuationReason, &continuationCount, &imageContinuationCount, maxContinuations, maxImageContinuations, yield) {
 				return
 			}
 		}

@@ -83,6 +83,12 @@ type RuntimeConfig struct {
 	// MaxAutoContinuations limits auto-continuation turns for this agent (D88).
 	// When unset, defaults to DefaultMaxAutoContinuations (4) or DefaultMaxAutoContinuationsA2A (2) for A2A turns.
 	MaxAutoContinuations *int `json:"maxAutoContinuations,omitempty"`
+	// MaxAutoContinuationsImages limits image-queue auto-continuation turns for this
+	// agent (D88). Image-queue continuations draw from this budget, not the general
+	// MaxAutoContinuations budget. When unset, defaults to the agent maxToolTurns: every
+	// action a turn can take is an image load, so the budget structurally covers one full
+	// turn of image work.
+	MaxAutoContinuationsImages *int `json:"maxAutoContinuationsImages,omitempty"`
 
 	// DisableAutoContinuation disables automatic continuation turns (D88).
 	DisableAutoContinuation bool `json:"disableAutoContinuation,omitempty"`
