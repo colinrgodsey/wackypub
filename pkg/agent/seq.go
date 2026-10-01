@@ -24,6 +24,16 @@ var seqMu sync.Mutex
 // session lock + the appended log (AppendSessionContentGetSeq holds the lock across both).
 var seqAllocBump = map[string]int64{}
 
+// seqAllocBumpMax bounds the number of distinct agent dirs tracked in seqAllocBump.
+// Steady state is self-cleaning: an entry is evicted once the log has caught up to it
+// (see NextSeq/CurrentSeq), so the cap is a backstop for workloads with unbounded
+// distinct dirs and never-persisted bare allocations. On overflow the map is reset to
+// just the allocating dir: cleared dirs then re-derive from their logs exactly like a
+// fresh process (the session lock + appended log carry cross-process monotonicity);
+// the only cost is the in-process bridge for a cleared dir still holding un-persisted
+// seqs.
+const seqAllocBumpMax = 1024
+
 // tailReadWindow is the increment we back up per read when seeking to the final line. The
 // last line of a session.jsonl is almost always a few hundred bytes, so one window suffices
 // for the common case; the seek keeps going, window at a time, until tailMaxSeek.
@@ -193,11 +203,23 @@ func NextSeq(agentDir string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if b := seqAllocBump[key]; b > cur {
+	// Evict on consume: once the log has caught up to a recorded bump, every seq it bridged
+	// is in session.jsonl and the file alone bounds future allocations, so the entry is
+	// redundant. Steady state (every allocation appended) self-cleans to zero entries.
+	if b := seqAllocBump[key]; b <= cur {
+		delete(seqAllocBump, key)
+	} else {
 		cur = b
 	}
 	next := cur + 1
 	seqAllocBump[key] = next
+	if len(seqAllocBump) > seqAllocBumpMax {
+		for k := range seqAllocBump {
+			if k != key {
+				delete(seqAllocBump, k)
+			}
+		}
+	}
 	return next, nil
 }
 
@@ -215,8 +237,12 @@ func CurrentSeq(agentDir string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if b := seqAllocBump[cleanLockDir(agentDir)]; b > cur {
+	key := cleanLockDir(agentDir)
+	// Same consume-time eviction as NextSeq: a caught-up entry is redundant.
+	if b := seqAllocBump[key]; b > cur {
 		cur = b
+	} else {
+		delete(seqAllocBump, key)
 	}
 	return cur, nil
 }
