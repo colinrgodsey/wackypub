@@ -75,7 +75,13 @@ func recoverMaxSeqFromLog(agentDir string) (int64, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return 0, fmt.Errorf("reading %s: %w", SessionFileName, err)
+		// A line over the read path's scanner cap (16MiB) means the log cannot be scanned
+		// by the read path either: allocation cannot proceed safely on a session this
+		// corrupt, and every subsequent turn would fail the same way. Mark it
+		// UNRECOVERABLE so the process supervision (stdio-serve / ProcessDialer) restarts
+		// the server from a fresh state instead of failing each turn individually.
+		return 0, MarkUnrecoverable("session log cannot be scanned for sequence inference",
+			fmt.Errorf("reading %s: %w", SessionFileName, err))
 	}
 
 	if maxSeq < unsequencedTurns {

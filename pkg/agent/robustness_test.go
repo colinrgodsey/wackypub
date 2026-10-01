@@ -14,6 +14,7 @@ import (
 	"time"
 
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
+	"google.golang.org/genai"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -366,3 +367,95 @@ func (m *mockServerStream) SetTrailer(metadata.MD)       {}
 func (m *mockServerStream) Context() context.Context     { return m.ctx }
 func (m *mockServerStream) SendMsg(m2 any) error         { return nil }
 func (m *mockServerStream) RecvMsg(m2 any) error         { return nil }
+
+// TestRecoverMaxSeqFromLog_ScannerErrorIsUnrecoverable verifies the #88 fail-closed path
+// now carries the unrecoverable marker: a session log with a line over the 16MiB scanner
+// cap cannot be safely allocated from, so the error is marked corrupt-state, which the
+// #90 supervision (stdio-serve / ProcessDialer) turns into a process restart instead of
+// failing every subsequent turn individually.
+func TestRecoverMaxSeqFromLog_ScannerErrorIsUnrecoverable(t *testing.T) {
+	agentDir := t.TempDir()
+	// One small turn, then a line far beyond the 16MiB scanner buffer.
+	turns := []*genai.Content{genai.NewContentFromText("seed", "user")}
+	if err := WriteSessionTurns(agentDir, turns); err != nil {
+		t.Fatalf("WriteSessionTurns: %v", err)
+	}
+	f, err := os.OpenFile(filepath.Join(agentDir, SessionFileName), os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 17MiB line - exceeds scanner buffer (16MiB).
+	if _, err := f.Write(append([]byte(strings.Repeat("x", 17*1024*1024)), '\n')); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	_, err = recoverMaxSeqFromLog(agentDir)
+	if err == nil {
+		t.Fatal("expected scanner error from 17MiB line")
+	}
+	if !IsUnrecoverable(err) {
+		t.Fatalf("scanner error should be marked unrecoverable, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "cannot be scanned for sequence inference") {
+		t.Errorf("expected reason in error, got: %v", err)
+	}
+}
+
+// TestRecoverMaxSeqFromLog_LegacyUnsequencedStaysRecoverable verifies the legacy-row path
+// (valid JSON, no seq key) is NOT unrecoverable - that's log-format correctness, not corruption.
+func TestRecoverMaxSeqFromLog_LegacyUnsequencedStaysRecoverable(t *testing.T) {
+	agentDir := t.TempDir()
+	// A legacy row written directly without a seq key.
+	if err := WriteSessionTurns(agentDir, []*genai.Content{genai.NewContentFromText("legacy", "user")}); err != nil {
+		t.Fatalf("WriteSessionTurns: %v", err)
+	}
+	// Overwrite with a legacy-format line (no seq in the JSON).
+	legacy := `{"content":{"role":"user","parts":[{"text":"legacy row"}]}}` + "\n"
+	if err := os.WriteFile(filepath.Join(agentDir, SessionFileName), []byte(legacy), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	seq, err := recoverMaxSeqFromLog(agentDir)
+	if err != nil {
+		t.Fatalf("legacy row should scan cleanly: %v", err)
+	}
+	if seq != 1 {
+		t.Errorf("expected maxSeq 1 (single unsequenced row occupies 1..N), got %d", seq)
+	}
+	if IsUnrecoverable(err) {
+		t.Error("legacy row is log-format correctness, must NOT be unrecoverable")
+	}
+}
+
+// TestStreamHandler_RePanicsOnUnrecoverableError verifies the error-branch of the
+// StreamHandler recover: an RPC that RETURNS an unrecoverable error (not just panics)
+// must re-panic so supervision restarts - a corrupt session becomes a server-level
+// restart, not a per-turn protocol error.
+func TestStreamHandler_RePanicsOnUnrecoverableError(t *testing.T) {
+	wsDir := t.TempDir()
+	sdk := NewSDK(wsDir)
+	router := NewRoutingServer(sdk)
+
+	testHookRoutingPreDispatch = func(methodName string, req any) {
+		// Simulate an RPC returning an unrecoverable error through its normal error path.
+		panic(MarkUnrecoverable("corrupt session state"))
+	}
+	defer func() {
+		testHookRoutingPreDispatch = nil
+	}()
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected unrecoverable to re-panic, got nil")
+		}
+		if !IsUnrecoverable(r) {
+			t.Fatalf("expected unrecoverable panic, got %v", r)
+		}
+	}()
+
+	ctx := grpc.NewContextWithServerTransportStream(context.Background(), &mockServerTransportStream{method: "/wackypub.agent.v1.AgentService/ListAgents"})
+	mock := &mockServerStream{ctx: ctx}
+	_ = router.StreamHandler(nil, mock)
+}

@@ -74,6 +74,10 @@ func (s *RoutingServer) StreamHandler(srv any, stream grpc.ServerStream) (err er
 			fmt.Fprintf(os.Stderr, "wackypub stdio-serve: recovered panic in RPC %s: %v\n%s\n", fullMethod, r, stack)
 			err = status.Errorf(codes.Internal, "internal server error: %v", r)
 		} else if err != nil {
+			if IsUnrecoverable(err) {
+				fmt.Fprintf(os.Stderr, "wackypub stdio-serve: fatal unrecoverable state in RPC %s: %v\n", fullMethod, err)
+				panic(err)
+			}
 			err = ToGRPCError(err)
 		}
 	}()
