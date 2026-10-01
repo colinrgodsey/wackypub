@@ -1360,3 +1360,118 @@ func TestD88_ImageBudgetDefaultsToMaxToolTurns(t *testing.T) {
 func yieldNoop(chunk string, err error) bool {
 	return true
 }
+
+// TestD88_DisableAutoContinuationSilentStop pins the deliberate silent stop on the
+// disable path: with DisableAutoContinuation set, any would-be continuation cause
+// (deferred images, mid-turn bail, or both) stops the stream with no message at all -
+// the stop is an operator choice, not a budget denial, so the loud cap messages must
+// not fire.
+func TestD88_DisableAutoContinuationSilentStop(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		bail   bool
+		images bool
+	}{
+		{"deferred image", false, true},
+		{"mid-turn bail", true, false},
+		{"coincidence", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fa := &FolderAgent{RuntimeConfig: &RuntimeConfig{MaxImageDimension: 1024}, DisableAutoContinuation: true}
+			if tc.bail {
+				fa.UsageTracker = &TurnUsageTracker{StoppedEarlyForCompaction: true}
+			}
+			reason := ContinuationNone
+			gen, img := 0, 0
+			var out []string
+			yield := func(chunk string, err error) bool {
+				if err != nil {
+					t.Fatalf("unexpected yield error: %v", err)
+				}
+				out = append(out, chunk)
+				return true
+			}
+			var ids []string
+			if tc.images {
+				ids = []string{"img1"}
+			}
+			ok := fa.handleContinuationOrCompaction(context.Background(), t.TempDir(), ids, &reason, &gen, &img, 0, 0, yield)
+			if ok {
+				t.Fatal("expected the disable pre-check to stop the continuation")
+			}
+			if len(out) != 0 {
+				t.Fatalf("disable-path stop must be silent, got: %s", strings.Join(out, " "))
+			}
+		})
+	}
+}
+
+// TestD88_DisableAutoContinuationTurnCompletes is the end-to-end pin: a disabled
+// agent with a queued image completes its turn normally - exactly one model call is
+// made (no continuation turn), no auto-continuation message of any kind reaches the
+// stream, and the turn does not error.
+func TestD88_DisableAutoContinuationTurnCompletes(t *testing.T) {
+	wsDir := t.TempDir()
+	agentID := "d88-disable-bot"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed creating agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("System prompt"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+	pngBytes := createTestImage(100, 100, false)
+	imgEntry, err := CreateBinaryScratchpad(agentDir, pngBytes, "test", "image/png")
+	if err != nil {
+		t.Fatalf("CreateBinaryScratchpad failed: %v", err)
+	}
+	var mu sync.Mutex
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		callCount++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		toolCallJSON := fmt.Sprintf(`{
+				"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_get_sp","type":"function","function":{"name":"get_scratchpad","arguments":"{\"id\":\"%s\"}"}}]},"finish_reason":"tool_calls"}],
+				"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":30}
+			}`, imgEntry.ID)
+
+		io.WriteString(w, toolCallJSON)
+	}))
+	defer srv.Close()
+	runtimeCfg := &RuntimeConfig{
+		Provider:                "openai",
+		Model:                   "test-model",
+		Endpoint:                srv.URL,
+		MaxImageDimension:       400,
+		DisableAutoContinuation: true,
+	}
+	runtimeData, _ := json.Marshal(runtimeCfg)
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), runtimeData, 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+	if err := AppendSessionTurn(agentDir, "user", "Please inspect the image in scratchpad"); err != nil {
+		t.Fatalf("failed to write session.jsonl: %v", err)
+	}
+	fa, err := LoadFolderAgent(wsDir, agentID, DefaultMaxToolTurns)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+	if !fa.DisableAutoContinuation {
+		t.Fatal("expected DisableAutoContinuation to load from runtime.json")
+	}
+	resp, err := fa.GenerateTurn(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateTurn failed: %v", err)
+	}
+	if strings.Contains(resp, "[Auto-continuation") {
+		t.Errorf("disabled agent emitted an auto-continuation message: %q", resp)
+	}
+	mu.Lock()
+	count := callCount
+	mu.Unlock()
+	if count != 1 {
+		t.Errorf("expected exactly one model call (no continuation turn), got %d", count)
+	}
+}
