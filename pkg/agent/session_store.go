@@ -20,46 +20,20 @@ const (
 	PersistTruncationTail   = 8192
 )
 
-// ReadSessionTurns reads all turns from <agent_dir>/session.jsonl as genai.Content objects.
-// If the file does not exist, returns an empty list without error.
+// ReadSessionTurns reads all turns from <agent_dir>/session.jsonl as plain content.
+// It adapts ReadPersistedTurns rather than parsing the log a second time, so the two read
+// paths cannot drift in buffer size, corrupt-line tolerance, or missing-file behavior.
 func ReadSessionTurns(agentDir string) ([]*genai.Content, error) {
-	sessionPath := filepath.Join(agentDir, "session.jsonl")
-
-	file, err := os.Open(sessionPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to open session file at %s: %w", sessionPath, err)
+	persisted, err := ReadPersistedTurns(agentDir)
+	if len(persisted) == 0 {
+		return nil, err
 	}
-	defer file.Close()
-
-	var turns []*genai.Content
-	scanner := bufio.NewScanner(file)
-	// Max line size for large parts: a single model turn can legitimately carry
-	// megabytes of accumulated tool context (observed 1.7MB live), so the cap must
-	// sit well above the bufio.Scanner 64KB default. 16MB is far beyond any
-	// context window while still bounding runaway files.
-	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		var turn genai.Content
-		if err := json.Unmarshal(line, &turn); err != nil {
-			// Skip corrupted lines gracefully
-			continue
-		}
-		turns = append(turns, &turn)
+	turns := make([]*genai.Content, 0, len(persisted))
+	for i := range persisted {
+		c := persisted[i].Content
+		turns = append(turns, &c)
 	}
-
-	if err := scanner.Err(); err != nil {
-		return turns, fmt.Errorf("error reading session file at %s: %w", sessionPath, err)
-	}
-
-	return turns, nil
+	return turns, err
 }
 
 // isTextPart reports whether p is a plain text part (as opposed to structured/binary
