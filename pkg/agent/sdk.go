@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -715,6 +716,24 @@ func (s *AgentSDK) addAndGenerateTurnStreamImpl(ctx context.Context, agentID str
 
 // addAndGenerateTurnStreamImplWorkspace is addAndGenerateTurnStreamImpl against an
 // explicit workspace root; empty workspaceDir falls back to the SDK default.
+// hasWarningSink reports whether the caller handed us somewhere to put hook warnings.
+func hasWarningSink(fns []func(string)) bool {
+	for _, fn := range fns {
+		if fn != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// logHookWarnings writes hook warnings to stderr, the only channel that survives when no
+// caller asked for them and the only one the stdio transport will not read as protocol data.
+func logHookWarnings(agentID string, warnings []string) {
+	for _, w := range warnings {
+		log.Printf("hook warning for agent %q: %s", agentID, w)
+	}
+}
+
 func (s *AgentSDK) addAndGenerateTurnStreamImplWorkspace(ctx context.Context, workspaceDir, agentID, userMessage string, onWarning ...func(string)) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		if agentID == "" {
@@ -770,12 +789,18 @@ func (s *AgentSDK) addAndGenerateTurnStreamImplWorkspace(ctx context.Context, wo
 		// Run hooks on userMessage
 		finalMsg, hookEnv, warnings, _ := RunUserMessageHooksWithContext(turnCtx, agentDir, userMessage)
 
-		for _, w := range warnings {
-			for _, fn := range onWarning {
-				if fn != nil {
-					fn(w)
+		if hasWarningSink(onWarning) {
+			for _, w := range warnings {
+				for _, fn := range onWarning {
+					if fn != nil {
+						fn(w)
+					}
 				}
 			}
+		} else {
+			// Nobody to hand the warnings to, so returning them is losing them.
+			// stderr is the channel the stdio transport cannot mistake for data.
+			logHookWarnings(agentID, warnings)
 		}
 
 		if turnCtx.Err() != nil {
