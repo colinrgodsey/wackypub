@@ -71,11 +71,3 @@ func TestCompactionFallback_NilRuntimeConfig_NoPanicAndNoDeadlock(t *testing.T) 
 		t.Fatalf("nil-cfg compaction should still succeed via the wrapper's single level, got %q", mem)
 	}
 }
-
-// resetBackendFailedUntilForTest clears the package-level failed-until map so tests do not
-// leak skip state into one another (agy Finding 4 hardening).
-func resetBackendFailedUntilForTest() {
-	backendFailedUntilMu.Lock()
-	defer backendFailedUntilMu.Unlock()
-	backendFailedUntil = make(map[string]time.Time)
-}

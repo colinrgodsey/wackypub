@@ -98,16 +98,6 @@ func (s *AgentSDK) popLastHookEnv(agentID string) map[string]string {
 }
 
 // AgentDir returns the absolute or relative path for an agent folder (<ws_dir>/<agent_id>).
-// agentDirFor returns the agent directory for a request, honoring an explicit
-// per-request workspace root override (stdio service mode); empty wsDir falls
-// back to the SDK's configured workspace.
-func agentDirFor(wsDir string, s *AgentSDK, agentID string) string {
-	if wsDir != "" {
-		return filepath.Join(wsDir, agentID)
-	}
-	return s.AgentDir(agentID)
-}
-
 func (s *AgentSDK) AgentDir(agentID string) string {
 	return filepath.Join(s.WorkspaceDir, agentID)
 }
