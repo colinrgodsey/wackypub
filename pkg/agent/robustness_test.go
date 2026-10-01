@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 func createTestAgentWithMockRuntime(t *testing.T, wsDir, agentID, answer string) string {
@@ -357,6 +358,9 @@ func (m *mockServerTransportStream) SetHeader(metadata.MD) error  { return nil }
 func (m *mockServerTransportStream) SendHeader(metadata.MD) error { return nil }
 func (m *mockServerTransportStream) SetTrailer(metadata.MD) error { return nil }
 
+// mockRequest holds the proto request a mockServerStream returns from RecvMsg.
+var mockRequest proto.Message
+
 type mockServerStream struct {
 	ctx context.Context
 }
@@ -366,7 +370,67 @@ func (m *mockServerStream) SendHeader(metadata.MD) error { return nil }
 func (m *mockServerStream) SetTrailer(metadata.MD)       {}
 func (m *mockServerStream) Context() context.Context     { return m.ctx }
 func (m *mockServerStream) SendMsg(m2 any) error         { return nil }
-func (m *mockServerStream) RecvMsg(m2 any) error         { return nil }
+func (m *mockServerStream) RecvMsg(m2 any) error {
+	if dst, ok := m2.(proto.Message); ok && mockRequest != nil {
+		if reseter, ok2 := dst.(interface{ Reset() }); ok2 {
+			reseter.Reset()
+		}
+		proto.Merge(dst, mockRequest)
+	}
+	return nil
+}
+
+// TestStreamHandler_RePanicsOnUnrecoverableError verifies the error-branch of the
+// StreamHandler recover: an RPC that RETURNS an unrecoverable error (not just panics)
+// must re-panic so supervision restarts - a corrupt session becomes a server-level
+// restart, not a per-turn protocol error. This drives a REAL corrupt session (17MiB
+// line) through AddAndGenerateTurnStream so the append fails with the unrecoverable
+// error, exercising the returned-error branch, not the panic-value branch.
+func TestStreamHandler_RePanicsOnUnrecoverableError(t *testing.T) {
+	wsDir := t.TempDir()
+	t.Chdir(wsDir)
+	agentID := "unrecoverable-agent"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := WriteSessionTurns(agentDir, []*genai.Content{genai.NewContentFromText("seed", "user")}); err != nil {
+		t.Fatalf("WriteSessionTurns: %v", err)
+	}
+	f, err := os.OpenFile(filepath.Join(agentDir, SessionFileName), os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(append([]byte(strings.Repeat("x", 17*1024*1024)), '\n')); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	sdk := NewSDK(wsDir)
+	router := NewRoutingServer(sdk)
+
+	t.Setenv("WACKYPUB_ALLOWED_AGENTS", "*")
+	mockRequest = &agentv1.AddAndGenerateTurnStreamRequest{
+		AgentId:      agentID,
+		WorkspaceDir: wsDir,
+		UserMessage:  "hello",
+	}
+	defer func() { mockRequest = nil }()
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected unrecoverable to re-panic through the error branch, got nil")
+		}
+		if !IsUnrecoverable(r) {
+			t.Fatalf("expected unrecoverable panic, got %v", r)
+		}
+	}()
+
+	ctx := grpc.NewContextWithServerTransportStream(context.Background(), &mockServerTransportStream{method: "/wackypub.agent.v1.AgentService/AddAndGenerateTurnStream"})
+	mock := &mockServerStream{ctx: ctx}
+	_ = router.StreamHandler(nil, mock)
+}
 
 // TestRecoverMaxSeqFromLog_ScannerErrorIsUnrecoverable verifies the #88 fail-closed path
 // now carries the unrecoverable marker: a session log with a line over the 16MiB scanner
@@ -426,36 +490,4 @@ func TestRecoverMaxSeqFromLog_LegacyUnsequencedStaysRecoverable(t *testing.T) {
 	if IsUnrecoverable(err) {
 		t.Error("legacy row is log-format correctness, must NOT be unrecoverable")
 	}
-}
-
-// TestStreamHandler_RePanicsOnUnrecoverableError verifies the error-branch of the
-// StreamHandler recover: an RPC that RETURNS an unrecoverable error (not just panics)
-// must re-panic so supervision restarts - a corrupt session becomes a server-level
-// restart, not a per-turn protocol error.
-func TestStreamHandler_RePanicsOnUnrecoverableError(t *testing.T) {
-	wsDir := t.TempDir()
-	sdk := NewSDK(wsDir)
-	router := NewRoutingServer(sdk)
-
-	testHookRoutingPreDispatch = func(methodName string, req any) {
-		// Simulate an RPC returning an unrecoverable error through its normal error path.
-		panic(MarkUnrecoverable("corrupt session state"))
-	}
-	defer func() {
-		testHookRoutingPreDispatch = nil
-	}()
-
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected unrecoverable to re-panic, got nil")
-		}
-		if !IsUnrecoverable(r) {
-			t.Fatalf("expected unrecoverable panic, got %v", r)
-		}
-	}()
-
-	ctx := grpc.NewContextWithServerTransportStream(context.Background(), &mockServerTransportStream{method: "/wackypub.agent.v1.AgentService/ListAgents"})
-	mock := &mockServerStream{ctx: ctx}
-	_ = router.StreamHandler(nil, mock)
 }
