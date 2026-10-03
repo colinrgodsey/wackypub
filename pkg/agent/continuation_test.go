@@ -1475,3 +1475,428 @@ func TestD88_DisableAutoContinuationTurnCompletes(t *testing.T) {
 		t.Errorf("expected exactly one model call (no continuation turn), got %d", count)
 	}
 }
+
+// TestD88_MultiImageQueueAggregatesOneContinuation verifies the turn-end
+// aggregation invariant from bugs/wackypub/multi-image-queue-no-followup-turn:
+// N images queued in a single turn cost exactly ONE continuation turn, and
+// that turn carries all N images. The auto-continuation budget caps
+// continuation TURNS, not trigger events - two queued images cost one
+// continuation, not two. Per the card's non-gufo acceptance requirement the
+// test runs against a deterministic mock OpenAI endpoint, isolating wackypub
+// behavior from any model-runtime leak.
+func TestD88_MultiImageQueueAggregatesOneContinuation(t *testing.T) {
+	for _, n := range []int{1, 2, 3} {
+		t.Run(fmt.Sprintf("%d_images", n), func(t *testing.T) {
+			wsDir := t.TempDir()
+			agentID := "d88-multiimg-bot"
+			agentDir := filepath.Join(wsDir, agentID)
+			if err := os.MkdirAll(agentDir, 0755); err != nil {
+				t.Fatalf("failed creating agent dir: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("System prompt"), 0644); err != nil {
+				t.Fatalf("failed to write AGENTS.md: %v", err)
+			}
+
+			dims := [3][2]int{{100, 100}, {120, 80}, {90, 60}}
+			entryIDs := make([]string, 0, n)
+			for i := 0; i < n; i++ {
+				pngBytes := createTestImage(dims[i][0], dims[i][1], false)
+				imgEntry, err := CreateBinaryScratchpad(agentDir, pngBytes, "test", "image/png")
+				if err != nil {
+					t.Fatalf("CreateBinaryScratchpad failed: %v", err)
+				}
+				entryIDs = append(entryIDs, imgEntry.ID)
+			}
+
+			toolCalls := ""
+			for i, id := range entryIDs {
+				if i > 0 {
+					toolCalls += ","
+				}
+				toolCalls += fmt.Sprintf(`{"id":"call_get_sp_%d","type":"function","function":{"name":"get_scratchpad","arguments":"{\"id\":\"%s\"}"}}`, i+1, id)
+			}
+
+			var mu sync.Mutex
+			callCount := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				callCount++
+				c := callCount
+				mu.Unlock()
+
+				w.Header().Set("Content-Type", "application/json")
+				if c == 1 {
+					// Call 1: the model queues every image in ONE turn (parallel tool calls).
+					io.WriteString(w, fmt.Sprintf(`{"choices":[{"message":{"role":"assistant","tool_calls":[%s]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":30}}`, toolCalls))
+				} else {
+					// Call 2: the single continuation turn, which must carry all N images.
+					io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"Analyzed all queued images."},"finish_reason":"stop"}],"usage":{"prompt_tokens":50,"completion_tokens":20,"total_tokens":70}}`)
+				}
+			}))
+			defer srv.Close()
+
+			runtimeCfg := &RuntimeConfig{
+				Provider:          "openai",
+				Model:             "test-model",
+				Endpoint:          srv.URL,
+				MaxImageDimension: 400,
+			}
+			runtimeData, _ := json.Marshal(runtimeCfg)
+			if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), runtimeData, 0644); err != nil {
+				t.Fatalf("failed to write runtime.json: %v", err)
+			}
+
+			if err := AppendSessionTurn(agentDir, "user", "Please inspect all of the images in scratchpad"); err != nil {
+				t.Fatalf("failed to write session.jsonl: %v", err)
+			}
+
+			fa, err := LoadFolderAgent(wsDir, agentID, DefaultMaxToolTurns)
+			if err != nil {
+				t.Fatalf("LoadFolderAgent failed: %v", err)
+			}
+
+			resp, err := fa.GenerateTurn(context.Background())
+			if err != nil {
+				t.Fatalf("GenerateTurn failed: %v", err)
+			}
+
+			// Message-level aggregation: ONE queue message naming every queued ID.
+			idList := strings.Join(entryIDs, ", ")
+			if n > 1 {
+				if !strings.Contains(resp, "Image from scratchpad "+idList+" has been queued") {
+					t.Errorf("expected one aggregated queue message naming all %d IDs (%q), got: %s", n, idList, resp)
+				}
+			}
+
+			// The continuation turn answered once, after seeing every image.
+			if !strings.Contains(resp, "Analyzed all queued images.") {
+				t.Errorf("expected continuation turn output in response, got: %s", resp)
+			}
+			mu.Lock()
+			count := callCount
+			mu.Unlock()
+			if count != 2 {
+				t.Errorf("expected callCount to be 2 (one tool-call turn + exactly one continuation turn), got: %d", count)
+			}
+
+			// Session shape (content_json): exactly N deferred-image user turns, in
+			// queue order and back to back, immediately followed by the single
+			// continuation model turn, which is the last turn in the session.
+			turns, err := ReadSessionTurns(agentDir)
+			if err != nil {
+				t.Fatalf("ReadSessionTurns failed: %v", err)
+			}
+			for _, trn := range turns {
+				if strings.Contains(ContentText(trn), `<CONTINUATION reason=`) {
+					t.Errorf("unexpected continuation sentinel in the images-only path, got: %s", ContentText(trn))
+				}
+			}
+			var imageTurnIdx []int
+			for idx, trn := range turns {
+				if trn.Role == "user" && len(trn.Parts) == 2 && trn.Parts[1] != nil && trn.Parts[1].InlineData != nil {
+					imageTurnIdx = append(imageTurnIdx, idx)
+				}
+			}
+			if len(imageTurnIdx) != n {
+				t.Fatalf("expected exactly %d deferred-image user turns in session.jsonl, got %d", n, len(imageTurnIdx))
+			}
+			for i, idx := range imageTurnIdx {
+				if i > 0 && idx != imageTurnIdx[i-1]+1 {
+					t.Errorf("image turns are not back to back: turn %d follows turn %d", idx, imageTurnIdx[i-1])
+				}
+				text := ""
+				if trn := turns[idx]; trn.Parts[0] != nil {
+					text = trn.Parts[0].Text
+				}
+				if !strings.Contains(text, fmt.Sprintf("scratchpad '%s'", entryIDs[i])) {
+					t.Errorf("image turn %d has unexpected label %q, want it to name %s", i, text, entryIDs[i])
+				}
+			}
+			if imageTurnIdx[n-1]+1 >= len(turns) {
+				t.Fatalf("expected a continuation model turn after the image turns")
+			}
+			followUp := turns[imageTurnIdx[n-1]+1]
+			if followUp.Role != "model" || !strings.Contains(ContentText(followUp), "Analyzed all queued images.") {
+				t.Errorf("expected the turn after the image turns to be the single continuation model turn, got role=%s", followUp.Role)
+			}
+			if imageTurnIdx[n-1]+1 != len(turns)-1 {
+				t.Errorf("expected the continuation model turn to be the last session turn, got index %d of %d", imageTurnIdx[n-1]+1, len(turns)-1)
+			}
+		})
+	}
+}
+
+// TestD88_CapExhaustedStopNeverSilent verifies the card's acceptance addition:
+// a cap-exhausted stop MUST emit the budget message (count, cap, knob) - never
+// a silent stop. The image budget is 1; turn 1 queues two images in one turn,
+// whose single continuation carries both and exhausts the budget; the
+// continuation turn then queues a third image, whose continuation request
+// must be denied loudly with the budget message.
+func TestD88_CapExhaustedStopNeverSilent(t *testing.T) {
+	wsDir := t.TempDir()
+	agentID := "d88-cap-loud-bot"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed creating agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("System prompt"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	dims := [3][2]int{{100, 100}, {120, 80}, {90, 60}}
+	entryIDs := make([]string, 0, 3)
+	for i := 0; i < 3; i++ {
+		pngBytes := createTestImage(dims[i][0], dims[i][1], false)
+		imgEntry, err := CreateBinaryScratchpad(agentDir, pngBytes, "test", "image/png")
+		if err != nil {
+			t.Fatalf("CreateBinaryScratchpad failed: %v", err)
+		}
+		entryIDs = append(entryIDs, imgEntry.ID)
+	}
+
+	var mu sync.Mutex
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		callCount++
+		c := callCount
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case c == 1:
+			// Call 1: queue the first two images in ONE turn (parallel tool calls).
+			io.WriteString(w, fmt.Sprintf(`{"choices":[{"message":{"role":"assistant","tool_calls":[%s, %s]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":30}}`,
+				fmt.Sprintf(`{"id":"call_get_sp_1","type":"function","function":{"name":"get_scratchpad","arguments":"{\"id\":\"%s\"}"}}`, entryIDs[0]),
+				fmt.Sprintf(`{"id":"call_get_sp_2","type":"function","function":{"name":"get_scratchpad","arguments":"{\"id\":\"%s\"}"}}`, entryIDs[1])))
+		case c == 2:
+			// Call 2: the one allowed continuation turn queues a third image.
+			io.WriteString(w, fmt.Sprintf(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_get_sp_3","type":"function","function":{"name":"get_scratchpad","arguments":"{\"id\":\"%s\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":30}}`, entryIDs[2]))
+		default:
+			// No further model call may happen: the budget denial must stop here.
+			io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"UNEXPECTED continuation after budget exhaustion"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":10,"total_tokens":20}}`)
+		}
+	}))
+	defer srv.Close()
+
+	imgCap := 1
+	runtimeCfg := &RuntimeConfig{
+		Provider:                   "openai",
+		Model:                      "test-model",
+		Endpoint:                   srv.URL,
+		MaxImageDimension:          400,
+		MaxAutoContinuationsImages: &imgCap,
+	}
+	runtimeData, _ := json.Marshal(runtimeCfg)
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), runtimeData, 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+
+	if err := AppendSessionTurn(agentDir, "user", "Please inspect the images in scratchpad"); err != nil {
+		t.Fatalf("failed to write session.jsonl: %v", err)
+	}
+
+	fa, err := LoadFolderAgent(wsDir, agentID, DefaultMaxToolTurns)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+
+	resp, err := fa.GenerateTurn(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateTurn failed: %v", err)
+	}
+
+	mu.Lock()
+	count := callCount
+	mu.Unlock()
+	if count != 2 {
+		t.Errorf("expected callCount to be 2 (no continuation after the budget denial), got: %d", count)
+	}
+	for _, want := range []string{
+		"[Auto-continuation budget exhausted (images): 1 of 1 used",
+		"stopping with incomplete status",
+		"maxAutoContinuationsImages",
+		"runtime.json",
+	} {
+		if !strings.Contains(resp, want) {
+			t.Errorf("cap-exhausted stop must emit the budget message; missing %q in: %s", want, resp)
+		}
+	}
+	if strings.Contains(resp, "UNEXPECTED continuation") {
+		t.Errorf("a continuation turn ran after the budget denial")
+	}
+
+	// The denied image must not have been appended to the session.
+	turns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed: %v", err)
+	}
+	imageCount := 0
+	for _, trn := range turns {
+		if trn.Role == "user" && len(trn.Parts) == 2 && trn.Parts[1] != nil && trn.Parts[1].InlineData != nil {
+			imageCount++
+			if trn.Parts[0] != nil && strings.Contains(trn.Parts[0].Text, fmt.Sprintf("scratchpad '%s'", entryIDs[2])) {
+				t.Errorf("denied image %s was appended to the session anyway", entryIDs[2])
+			}
+		}
+	}
+	if imageCount != 2 {
+		t.Errorf("expected exactly 2 deferred-image user turns in session.jsonl, got %d", imageCount)
+	}
+}
+
+// TestD88_MultiImagePlusBailOneContinuation generalizes the interaction
+// acceptance criterion to multiple images: two images queued in a turn that
+// also bails mid-turn for compaction must land both effects in ONE
+// continuation - compaction runs first, the deferred image turns are appended
+// second, no redundant sentinel, and the single continuation carries both
+// images.
+func TestD88_MultiImagePlusBailOneContinuation(t *testing.T) {
+	wsDir := t.TempDir()
+	agentID := "d88-multiimg-bail-bot"
+	agentDir := filepath.Join(wsDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed creating agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("System prompt"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	dims := [2][2]int{{100, 100}, {120, 80}}
+	entryIDs := make([]string, 0, 2)
+	for i := 0; i < 2; i++ {
+		pngBytes := createTestImage(dims[i][0], dims[i][1], false)
+		imgEntry, err := CreateBinaryScratchpad(agentDir, pngBytes, "test", "image/png")
+		if err != nil {
+			t.Fatalf("CreateBinaryScratchpad failed: %v", err)
+		}
+		entryIDs = append(entryIDs, imgEntry.ID)
+	}
+
+	// Seed prior turns so compaction has turns to trim
+	priorTurns := []*genai.Content{
+		genai.NewContentFromText("Prior user message 1", "user"),
+		genai.NewContentFromText("Prior model response 1", "model"),
+		genai.NewContentFromText("Prior user message 2", "user"),
+		genai.NewContentFromText("Prior model response 2", "model"),
+		genai.NewContentFromText("Please load both images and continue", "user"),
+	}
+	if err := WriteSessionTurns(agentDir, priorTurns); err != nil {
+		t.Fatalf("WriteSessionTurns failed: %v", err)
+	}
+
+	var mu sync.Mutex
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		callCount++
+		c := callCount
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case c == 1:
+			// Call 1: queue BOTH images in one turn; usage 90 >= threshold 80 so the
+			// next model call bails mid-turn for compaction.
+			io.WriteString(w, fmt.Sprintf(`{"choices":[{"message":{"role":"assistant","tool_calls":[%s, %s]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":90,"completion_tokens":10,"total_tokens":100}}`,
+				fmt.Sprintf(`{"id":"call_get_sp_1","type":"function","function":{"name":"get_scratchpad","arguments":"{\"id\":\"%s\"}"}}`, entryIDs[0]),
+				fmt.Sprintf(`{"id":"call_get_sp_2","type":"function","function":{"name":"get_scratchpad","arguments":"{\"id\":\"%s\"}"}}`, entryIDs[1])))
+		case c == 2:
+			// Call 2: compaction summarizer LLM call.
+			io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"- Multi-image bail summary of prior exchanges."},"finish_reason":"stop"}],"usage":{"prompt_tokens":30,"completion_tokens":10,"total_tokens":40}}`)
+		default:
+			// Call 3: the single continuation turn response carrying both images.
+			io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"Processed both images after bail compaction."},"finish_reason":"stop"}],"usage":{"prompt_tokens":40,"completion_tokens":15,"total_tokens":55}}`)
+		}
+	}))
+	defer srv.Close()
+
+	runtimeCfg := &RuntimeConfig{
+		Provider:          "openai",
+		Model:             "test-model",
+		Endpoint:          srv.URL,
+		ContextWindow:     100, // threshold = 80
+		MaxImageDimension: 400,
+	}
+	runtimeData, _ := json.Marshal(runtimeCfg)
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), runtimeData, 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+
+	fa, err := LoadFolderAgent(wsDir, agentID, DefaultMaxToolTurns)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+
+	resp, err := fa.GenerateTurn(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateTurn failed: %v", err)
+	}
+
+	if !strings.Contains(resp, "stopping turn early to allow session compaction") {
+		t.Errorf("expected mid-turn bail message, got: %s", resp)
+	}
+	if !strings.Contains(resp, "Processed both images after bail compaction.") {
+		t.Errorf("expected continuation response, got: %s", resp)
+	}
+
+	mu.Lock()
+	count := callCount
+	mu.Unlock()
+	if count != 3 {
+		t.Errorf("expected callCount to be 3 (tool-call turn, compaction, single continuation), got: %d", count)
+	}
+
+	mem, err := ReadMemoryFile(agentDir)
+	if err != nil {
+		t.Fatalf("ReadMemoryFile failed: %v", err)
+	}
+	if !strings.Contains(mem, "Multi-image bail summary of prior exchanges.") {
+		t.Errorf("expected MEMORY.md to contain the bail summary, got: %q", mem)
+	}
+
+	turns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed: %v", err)
+	}
+
+	// No redundant post-compaction sentinel: the single continuation is image-driven.
+	for _, trn := range turns {
+		if strings.Contains(ContentText(trn), `<CONTINUATION reason=`) {
+			t.Errorf("expected NO continuation sentinel during multi-image bail continuation, but found one")
+		}
+	}
+
+	// Both image turns, back to back, followed by the single continuation model turn.
+	var imageTurnIdx []int
+	for idx, trn := range turns {
+		if trn.Role == "user" && len(trn.Parts) == 2 && trn.Parts[1] != nil && trn.Parts[1].InlineData != nil {
+			imageTurnIdx = append(imageTurnIdx, idx)
+		}
+	}
+	if len(imageTurnIdx) != 2 {
+		t.Fatalf("expected exactly 2 deferred-image user turns in session.jsonl, got %d", len(imageTurnIdx))
+	}
+	for i, idx := range imageTurnIdx {
+		if i > 0 && idx != imageTurnIdx[i-1]+1 {
+			t.Errorf("image turns are not back to back: turn %d follows turn %d", idx, imageTurnIdx[i-1])
+		}
+		text := ""
+		if trn := turns[idx]; trn.Parts[0] != nil {
+			text = trn.Parts[0].Text
+		}
+		if !strings.Contains(text, fmt.Sprintf("scratchpad '%s'", entryIDs[i])) {
+			t.Errorf("image turn %d has unexpected label %q, want it to name %s", i, text, entryIDs[i])
+		}
+	}
+	if imageTurnIdx[1]+1 >= len(turns) {
+		t.Fatalf("expected a continuation model turn after the image turns")
+	}
+	followUp := turns[imageTurnIdx[1]+1]
+	if followUp.Role != "model" || !strings.Contains(ContentText(followUp), "Processed both images after bail compaction.") {
+		t.Errorf("expected the turn after the image turns to be the single continuation model turn, got role=%s", followUp.Role)
+	}
+	if imageTurnIdx[1]+1 != len(turns)-1 {
+		t.Errorf("expected the continuation model turn to be the last session turn, got index %d of %d", imageTurnIdx[1]+1, len(turns)-1)
+	}
+}
