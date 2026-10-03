@@ -35,6 +35,8 @@ The persistent scratchpad is WackyPub's out-of-band memory buffer and inter-agen
 | **Read** | `get_scratchpad(id, skip_lines, num_lines)` | `run_command(command="wackypub", args=["agent", "<id>", "scratchpad", "read", "<id>"])` | No Lock (Atomic Read) |
 | **List** | `list_scratchpads()` | `run_command(command="wackypub", args=["agent", "<id>", "scratchpad", "list"])` | No Lock (Atomic Read) |
 | **Search** | `search_scratchpad(id, query, case_sensitive, regex, max_results)` | `run_command(command="wackypub", args=["agent", "<id>", "scratchpad", "search", "<id>", "<query>"])` | No Lock (Atomic Read) |
+| **Delete** | `delete_scratchpad(id)` | `run_command(command="wackypub", args=["agent", "<id>", "scratchpad", "delete", "<id>"])` | No Lock (Atomic) |
+| **Diff** | `diff_scratchpad(before_id, after_id)` | `run_command(command="wackypub", args=["agent", "<id>", "scratchpad", "diff", "<before_id>", "<after_id>"])` | No Lock (Atomic Read) |
 
 ---
 
@@ -135,7 +137,7 @@ Pass pre-staged prompts, templates, or raw inputs directly to a command tool wit
 - WackyPub server expands the `<SCRATCHPAD_DATA>` macro tags in `argv` and `stdin` immediately before process execution.
 - Argument size safety cap: expanded CLI positional arguments exceeding **500,000 bytes** fail fast to prevent OS exec argument limits (`E2BIG`).
 
-### Escape form: literal macro reference (D115)
+### Escape form: literal macro reference
 
 When you need to write a *literal* `<SCRATCHPAD_DATA id="x" />` token in tool output, documentation, or another entry's text -- without it being substituted or warning-emitting -- use the doubled-token form:
 
