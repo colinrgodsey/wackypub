@@ -35,6 +35,8 @@ The persistent scratchpad is WackyPub's out-of-band memory buffer and inter-agen
 | **Read** | `get_scratchpad(id, skip_lines, num_lines)` | `run_command(command="wackypub", args=["agent", "<id>", "scratchpad", "read", "<id>"])` | No Lock (Atomic Read) |
 | **List** | `list_scratchpads()` | `run_command(command="wackypub", args=["agent", "<id>", "scratchpad", "list"])` | No Lock (Atomic Read) |
 | **Search** | `search_scratchpad(id, query, case_sensitive, regex, max_results)` | `run_command(command="wackypub", args=["agent", "<id>", "scratchpad", "search", "<id>", "<query>"])` | No Lock (Atomic Read) |
+| **Delete** | `delete_scratchpad(id)` | `run_command(command="wackypub", args=["agent", "<id>", "scratchpad", "delete", "<id>"])` | No Lock (Atomic) |
+| **Diff** | `diff_scratchpad(before_id, after_id)` | `run_command(command="wackypub", args=["agent", "<id>", "scratchpad", "diff", "<before_id>", "<after_id>"])` | No Lock (Atomic Read) |
 
 ---
 
@@ -135,7 +137,7 @@ Pass pre-staged prompts, templates, or raw inputs directly to a command tool wit
 - WackyPub server expands the `<SCRATCHPAD_DATA>` macro tags in `argv` and `stdin` immediately before process execution.
 - Argument size safety cap: expanded CLI positional arguments exceeding **500,000 bytes** fail fast to prevent OS exec argument limits (`E2BIG`).
 
-### Escape form: literal macro reference (D115)
+### Escape form: literal macro reference
 
 When you need to write a *literal* `<SCRATCHPAD_DATA id="x" />` token in tool output, documentation, or another entry's text -- without it being substituted or warning-emitting -- use the doubled-token form:
 
@@ -356,7 +358,7 @@ It answers the way the other scratchpad tools do, and the contract is deliberate
 - an entry ID that does not exist, or is malformed: an error naming the ID, never an empty diff, so a typo cannot masquerade as "nothing changed"
 - binary entries: refused, the way reading them is refused
 
-External callers (a shell, a script, another agent's CLI) use the equivalent command, which behaves identically: `wackypub agent <agent_id> scratchpad diff <before_id> <after_id>`. Both orderings of that command work, matching the other scratchpad verbs. The SDK counterparts are `agent.DiffScratchpadEntries(wsDir, agentID, beforeID, afterID)` and `(s *AgentSDK) DiffScratchpadEntries(agentID, beforeID, afterID)`, the latter being the authorized path.
+External callers (a shell, a script, another agent's CLI) use the equivalent command, which behaves identically: `wackypub agent <agent_id> scratchpad diff <before_id> <after_id>`. Both orderings of that command work, matching the other scratchpad verbs. The SDK counterparts are `agent.DiffScratchpadEntries(wsDir, agentID, beforeID, afterID)` (the one implementation) and the authorized `(*AgentSDK).DiffScratchpadEntries(ctx, *agentv1.DiffScratchpadEntriesRequest)` - the request carries `agent_id`, `before_entry_id`, `after_entry_id` (plus an optional `workspace_dir` override) and the response carries the `diff`; it gates with `AuthorizeAgentTarget` like the other AgentSDK scratchpad methods.
 
 ### Getting The Two Entries
 
