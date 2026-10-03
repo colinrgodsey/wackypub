@@ -356,7 +356,7 @@ It answers the way the other scratchpad tools do, and the contract is deliberate
 - an entry ID that does not exist, or is malformed: an error naming the ID, never an empty diff, so a typo cannot masquerade as "nothing changed"
 - binary entries: refused, the way reading them is refused
 
-External callers (a shell, a script, another agent's CLI) use the equivalent command, which behaves identically: `wackypub agent <agent_id> scratchpad diff <before_id> <after_id>`. Both orderings of that command work, matching the other scratchpad verbs. The SDK counterparts are `agent.DiffScratchpadEntries(wsDir, agentID, beforeID, afterID)` and `(s *AgentSDK) DiffScratchpadEntries(agentID, beforeID, afterID)`, the latter being the authorized path.
+External callers (a shell, a script, another agent's CLI) use the equivalent command, which behaves identically: `wackypub agent <agent_id> scratchpad diff <before_id> <after_id>`. Both orderings of that command work, matching the other scratchpad verbs. The SDK counterparts are `agent.DiffScratchpadEntries(wsDir, agentID, beforeID, afterID)` (the one implementation) and the authorized `(*AgentSDK).DiffScratchpadEntries(ctx, *agentv1.DiffScratchpadEntriesRequest)` - the request carries `agent_id`, `before_entry_id`, `after_entry_id` (plus an optional `workspace_dir` override) and the response carries the `diff`; it gates with `AuthorizeAgentTarget` like the other AgentSDK scratchpad methods.
 
 ### Getting The Two Entries
 
