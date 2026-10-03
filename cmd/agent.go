@@ -227,13 +227,15 @@ does not already exist.`,
 			return fmt.Errorf("user message is required. Provide via argument, --message flag, or stdin pipe")
 		}
 
-		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		ctx, stop := signalCtx()
+		defer stop()
+		client, cleanup, err := adkAgent.ResolveAgentClient(ctx, sdk, agentID)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
 
-		turnRes, err := client.AddUserTurn(cmdCtx(cmd), &agentv1.AddUserTurnRequest{
+		turnRes, err := client.AddUserTurn(ctx, &agentv1.AddUserTurnRequest{
 			AgentId:      agentID,
 			Message:      userMsg,
 			WorkspaceDir: wsDir,
@@ -297,13 +299,15 @@ Transparencies in PNG/GIF inputs are flattened onto a white background before JP
 			return fmt.Errorf("media payload exceeds 10MB limit (%d bytes > %d bytes)", len(data), adkAgent.MaxMediaPayloadBytes)
 		}
 
-		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		ctx, stop := signalCtx()
+		defer stop()
+		client, cleanup, err := adkAgent.ResolveAgentClient(ctx, sdk, agentID)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
 
-		resp, err := client.AddMedia(cmdCtx(cmd), &agentv1.AddMediaRequest{
+		resp, err := client.AddMedia(ctx, &agentv1.AddMediaRequest{
 			AgentId:      agentID,
 			MediaData:    data,
 			WorkspaceDir: wsDir,
@@ -417,13 +421,15 @@ the rewrite.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> strip-signatures")
 		}
 
-		client, cleanup, err := adkAgent.ResolveAgentClient(cmdCtx(cmd), sdk, agentID)
+		ctx, stop := signalCtx()
+		defer stop()
+		client, cleanup, err := adkAgent.ResolveAgentClient(ctx, sdk, agentID)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
 
-		resp, err := client.StripSignatures(cmdCtx(cmd), &agentv1.StripSignaturesRequest{
+		resp, err := client.StripSignatures(ctx, &agentv1.StripSignaturesRequest{
 			AgentId:      agentID,
 			WorkspaceDir: wsDir,
 		})
