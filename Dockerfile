@@ -41,6 +41,8 @@ RUN mkdir -p /opt/wackypub/template_ws/toolsets \
 # Copy bundled skills and runtimes from repository
 COPY skills/ /opt/wackypub/template_ws/skillsets/
 COPY examples/runtimes/ /opt/wackypub/template_ws/runtimes/
+# Recipes: the director agent operating in this container can read and follow them.
+COPY recipes/ /opt/wackypub/template_ws/recipes/
 COPY agents/director/AGENTS.md /opt/wackypub/template_ws/director/AGENTS.md
 
 # Populate toolsets with symlinks to binaries
