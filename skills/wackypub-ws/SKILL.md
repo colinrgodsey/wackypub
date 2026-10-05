@@ -24,10 +24,12 @@ Everything below is on-disk convention — `wackypub workspace <agent_id>` will 
    {
      "provider": "openai",
      "endpoint": "https://openrouter.ai/api/v1",
-     "model": "anthropic/claude-3.5-sonnet",
+     "model": "anthropic/claude-sonnet-5.5",
      "apiKey": "${OPENROUTER_API_KEY}"
    }
    ```
+   Model ids go stale. Confirm the id against your provider's live model list
+   (`curl -s https://openrouter.ai/api/v1/models`) before copying one from this page.
    To share backend configs across agents, use symlinks (e.g. `ln -s ../runtimes/openrouter-sonnet.json ws/<agent_id>/runtime.json`).
 
 4. **Tools Directory (`<ws_dir>/<agent_id>/tools/`)**:
