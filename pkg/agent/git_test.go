@@ -219,6 +219,9 @@ func TestCrossAgentGitRevisionLineage(t *testing.T) {
 	}
 
 	jaxHeadSHA, err := GetWorkspaceHeadCommit(jaxDir)
+	if err != nil {
+		t.Fatalf("failed to get jax head commit: %v", err)
+	}
 	repo, err := git.PlainOpen(jaxDir)
 	if err != nil {
 		t.Fatalf("failed to open jax repo: %v", err)

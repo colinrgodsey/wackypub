@@ -609,8 +609,3 @@ func CleanSessionTurns(contents []*genai.Content) []*genai.Content {
 
 	return cleaned
 }
-
-// MergeConsecutiveUserTurns is a backwards-compatible alias for CleanSessionTurns.
-func MergeConsecutiveUserTurns(contents []*genai.Content) []*genai.Content {
-	return CleanSessionTurns(contents)
-}
