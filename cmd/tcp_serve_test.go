@@ -1,13 +1,23 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -16,17 +26,48 @@ import (
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
+
+// safeBuffer is a mutex-guarded writer so the os/exec stderr copier and the
+// test can read it concurrently without a data race.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *safeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // spawnTCPServe starts the real wackypub binary in tcp-serve mode on an
 // ephemeral port and returns a grpc client dialing it directly. The dial
 // target is the ONLY thing that differs from the stdio path - everything the
 // client does afterwards is transport-agnostic. This is the card's acceptance:
 // the same client works against both serve modes with only the dial changed.
+// spawnTCPServe starts tcp-serve over plaintext (insecure creds, no TLS flags).
 func spawnTCPServe(t *testing.T, wsDir string, extraEnv ...string) (agentv1.AgentServiceClient, net.Addr, func()) {
+	client, addr, stderr, cleanup := spawnTCPServeWithCreds(t, wsDir, insecure.NewCredentials(), nil, extraEnv...)
+	_ = stderr
+	return client, addr, cleanup
+}
+
+// spawnTCPServeWithCreds starts the real binary with optional extra command args
+// (TLS flags) and an explicit client transport credential. Returns the client,
+// the bound address, the child's stderr writer (to assert startup diagnostics),
+// and a cleanup func.
+func spawnTCPServeWithCreds(t *testing.T, wsDir string, creds credentials.TransportCredentials, extraArgs []string, extraEnv ...string) (agentv1.AgentServiceClient, net.Addr, *safeBuffer, func()) {
 	t.Helper()
 	bin := getWackypubBin(t)
 
@@ -37,9 +78,12 @@ func spawnTCPServe(t *testing.T, wsDir string, extraEnv ...string) (agentv1.Agen
 	addr := lis.Addr().String()
 	_ = lis.Close()
 
-	cmd := exec.Command(bin, "tcp-serve", "--listen", addr)
+	argv := []string{"tcp-serve", "--listen", addr}
+	argv = append(argv, extraArgs...)
+	cmd := exec.Command(bin, argv...)
 	cmd.Dir = wsDir
-	cmd.Stderr = os.Stderr
+	var stderrBuf safeBuffer
+	cmd.Stderr = &stderrBuf
 	cmd.Env = append(os.Environ(), extraEnv...)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start tcp-serve: %v", err)
@@ -54,7 +98,7 @@ func spawnTCPServe(t *testing.T, wsDir string, extraEnv ...string) (agentv1.Agen
 		}
 	}
 	gc, err := grpc.NewClient(addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(creds),
 	)
 	if err != nil {
 		_ = cmd.Process.Kill()
@@ -65,7 +109,7 @@ func spawnTCPServe(t *testing.T, wsDir string, extraEnv ...string) (agentv1.Agen
 
 	// Readiness: block until a cheap call succeeds. With a token configured the
 	// probe must carry it, else the server (correctly) refuses and readiness
-	// never flips.
+	// never flips. With TLS creds the stack is exercised by the connect itself.
 	deadline := time.Now().Add(10 * time.Second)
 	ready := false
 	for time.Now().Before(deadline) {
@@ -84,7 +128,7 @@ func spawnTCPServe(t *testing.T, wsDir string, extraEnv ...string) (agentv1.Agen
 	if !ready {
 		_ = gc.Close()
 		_ = cmd.Process.Kill()
-		t.Fatalf("tcp-serve did not become ready on %s", addr)
+		t.Fatalf("tcp-serve did not become ready on %s (stderr: %s)", addr, stderrBuf.String())
 	}
 
 	cleanup := func() {
@@ -92,7 +136,7 @@ func spawnTCPServe(t *testing.T, wsDir string, extraEnv ...string) (agentv1.Agen
 		_ = cmd.Process.Kill()
 	}
 	t.Cleanup(cleanup)
-	return client, lis.Addr(), cleanup
+	return client, lis.Addr(), &stderrBuf, cleanup
 }
 
 // TestTCPServe_ListAgentsAndInspect proves the served surface over TCP: the
@@ -303,5 +347,172 @@ func TestTCPServe_MultiAgentViaRoutingProxy(t *testing.T) {
 		if !insp.GetAgentDirExists() {
 			t.Errorf("agent %s reported missing", id)
 		}
+	}
+}
+
+// writeTestCertKeyPair generates a self-signed ECDSA P-256 cert/key pair for
+// 127.0.0.1 and writes them to temp files; returns the cert path, key path,
+// and the parsed cert (for a client root pool).
+func writeTestCertKeyPair(t *testing.T) (certPath, keyPath string, certPool *x509.CertPool) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen key: %v", err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "tcp-serve-test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	dir := t.TempDir()
+	certPath = filepath.Join(dir, "cert.pem")
+	keyPath = filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certPath, certPEM, 0644); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(certPEM) {
+		t.Fatalf("append cert to pool")
+	}
+	return certPath, keyPath, pool
+}
+
+// TestServeSurface_IdenticalAcrossStdioAndTLS is the TLS variant of the card
+// acceptance: the same grpc client ops over a TLS listener with provided certs
+// produce the same surface as stdio-serve. Only the dial target + creds change.
+func TestServeSurface_IdenticalAcrossStdioAndTLS(t *testing.T) {
+	wsDir, _ := stdioWorkspace(t, "tls surface")
+
+	certPath, keyPath, pool := writeTestCertKeyPair(t)
+	client, _, _, _ := spawnTCPServeWithCreds(t, wsDir,
+		credentials.NewTLS(&tls.Config{RootCAs: pool, ServerName: "127.0.0.1"}),
+		[]string{"--tls-cert", certPath, "--tls-key", keyPath},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	agents, err := client.ListAgents(ctx, &agentv1.ListAgentsRequest{})
+	if err != nil {
+		t.Fatalf("ListAgents over TLS: %v", err)
+	}
+	if len(agents.GetAgentIds()) != 1 || agents.GetAgentIds()[0] != "stdioagent" {
+		t.Fatalf("ListAgents over TLS returned %v", agents.GetAgentIds())
+	}
+	insp, err := client.InspectAgent(ctx, &agentv1.InspectAgentRequest{AgentId: "stdioagent", WorkspaceDir: wsDir})
+	if err != nil {
+		t.Fatalf("InspectAgent over TLS: %v", err)
+	}
+	if !insp.GetAgentDirExists() {
+		t.Fatalf("InspectAgent over TLS said missing")
+	}
+}
+
+// TestTCPServe_SelfSignedGeneratesCertAndLogsFingerprint verifies the overnight
+// self-signed path: cert generated at startup, --tls-cert-out writes the PEM,
+// the client pinning with that file connects, and the startup log carries the
+// sha256 fingerprint line.
+func TestTCPServe_SelfSignedGeneratesCertAndLogsFingerprint(t *testing.T) {
+	wsDir, _ := stdioWorkspace(t, "selfsigned")
+	certOut := filepath.Join(t.TempDir(), "gen.pem")
+
+	// Spawn the server with the self-signed flag; it writes cert-out at startup.
+	bin := getWackypubBin(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	addr := lis.Addr().String()
+	_ = lis.Close()
+
+	cmd := exec.Command(bin, "tcp-serve", "--listen", addr, "--tls-self-signed", "--tls-cert-out", certOut)
+	cmd.Dir = wsDir
+	var stderrBuf safeBuffer
+	cmd.Stderr = &stderrBuf
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill() }()
+
+	// Wait for the generated cert file, then dial with it PINNED (the card's
+	// acceptance: client connects with the cert pinned, not InsecureSkipVerify).
+	deadline := time.Now().Add(10 * time.Second)
+	var data []byte
+	for time.Now().Before(deadline) {
+		data, err = os.ReadFile(certOut)
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(data) == 0 {
+		t.Fatalf("cert-out not written before deadline, stderr: %s", stderrBuf.String())
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		t.Fatalf("generated cert did not parse into a pool")
+	}
+
+	gc, err := grpc.NewClient(addr,
+		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: pool, ServerName: "127.0.0.1"})),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	defer gc.Close()
+	client := agentv1.NewAgentServiceClient(gc)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	agents, err := client.ListAgents(ctx, &agentv1.ListAgentsRequest{})
+	if err != nil {
+		t.Fatalf("ListAgents with pinned self-signed cert: %v", err)
+	}
+	if len(agents.GetAgentIds()) != 1 || agents.GetAgentIds()[0] != "stdioagent" {
+		t.Fatalf("pinned self-signed ListAgents returned %v", agents.GetAgentIds())
+	}
+	// The self-signed SAN must include the dial address; a client that could NOT
+	// pin would have failed above with a cert verification error.
+	if !strings.Contains(stderrBuf.String(), "fingerprint sha256:") {
+		t.Errorf("startup log should log the sha256 fingerprint for pinning, got: %s", stderrBuf.String())
+	}
+}
+
+// TestTCPServe_TLSStillRequiresToken pins the orthogonality contract: TLS
+// encrypts, the bearer token authenticates - a TLS listener without the token
+// refuses exactly like plaintext.
+func TestTCPServe_TLSStillRequiresToken(t *testing.T) {
+	wsDir, _ := stdioWorkspace(t, "tls token")
+	certPath, keyPath, pool := writeTestCertKeyPair(t)
+
+	client, _, _, _ := spawnTCPServeWithCreds(t, wsDir,
+		credentials.NewTLS(&tls.Config{RootCAs: pool, ServerName: "127.0.0.1"}),
+		[]string{"--tls-cert", certPath, "--tls-key", keyPath},
+		serveTokenEnv+"=sekret",
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := client.ListAgents(ctx, &agentv1.ListAgentsRequest{})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("TLS without token should be Unauthenticated, got %v", err)
 	}
 }
