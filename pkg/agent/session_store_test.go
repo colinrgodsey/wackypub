@@ -256,18 +256,6 @@ func TestCleanSessionTurns(t *testing.T) {
 			}
 		}
 	})
-
-	t.Run("MergeConsecutiveUserTurns wrapper maintains identical behavior", func(t *testing.T) {
-		in := []*genai.Content{text("user", "1"), text("user", "2")}
-		gotClean := CleanSessionTurns(in)
-		gotMerge := MergeConsecutiveUserTurns(in)
-		if len(gotClean) != len(gotMerge) {
-			t.Errorf("mismatch between CleanSessionTurns and MergeConsecutiveUserTurns length")
-		}
-		if len(gotMerge[0].Parts) != 2 {
-			t.Errorf("expected 2 merged parts, got %d", len(gotMerge[0].Parts))
-		}
-	})
 }
 
 // TestAppendSessionContentHealsTrailingNewline reproduces the corruption mode documented

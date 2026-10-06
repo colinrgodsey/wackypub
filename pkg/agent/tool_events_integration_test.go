@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	adkagent "google.golang.org/adk/v2/agent"
-	agent "google.golang.org/adk/v2/agent"
 	model "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
@@ -48,7 +47,7 @@ func visEchoTool(t *testing.T) tool.Tool {
 	tl, err := functiontool.New(functiontool.Config{
 		Name:        "echo_tool",
 		Description: "Echoes the given text back",
-	}, func(ctx agent.Context, args visEchoArgs) (map[string]any, error) {
+	}, func(ctx adkagent.Context, args visEchoArgs) (map[string]any, error) {
 		return map[string]any{"output": args.Text}, nil
 	})
 	if err != nil {
