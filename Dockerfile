@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y \
     npm \
     bash \
     sudo \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Install WackyPub suite binaries
@@ -81,4 +82,5 @@ WORKDIR /ws
 
 USER wackypub
 
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+# tini as PID 1: a shell PID 1 never reaps orphaned processes, so defunct entries accumulate (wackyproc#22, defunct-process-accumulation)
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
