@@ -34,14 +34,22 @@ var seqAllocBump = map[string]int64{}
 // seqs.
 const seqAllocBumpMax = 1024
 
-// tailReadWindow is the increment we back up per read when seeking to the final line. The
-// last line of a session.jsonl is almost always a few hundred bytes, so one window suffices
-// for the common case; the seek keeps going, window at a time, until tailMaxSeek.
+// tailReadWindow is the initial read when seeking to the final line. The last line of a
+// session.jsonl is almost always a few hundred bytes, so one window suffices for the common
+// case; when the final line is bigger the read doubles (4KiB, 8KiB, 16KiB, ...) until the
+// final complete line is in hand or tailMaxSeek is reached. Doubling re-reads the tail region
+// from disk each step, but the page cache makes re-reads memory-speed and the total work is
+// O(final line) syscalls and O(2 x final line) bytes read - the alternative (per-window
+// accumulation) is O(line^2) copies, which is fatal at the 64MiB cap where a legitimate
+// 53MiB image line used to cost ~500GB of memcpy per seq allocation.
 const tailReadWindow = 4096
 
 // tailMaxSeek bounds the total back-seek. The persist layer hard-caps every line it writes
 // at MaxPersistTurnBytes (sanitizeContentForPersist), so seeking this far guarantees the
-// final COMPLETE line on every legitimate file. A final line longer than the cap cannot be
+// final COMPLETE line on every legitimate file. The bound is derived, not independent: it
+// tracks the persist cap, so a cap change cannot desynchronize the two. The back-seek is
+// incremental (tailReadWindow per step) and stops at the first newline behind the final
+// line, so the common small-line case is one window regardless of the bound. A final line longer than the cap cannot be
 // a legitimately persisted turn - the unmarshal fallback below recovers from it.
 const tailMaxSeek = MaxPersistTurnBytes + 4096
 
@@ -65,7 +73,7 @@ func recoverMaxSeqFromLog(agentDir string) (int64, error) {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
+	scanner.Buffer(make([]byte, 1024*1024), MaxSessionLineBytes)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -85,7 +93,7 @@ func recoverMaxSeqFromLog(agentDir string) (int64, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		// A line over the read path's scanner cap (16MiB) means the log cannot be scanned
+		// A line over the read path's scanner cap (MaxSessionLineBytes) means the log cannot be scanned
 		// by the read path either: allocation cannot proceed safely on a session this
 		// corrupt, and every subsequent turn would fail the same way. Mark it
 		// UNRECOVERABLE so the process supervision (stdio-serve / ProcessDialer) restarts
@@ -125,16 +133,24 @@ func tailMaxSeq(agentDir string) (int64, error) {
 		return 0, nil
 	}
 
-	// Back up from EOF in tailReadWindow chunks until we hold the final complete line.
-	pos := fi.Size()
-	var tail []byte
-	for len(tail) < tailMaxSeek && pos > 0 {
-		window := int64(tailReadWindow)
-		if pos < window {
-			window = pos
+	// Back up from EOF until we hold the final complete line: read the last
+	// tailReadWindow bytes, then double the window until the final newline behind the
+	// final line is in hand or the read has covered tailMaxSeek. A newline inside the
+	// read region means the final complete line - everything after the LAST newline -
+	// is present; a region that reaches the bound with no newline cannot end a
+	// legitimate line (sanitize caps every line at MaxPersistTurnBytes < tailMaxSeek),
+	// so the unmarshal fallback below takes over, exactly as before.
+	size := fi.Size()
+	window := int64(tailReadWindow)
+	if window > size {
+		window = size
+	}
+	for {
+		if window > size {
+			window = size
 		}
 		buf := make([]byte, window)
-		n, err := f.ReadAt(buf, pos-window)
+		n, err := f.ReadAt(buf, size-window)
 		if err != nil {
 			if errors.Is(err, io.EOF) && n > 0 {
 				buf = buf[:n]
@@ -142,17 +158,27 @@ func tailMaxSeq(agentDir string) (int64, error) {
 				return 0, fmt.Errorf("reading tail of %s: %w", SessionFileName, err)
 			}
 		}
-		tail = append(buf[:n], tail...)
-		pos -= window
+		tail := buf[:n]
 		trimmed := bytes.TrimRight(tail, "\n\r")
 		if i := bytes.LastIndexByte(trimmed, '\n'); i >= 0 {
-			// A newline in the trimmed tail means we have the final complete line:
-			// everything after the LAST newline. Stop backing up - this is O(last line).
+			// A newline in the trimmed region means we have the final complete line.
 			tail = trimmed[i+1:]
-			break
+			return parseTailLine(tail, agentDir)
 		}
+		if window >= min(tailMaxSeek, size) {
+			// The whole file (or the bound) holds no complete line: either the file is
+			// a single unterminated line, or the final line is over the persist bound.
+			// Hand the partial region to the same unmarshal fallback.
+			return parseTailLine(tail, agentDir)
+		}
+		window *= 2
 	}
+}
 
+// parseTailLine parses the seq stamped in the tail region read by tailMaxSeq. The region
+// is either the final complete line (the common path) or the last tailMaxSeek bytes of a
+// file whose final line is unterminated or over the persist bound (the fallback path).
+func parseTailLine(tail []byte, agentDir string) (int64, error) {
 	s := strings.TrimSpace(string(tail))
 	if s == "" {
 		return 0, nil
@@ -167,7 +193,7 @@ func tailMaxSeq(agentDir string) (int64, error) {
 		// means the final line is corrupt or over the persist bound. Recover the max over every
 		// parseable line in the log: the read path skips unparseable lines too, so the
 		// allocator and the reader agree on which lines are real. A line over the scanner cap
-		// (16MiB) makes the scan fail closed: a log the read path cannot even scan cannot
+		// (MaxSessionLineBytes) makes the scan fail closed: a log the read path cannot even scan cannot
 		// be safely allocated from, so the append reports the scanner error. The old behavior here
 		// (return 0, nil) was fail-open: a fresh process inferred max=0 and re-allocated seq
 		// 1 into a non-empty log, duplicating stamps (Sept-29 audit finding F1).

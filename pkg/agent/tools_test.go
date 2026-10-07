@@ -357,7 +357,7 @@ func TestRunCommandToolValidationAndExecution(t *testing.T) {
 
 	// Add user turn to session.jsonl
 	uMsg := genai.NewContentFromText("run echo", "user")
-	if err := AppendSessionContent(agentDir, uMsg); err != nil {
+	if _, err := AppendSessionContent(agentDir, uMsg); err != nil {
 		t.Fatalf("AppendSessionContent failed: %v", err)
 	}
 

@@ -673,17 +673,27 @@ func loadRuntimeCfgForGating(agentDir string) *RuntimeConfig {
 }
 
 // persistTurn appends a session turn and records the accompanying workspace audit event,
-// returning the first error with context about which step failed. The turn cannot be
-// considered durable unless both writes succeed, so strict call sites (failure records and
-// continuation sentinels) surface the error instead of discarding it.
-func persistTurn(agentDir, wsDir, agentID string, turn *genai.Content, eventLabel string) error {
-	if err := AppendSessionContent(agentDir, turn); err != nil {
-		return fmt.Errorf("appending turn (%s) for agent %s: %w", eventLabel, agentID, err)
+// returning the first error with context about which step failed and the persist report
+// for the turn. The turn cannot be considered durable unless both writes succeed, so
+// strict call sites (failure records and continuation sentinels) surface the error
+// instead of discarding it.
+func persistTurn(agentDir, wsDir, agentID string, turn *genai.Content, eventLabel string) (PersistReport, error) {
+	report, err := AppendSessionContent(agentDir, turn)
+	if err != nil {
+		return report, fmt.Errorf("appending turn (%s) for agent %s: %w", eventLabel, agentID, err)
 	}
 	if err := CommitWorkspaceEvent(wsDir, agentID, eventLabel); err != nil {
-		return fmt.Errorf("committing workspace event (%s) for agent %s: %w", eventLabel, agentID, err)
+		return report, fmt.Errorf("committing workspace event (%s) for agent %s: %w", eventLabel, agentID, err)
 	}
-	return nil
+	return report, nil
+}
+
+// persistTurnLoud is persistTurn for call sites that do not need the report: a non-zero
+// report still reaches the stderr log, because a persist drop must never be silent.
+func persistTurnLoud(agentDir, wsDir, agentID string, turn *genai.Content, eventLabel string) error {
+	report, err := persistTurn(agentDir, wsDir, agentID, turn, eventLabel)
+	logPersistReport(agentID, eventLabel, report)
+	return err
 }
 
 // commitEventBestEffort records a workspace audit event, logging failures instead of
@@ -707,7 +717,7 @@ func (fa *FolderAgent) appendDeferredImages(wsDir string, deferredScratchpadIDs 
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to find deferred scratchpad %q for agent %q: %v\n", spID, fa.AgentID, err)
 			failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to load deferred image from scratchpad '%s': %v</IMAGE_ERROR>", spID, err), "user")
-			if err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, failTurn, "user (deferred image error)"); err != nil {
+			if err := persistTurnLoud(fa.AgentDir, wsDir, fa.AgentID, failTurn, "user (deferred image error)"); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to record deferred-image failure turn for agent %s: %v\n", fa.AgentID, err)
 			}
 			continue
@@ -715,7 +725,7 @@ func (fa *FolderAgent) appendDeferredImages(wsDir string, deferredScratchpadIDs 
 		if !isBinary {
 			fmt.Fprintf(os.Stderr, "Warning: deferred scratchpad %q for agent %q is not binary data\n", spID, fa.AgentID)
 			failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to load deferred image from scratchpad '%s': entry is not binary image data</IMAGE_ERROR>", spID), "user")
-			if err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, failTurn, "user (deferred image error)"); err != nil {
+			if err := persistTurnLoud(fa.AgentDir, wsDir, fa.AgentID, failTurn, "user (deferred image error)"); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to record deferred-image failure turn for agent %s: %v\n", fa.AgentID, err)
 			}
 			continue
@@ -724,7 +734,7 @@ func (fa *FolderAgent) appendDeferredImages(wsDir string, deferredScratchpadIDs 
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to read deferred scratchpad file %s for agent %q: %v\n", filePath, fa.AgentID, err)
 			failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to read deferred image from scratchpad '%s': %v</IMAGE_ERROR>", spID, err), "user")
-			if err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, failTurn, "user (deferred image error)"); err != nil {
+			if err := persistTurnLoud(fa.AgentDir, wsDir, fa.AgentID, failTurn, "user (deferred image error)"); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to record deferred-image failure turn for agent %s: %v\n", fa.AgentID, err)
 			}
 			continue
@@ -733,7 +743,7 @@ func (fa *FolderAgent) appendDeferredImages(wsDir string, deferredScratchpadIDs 
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to decode/resize deferred image from scratchpad %q for agent %q: %v\n", spID, fa.AgentID, err)
 			failTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>Failed to process deferred image from scratchpad '%s': %v</IMAGE_ERROR>", spID, err), "user")
-			if err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, failTurn, "user (deferred image error)"); err != nil {
+			if err := persistTurnLoud(fa.AgentDir, wsDir, fa.AgentID, failTurn, "user (deferred image error)"); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to record deferred-image failure turn for agent %s: %v\n", fa.AgentID, err)
 			}
 			continue
@@ -750,9 +760,21 @@ func (fa *FolderAgent) appendDeferredImages(wsDir string, deferredScratchpadIDs 
 				},
 			},
 		}
-		if err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, turn, "user (deferred image)"); err != nil {
+		report, err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, turn, "user (deferred image)")
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to append deferred image turn for agent %s: %v\n", fa.AgentID, err)
 			continue
+		}
+		if report.Dropped() {
+			// A dropped image must be explicit and actionable for the model, not a silent
+			// absence: the turn persisted above carries the drop banner, and this follow-up
+			// turn tells the agent that queued the image why it is not there. The turn is
+			// still counted so the continuation delivers the error to the model.
+			fmt.Fprintf(os.Stderr, "Warning: deferred image from scratchpad %q for agent %q DROPPED at persist: %d byte(s) of inline image exceeded the %d-byte persist cap (source file %d bytes, %d bytes after normalization). Persisting an explicit image-error turn.\n", spID, fa.AgentID, report.DroppedBytes, MaxPersistTurnBytes, len(imgData), len(jpegBytes))
+			dropTurn := genai.NewContentFromText(fmt.Sprintf("<IMAGE_ERROR>The queued image from scratchpad '%s' was dropped before the model could see it: the persisted turn exceeded the %d-byte persist cap (image was %d bytes after normalization, source file %d bytes). Re-queue a smaller image or render it at a lower resolution.</IMAGE_ERROR>", spID, MaxPersistTurnBytes, len(jpegBytes), len(imgData)), "user")
+			if err := persistTurnLoud(fa.AgentDir, wsDir, fa.AgentID, dropTurn, "user (deferred image dropped)"); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to record deferred-image drop turn for agent %s: %v\n", fa.AgentID, err)
+			}
 		}
 		validCount++
 	}
@@ -1008,7 +1030,7 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 
 		// The harness appends an imperative sentinel user turn
 		sentinelTurn := genai.NewContentFromText(`<CONTINUATION reason="post-compaction">Session context was compacted. Resume and complete your task from where you left off, referencing any updated persistent memory.</CONTINUATION>`, "user")
-		if err := persistTurn(fa.AgentDir, wsDir, fa.AgentID, sentinelTurn, "user"); err != nil {
+		if err := persistTurnLoud(fa.AgentDir, wsDir, fa.AgentID, sentinelTurn, "user"); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to record continuation sentinel for agent %s: %v\n", fa.AgentID, err)
 			yield("\n\n[Auto-continuation aborted: failed to record post-compaction sentinel - incomplete status.]", nil)
 			return false

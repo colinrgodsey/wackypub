@@ -1030,7 +1030,7 @@ func TestD90_ToolResultLayer_MissingEntryWarningsNotDuplicatedInOutput(t *testin
 		}
 
 		uMsg := genai.NewContentFromText("run echo with missing macro", "user")
-		if err := AppendSessionContent(bobDir, uMsg); err != nil {
+		if _, err := AppendSessionContent(bobDir, uMsg); err != nil {
 			t.Fatalf("AppendSessionContent failed: %v", err)
 		}
 

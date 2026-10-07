@@ -498,7 +498,7 @@ func TestProtoContract_SessionTurnContentJSON(t *testing.T) {
 			{FunctionCall: &genai.FunctionCall{Name: "bash", ID: "call_abc"}},
 		},
 	}
-	if _, err := AppendSessionContentGetSeq(agentDir, turn); err != nil {
+	if _, _, err := AppendSessionContentGetSeq(agentDir, turn); err != nil {
 		t.Fatalf("AppendSessionContentGetSeq failed: %v", err)
 	}
 
@@ -723,7 +723,7 @@ func TestProtoContract_ReadSessionEvents_FromSeqAndLatestSeq(t *testing.T) {
 			Role:  "user",
 			Parts: []*genai.Part{{Text: fmt.Sprintf("Turn %d", i)}},
 		}
-		if err := AppendSessionContentWithSeq(compactedAgentDir, content, i); err != nil {
+		if _, err := AppendSessionContentWithSeq(compactedAgentDir, content, i); err != nil {
 			t.Fatalf("AppendSessionContentWithSeq %d failed: %v", i, err)
 		}
 	}

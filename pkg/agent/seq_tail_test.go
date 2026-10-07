@@ -85,13 +85,22 @@ func TestTailMaxSeq_CorruptFinalLine_ScansLog(t *testing.T) {
 // never readable as a tail line) is decided by the scan - a parseable line keeps its
 // stamped seq, an unparseable one is skipped. The production writer cannot create such a
 // line (the persist cap is a hard invariant), so these simulate damage or pre-D101 writes.
+// testScannerOverflowLine is the smallest line that exceeds MaxSessionLineBytes, the
+// bufio.Scanner max-token cap on every session.jsonl reader. Tests that need the
+// scanner-error path must write at least this much.
+const testScannerOverflowLine = MaxSessionLineBytes + 1024*1024
+
+// testOverBoundLine is the smallest text size whose marshaled turn line exceeds
+// tailMaxSeek, for the seq back-seek over-bound tests.
+const testOverBoundLine = MaxPersistTurnBytes + 512*1024
+
 func TestTailMaxSeq_OverBoundFinalLine(t *testing.T) {
 	t.Run("parseable over-bound line keeps its stamped seq", func(t *testing.T) {
 		agentDir := t.TempDir()
 		if s := appendTurns(t, agentDir, 2, "small"); s != 3 {
 			t.Fatalf("fixture: expected final seq 3, got %d", s)
 		}
-		big := genai.NewContentFromText(strings.Repeat("z", 540*1024), "user")
+		big := genai.NewContentFromText(strings.Repeat("z", testOverBoundLine), "user")
 		line, err := json.Marshal(PersistedTurn{Content: *big, Seq: 3 + 1})
 		if err != nil {
 			t.Fatal(err)
@@ -124,7 +133,7 @@ func TestTailMaxSeq_OverBoundFinalLine(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		f.Write(append([]byte(strings.Repeat("g", 540*1024)), '\n'))
+		f.Write(append([]byte(strings.Repeat("g", testOverBoundLine)), '\n'))
 		f.Close()
 
 		got, err := tailMaxSeq(agentDir)

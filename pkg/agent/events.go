@@ -88,7 +88,7 @@ func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64,
 	sessionPath := filepath.Join(agentDir, SessionFileName)
 	if f, err := os.Open(sessionPath); err == nil {
 		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
+		scanner.Buffer(make([]byte, 1024*1024), MaxSessionLineBytes)
 		var lineIdx int64
 		for scanner.Scan() {
 			lineIdx++
