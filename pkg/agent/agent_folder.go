@@ -309,7 +309,8 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	// than only ones that happen to be cross-agent.
 	wsDir := filepath.Dir(agentDir)
 	agentID := filepath.Base(agentDir)
-	_ = CommitWorkspaceEvent(wsDir, agentID, fmt.Sprintf("tool call (%s)", toolName))
+	traceLabel := fmt.Sprintf("%s (%s)", traceEventToolCall, toolName)
+	warnWorkspaceEventCommit(agentID, traceLabel, CommitWorkspaceEvent(wsDir, agentID, traceLabel))
 
 	err = cmd.Run()
 	stdoutBytes := stdout.Bytes()
@@ -440,7 +441,7 @@ func LoadFolderAgentWithA2A(wsDir string, agentID string, a2aMeta *A2AMetadata, 
 // turn setup when the primary backend fails with a qualifying error.
 func LoadFolderAgentWithHookEnv(wsDir string, agentID string, a2aMeta *A2AMetadata, hookEnv map[string]string, maxToolTurns int, commandTimeoutSeconds ...int) (*FolderAgent, error) {
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 
 	agentDir := filepath.Join(wsDir, agentID)
@@ -469,7 +470,7 @@ func LoadFolderAgentWithHookEnv(wsDir string, agentID string, a2aMeta *A2AMetada
 // for the default (no visibility) behavior.
 func LoadFolderAgentWithHookEnvWithSink(wsDir string, agentID string, a2aMeta *A2AMetadata, hookEnv map[string]string, maxToolTurns int, toolEvents *ToolEventSink, commandTimeoutSeconds ...int) (*FolderAgent, error) {
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 	agentDir := filepath.Join(wsDir, agentID)
 	if !pathExists(agentDir) {
@@ -1087,6 +1088,7 @@ func (fa *FolderAgent) GenerateTurnStream(ctx context.Context) iter.Seq2[string,
 
 		wsDir := filepath.Dir(fa.AgentDir)
 		sessionSvc := NewFileSessionService(wsDir)
+		// no readable prior memory means 'changed', which errs toward refreshing it.
 		lastMemory, _ := readMemoryForChangeDetection(fa.AgentDir)
 
 		// 1. Emergency Cold-Start Pre-Turn Guard: Retain a pre-turn check in GenerateTurnStream

@@ -66,6 +66,7 @@ func (s *shimImpl) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, st
 
 	if strings.HasPrefix(s.behavior, "stream-n=") {
 		nStr := strings.TrimPrefix(s.behavior, "stream-n=")
+		// a malformed knob falls back to the zero default, which is the shim's contract.
 		n, _ := strconv.Atoi(nStr)
 		for i := 1; i <= n; i++ {
 			if err := stream.Send(&agentv1.GenerateTurnStreamResponse{
@@ -113,6 +114,7 @@ func main() {
 
 	if strings.HasPrefix(*behavior, "slow-exit=") {
 		secStr := strings.TrimPrefix(*behavior, "slow-exit=")
+		// a malformed knob falls back to the zero default, which is the shim's contract.
 		sec, _ := strconv.Atoi(secStr)
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGTERM)

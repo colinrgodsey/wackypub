@@ -50,6 +50,7 @@ var (
 
 func shutdownSignalContext() context.Context {
 	shutdownOnce.Do(func() {
+		// the process owns this context for its whole life, so cancel is never needed early.
 		shutdownCtx, _ = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	})
 	return shutdownCtx
@@ -117,7 +118,9 @@ func AcquireSessionLockContext(ctx context.Context, agentDir string) (*SessionLo
 
 	// Write current PID to lock file
 	_ = file.Truncate(0)
+	// advisory PID hint only: the lock itself is held by the flock, not this file.
 	_, _ = file.Seek(0, 0)
+	// advisory PID hint only: the lock itself is held by the flock, not this file.
 	_, _ = file.WriteString(fmt.Sprintf("%d\n", os.Getpid()))
 	_ = file.Sync()
 

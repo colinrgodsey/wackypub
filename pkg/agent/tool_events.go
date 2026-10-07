@@ -138,6 +138,7 @@ func (s *ToolEventSink) record(ev ToolEvent) {
 // newToolCallID returns a short random identifier pairing announce with update.
 func newToolCallID() string {
 	b := make([]byte, 6)
+	// crypto/rand.Read fills the buffer or panics; it has no error path to check.
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }

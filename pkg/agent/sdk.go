@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"log"
@@ -38,6 +39,11 @@ import (
 
 	agentv1 "github.com/colinrgodsey/wackypub/pkg/agent/v1"
 )
+
+// errAgentIDRequired is the single source of the agent-id validation message the RPC
+// and iterator surfaces return; the text is part of the CLI contract, so it is named
+// rather than repeated per call site.
+var errAgentIDRequired = errors.New("agentID cannot be empty")
 
 // AgentSDK provides a clean, programmatic Go API for orchestrating folder-based agents.
 // In D112, AgentSDK directly satisfies the generated AgentServiceServer interface.
@@ -110,7 +116,7 @@ func (s *AgentSDK) AddUserTurn(ctx context.Context, req *agentv1.AddUserTurnRequ
 	}
 	agentID := req.GetAgentId()
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 	message := req.GetMessage()
 	if message == "" {
@@ -136,6 +142,8 @@ func (s *AgentSDK) AddUserTurn(ctx context.Context, req *agentv1.AddUserTurnRequ
 	}
 	defer lock.Release()
 
+	// hook failures arrive as warnings; RunHookChain returns a nil error by
+	// construction (every path funnels through emitWarning), so there is no error to check.
 	finalMsg, hookEnv, warnings, _ := RunUserMessageHooks(agentDir, message)
 
 	content := genai.NewContentFromText(finalMsg, "user")
@@ -147,7 +155,7 @@ func (s *AgentSDK) AddUserTurn(ctx context.Context, req *agentv1.AddUserTurnRequ
 
 	s.setLastHookEnv(agentID, hookEnv)
 
-	_ = CommitWorkspaceEvent(wsDir, agentID, "user")
+	warnWorkspaceEventCommit(agentID, traceEventUser, CommitWorkspaceEvent(wsDir, agentID, traceEventUser))
 
 	turn := &agentv1.SessionTurn{
 		Role: "user",
@@ -175,7 +183,7 @@ func (s *AgentSDK) AddMedia(ctx context.Context, req *agentv1.AddMediaRequest) (
 	}
 	agentID := req.GetAgentId()
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 	data := req.GetMediaData()
 	if len(data) == 0 {
@@ -243,7 +251,7 @@ func (s *AgentSDK) AddMedia(ctx context.Context, req *agentv1.AddMediaRequest) (
 	}
 	logPersistReport(agentID, "user (media)", report)
 
-	_ = CommitWorkspaceEvent(wsDir, agentID, "user (media)")
+	warnWorkspaceEventCommit(agentID, traceEventUserMedia, CommitWorkspaceEvent(wsDir, agentID, traceEventUserMedia))
 
 	turn := &agentv1.SessionTurn{
 		Role: "user",
@@ -304,7 +312,7 @@ func (s *AgentSDK) CancelTurn(ctx context.Context, req *agentv1.CancelTurnReques
 	}
 	agentID := req.GetAgentId()
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 
 	inFlightTurnsMu.Lock()
@@ -508,7 +516,7 @@ func (s *AgentSDK) generateTurnStreamImpl(ctx context.Context, agentID string) i
 func (s *AgentSDK) generateTurnStreamImplWorkspace(ctx context.Context, workspaceDir, agentID string) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		if agentID == "" {
-			yield("", fmt.Errorf("agentID cannot be empty"))
+			yield("", errAgentIDRequired)
 			return
 		}
 
@@ -747,7 +755,7 @@ func logHookWarnings(agentID string, warnings []string) {
 func (s *AgentSDK) addAndGenerateTurnStreamImplWorkspace(ctx context.Context, workspaceDir, agentID, userMessage string, onWarning ...func(string)) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		if agentID == "" {
-			yield("", fmt.Errorf("agentID cannot be empty"))
+			yield("", errAgentIDRequired)
 			return
 		}
 		if userMessage == "" {
@@ -797,6 +805,8 @@ func (s *AgentSDK) addAndGenerateTurnStreamImplWorkspace(ctx context.Context, wo
 		}
 
 		// Run hooks on userMessage
+		// hook failures arrive as warnings; RunHookChain returns a nil error by
+		// construction (every path funnels through emitWarning), so there is no error to check.
 		finalMsg, hookEnv, warnings, _ := RunUserMessageHooksWithContext(turnCtx, agentDir, userMessage)
 
 		if hasWarningSink(onWarning) {
@@ -877,38 +887,17 @@ type asideTurnResult struct {
 // snapshot, never the exclusive turn lock, so a live turn is never blocked), no session.jsonl
 // append, no MEMORY.md update, no scratchpad writes, no workspace git/trace events, no
 // post-turn hooks, no compaction self-trigger. Usage is returned as metadata only.
-// asideTurnStreamWithResult is AsideTurnStream with an out-param: callers that iterate the
-// stream directly can inspect denials/usage after the loop without a second round trip.
-func (s *AgentSDK) asideTurnStreamWithResult(ctx context.Context, agentID, question string, asideResult *asideTurnResult, onWarning ...func(string)) iter.Seq2[string, error] {
-	return s.asideTurnStreamWithResultWorkspace(ctx, s.WorkspaceDir, agentID, question, asideResult, onWarning...)
-}
-
-// asideTurnStreamWithResultWorkspace is asideTurnStreamWithResult against an explicit
-// workspace directory (used by the RPC surface to honor request workspace_dir overrides
-// without copying the SDK struct, which carries a mutex).
+//
+// It is an iterator factory whose asideResult out-param lets callers iterating the stream
+// inspect denials/usage after the loop without a second round trip. The workspace is
+// explicit so the RPC surface can honor request workspace_dir overrides without copying
+// the SDK struct, which carries a mutex.
 func (s *AgentSDK) asideTurnStreamWithResultWorkspace(ctx context.Context, workspaceDir, agentID, question string, asideResult *asideTurnResult, onWarning ...func(string)) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
+		// asideInternal reports every failure through yield before returning it, so the
+		// consumer has already seen it and the return value is a duplicate signal.
 		_ = asideInternal(s, ctx, workspaceDir, agentID, question, asideResult, onWarning, yield)
 	}
-}
-
-// AsideTurn is the non-streaming twin of AsideTurnStream: same fork, same denial, same
-// nothing-persists contract, returning the full text plus warnings/denials/usage metadata.
-func (s *AgentSDK) asideTurn(ctx context.Context, agentID, question string) (*asideTurnResult, error) {
-	var warnings []string
-	var chunks []string
-	result := &asideTurnResult{}
-	for chunk, err := range s.asideTurnStreamWithResult(ctx, agentID, question, result, func(w string) { warnings = append(warnings, w) }) {
-		if err != nil {
-			return nil, err
-		}
-		if chunk != "" {
-			chunks = append(chunks, chunk)
-		}
-	}
-	result.Text = strings.Join(chunks, "\n\n")
-	result.Warnings = warnings
-	return result, nil
 }
 
 // asideInternal implements the aside fork-and-run. It is an iterator body factory shared by
@@ -925,8 +914,8 @@ func (s *AgentSDK) asideTurn(ctx context.Context, agentID, question string) (*as
 //  7. Nothing written: no AppendSessionTurn, no ReadMemoryFile+write, no scratchpad, no git.
 func asideInternal(s *AgentSDK, ctx context.Context, workspaceDir, agentID, question string, asideResult *asideTurnResult, onWarning []func(string), yield func(string, error) bool) error {
 	if agentID == "" {
-		yield("", fmt.Errorf("agentID cannot be empty"))
-		return fmt.Errorf("agentID cannot be empty")
+		yield("", errAgentIDRequired)
+		return errAgentIDRequired
 	}
 	if question == "" {
 		yield("", fmt.Errorf("question cannot be empty"))
@@ -1370,7 +1359,7 @@ func (s *AgentSDK) InspectAgent(ctx context.Context, req *agentv1.InspectAgentRe
 		agentID = req.GetAgentId()
 	}
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 
 	agentDir := filepath.Join(wsDir, agentID)
@@ -1426,7 +1415,7 @@ func (s *AgentSDK) ReadSession(ctx context.Context, req *agentv1.ReadSessionRequ
 		agentID = req.GetAgentId()
 	}
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 
 	if err := AuthorizeAgentTarget(agentID); err != nil {
@@ -1487,7 +1476,7 @@ func (s *AgentSDK) ReadMemory(ctx context.Context, req *agentv1.ReadMemoryReques
 		agentID = req.GetAgentId()
 	}
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 
 	if err := AuthorizeAgentTarget(agentID); err != nil {
@@ -1516,7 +1505,7 @@ func (s *AgentSDK) RenderSystemPrompt(ctx context.Context, req *agentv1.RenderSy
 		agentID = req.GetAgentId()
 	}
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 
 	if err := AuthorizeAgentTarget(agentID); err != nil {
@@ -1540,7 +1529,7 @@ func (s *AgentSDK) StripSignatures(ctx context.Context, req *agentv1.StripSignat
 	}
 	agentID := req.GetAgentId()
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 
 	if _, err := ValidateAgentTarget(agentID); err != nil {
@@ -1580,7 +1569,7 @@ func (s *AgentSDK) CompactSession(ctx context.Context, req *agentv1.CompactSessi
 	}
 	agentID := req.GetAgentId()
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 
 	a2aMeta, err := ValidateAgentTarget(agentID)
@@ -1627,6 +1616,7 @@ func (s *AgentSDK) CompactSession(ctx context.Context, req *agentv1.CompactSessi
 			return nil, fmt.Errorf("agent directory %s does not exist", agentDir)
 		}
 
+		// .env files are optional sugar; loading stays best-effort by design.
 		_, _ = LoadAgentDotEnv(agentDir)
 
 		overrideRuntimeCfg, err := LoadRuntimeConfigFile(runtimePath)
@@ -1690,7 +1680,7 @@ func (s *AgentSDK) AsideQuestion(ctx context.Context, req *agentv1.AsideQuestion
 	}
 	agentID := req.GetAgentId()
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 	if req.GetQuestion() == "" {
 		return nil, fmt.Errorf("question cannot be empty")
@@ -1733,7 +1723,7 @@ func (s *AgentSDK) CreateScratchpad(ctx context.Context, req *agentv1.CreateScra
 	}
 	agentID := req.GetAgentId()
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 	text := req.GetText()
 	data := req.GetData()
@@ -1794,7 +1784,7 @@ func (s *AgentSDK) GetScratchpad(ctx context.Context, req *agentv1.GetScratchpad
 	}
 	agentID := req.GetAgentId()
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 	entryID := req.GetEntryId()
 	if entryID == "" {
@@ -1837,7 +1827,7 @@ func (s *AgentSDK) ListScratchpads(ctx context.Context, req *agentv1.ListScratch
 	}
 	agentID := req.GetAgentId()
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 
 	if err := AuthorizeAgentTarget(agentID); err != nil {
@@ -1881,7 +1871,7 @@ func (s *AgentSDK) SearchScratchpad(ctx context.Context, req *agentv1.SearchScra
 	}
 	agentID := req.GetAgentId()
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 	entryID := req.GetEntryId()
 	if entryID == "" {
@@ -1938,7 +1928,7 @@ func (s *AgentSDK) DiffScratchpadEntries(ctx context.Context, req *agentv1.DiffS
 	}
 	agentID := req.GetAgentId()
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 	beforeID := req.GetBeforeEntryId()
 	afterID := req.GetAfterEntryId()
@@ -1971,7 +1961,7 @@ func (s *AgentSDK) DeleteScratchpad(ctx context.Context, req *agentv1.DeleteScra
 	}
 	agentID := req.GetAgentId()
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 	entryID := req.GetEntryId()
 	if entryID == "" {
@@ -2051,25 +2041,6 @@ func (s *AgentSDK) Trace(ctx context.Context, req *agentv1.TraceRequest) (*agent
 	return TraceResultToProto(res), nil
 }
 
-type SessionContextReport struct {
-	AgentID               string  `json:"agent_id"`
-	Model                 string  `json:"model"`
-	ContextWindow         int     `json:"context_window"`
-	CompactionThreshold   int     `json:"compaction_threshold"`
-	CompactionOverheadPct float64 `json:"compaction_overhead_pct"`
-	EstimatedTotalTokens  int     `json:"estimated_total_tokens"`
-	SessionTurnsTokens    int     `json:"session_turns_tokens"`
-	PromptTokensEstimate  int     `json:"prompt_tokens_estimate"`
-	MemoryTokensEstimate  int     `json:"memory_tokens_estimate"`
-	PercentToThreshold    float64 `json:"percent_to_threshold"`
-	PercentToWindow       float64 `json:"percent_to_window"`
-	TurnCount             int     `json:"turn_count"`
-	Compacted             bool    `json:"compacted,omitempty"`
-	LastPromptTokens      int32   `json:"last_prompt_tokens,omitempty"`
-	LastCandidatesTokens  int32   `json:"last_candidates_tokens,omitempty"`
-	LastTotalTokens       int32   `json:"last_total_tokens,omitempty"`
-}
-
 // InspectSessionContext implements the behavior defined in proto/wackypub/v1/agent.proto.
 func (s *AgentSDK) InspectSessionContext(ctx context.Context, req *agentv1.InspectSessionContextRequest) (*agentv1.InspectSessionContextResponse, error) {
 	wsDir := s.WorkspaceDir
@@ -2081,7 +2052,7 @@ func (s *AgentSDK) InspectSessionContext(ctx context.Context, req *agentv1.Inspe
 		agentID = req.GetAgentId()
 	}
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 
 	agentDir := filepath.Join(wsDir, agentID)

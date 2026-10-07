@@ -236,6 +236,7 @@ func createScratchpadRaw(agentDir string, text string, createdBy string) (*Scrat
 	for i := 0; i < 100; i++ {
 		candidateID := generateRandomID()
 		// Check if any entry (.txt or .dat) already exists with this ID
+		// a glob error can only mean no match, which the len() test already handles.
 		if matches, _ := filepath.Glob(filepath.Join(spDir, candidateID+"-*")); len(matches) > 0 {
 			continue
 		}
@@ -325,6 +326,7 @@ func CreateBinaryScratchpad(agentDir string, data []byte, createdBy string, mime
 	for i := 0; i < 100; i++ {
 		candidateID := generateRandomID()
 		// Check if any entry (.txt or .dat) already exists with this ID
+		// a glob error can only mean no match, which the len() test already handles.
 		if matches, _ := filepath.Glob(filepath.Join(spDir, candidateID+"-*")); len(matches) > 0 {
 			continue
 		}
@@ -450,6 +452,7 @@ func GetScratchpad(agentDir string, id string, skipLines *int, numLines *int) (s
 		return "", err
 	}
 
+	// an unreadable runtime.json falls through to the default budget below.
 	runtimeCfg, _ := LoadRuntimeConfig(agentDir)
 	if runtimeCfg != nil && runtimeCfg.ContextWindow > 0 {
 		maxTokens := int(float64(runtimeCfg.ContextWindow) * MaxScratchpadContextWindowFraction)
@@ -570,12 +573,14 @@ func ExpandScratchpadMacros(agentDir string, text string) (string, []string, err
 
 		var skipLines *int
 		if skipMatch := macroSkipLinesRegex.FindStringSubmatch(match); len(skipMatch) >= 2 {
+			// a malformed slice hint reads as unset (0), which is the safe default.
 			val, _ := strconv.Atoi(skipMatch[1])
 			skipLines = &val
 		}
 
 		var numLines *int
 		if numMatch := macroNumLinesRegex.FindStringSubmatch(match); len(numMatch) >= 2 {
+			// a malformed slice hint reads as unset (0), which is the safe default.
 			val, _ := strconv.Atoi(numMatch[1])
 			numLines = &val
 		}
@@ -777,7 +782,7 @@ func DiffScratchpadEntries(wsDir, agentID, beforeID, afterID string) (string, er
 		return "", fmt.Errorf("wsDir cannot be empty")
 	}
 	if agentID == "" {
-		return "", fmt.Errorf("agentID cannot be empty")
+		return "", errAgentIDRequired
 	}
 
 	return diffScratchpadEntriesInDir(filepath.Join(wsDir, agentID), agentID, beforeID, afterID)

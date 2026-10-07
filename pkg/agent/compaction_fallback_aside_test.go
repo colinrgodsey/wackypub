@@ -65,7 +65,7 @@ func TestAsideFallback_DeadPrimaryDescendsToHealthyFallback(t *testing.T) {
 	sdk := NewSDK(wsDir)
 	sdk.CommandTimeoutSeconds = 30
 
-	result, err := sdk.asideTurn(context.Background(), agentID, "what is the state?")
+	result, err := asideComplete(context.Background(), sdk, agentID, "what is the state?")
 	if err != nil {
 		t.Fatalf("asideTurn: %v", err)
 	}
