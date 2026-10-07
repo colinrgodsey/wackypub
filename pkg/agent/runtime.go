@@ -120,6 +120,7 @@ var DefaultRuntimeJSON string
 // Falls back to DefaultRuntimeJSON (bundled openrouter-auto) when runtime.json is absent (D74).
 func LoadRuntimeConfig(agentDir string) (*RuntimeConfig, error) {
 	// 0. Load root and per-agent .env files into environment
+	// .env files are optional sugar; loading stays best-effort by design.
 	_, _ = LoadAgentDotEnv(agentDir)
 
 	runtimePath := filepath.Join(agentDir, "runtime.json")

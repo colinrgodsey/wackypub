@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,6 +80,24 @@ func IsWorkspaceGitRepo(dir string) bool {
 	gitDir := filepath.Join(dir, ".git")
 	st, err := os.Stat(gitDir)
 	return err == nil && (st.IsDir() || st.Mode().IsRegular())
+}
+
+// Workspace trace event labels, named because the same label is both the commit message
+// argument and the field reported when the commit fails.
+const (
+	traceEventUser      = "user"
+	traceEventUserMedia = "user (media)"
+	traceEventToolCall  = "tool call"
+)
+
+// warnWorkspaceEventCommit reports a failed workspace trace commit. Callers sit after the
+// turn is already durable, so failing the RPC would be worse than the gap - but the missing
+// trace entry has to surface somewhere, and CommitWorkspaceEvent returns nil when no git repo
+// is configured, so a non-nil error here always means a real failure.
+func warnWorkspaceEventCommit(agentID, eventType string, err error) {
+	if err != nil {
+		log.Printf("workspace trace commit for agent %q (%s) failed: %v", agentID, eventType, err)
+	}
 }
 
 // ResolveGitRepoDir resolves whether the agent has its own repository (<wsDir>/<agentID>/.git)
@@ -259,6 +278,7 @@ func commitWorkspaceEvent(wsDir, repoDir, agentID, eventType string) error {
 	}
 
 	// Read current A2A metadata & update workspace_revision with HEAD before commit
+	// provenance metadata only: an unreadable HEAD leaves workspace_revision blank.
 	headSHA, _ := GetWorkspaceHeadCommit(repoDir)
 	meta, err := ParseA2AMetadata()
 	if err != nil || meta == nil {
@@ -327,6 +347,7 @@ func CreateWorkspaceSnapshot(wsDir string) (string, error) {
 		repoDir := ResolveGitRepoDir(wsDir, agentID)
 		sha := "-"
 		if repoDir != "" {
+			// provenance metadata only: an unreadable HEAD leaves workspace_revision blank.
 			if headSHA, _ := GetWorkspaceHeadCommit(repoDir); headSHA != "" {
 				sha = headSHA
 			}

@@ -317,6 +317,7 @@ func ValidateAgentTargetContext(ctx context.Context, targetAgentID string) (*A2A
 
 	sendingRepoDir := ResolveGitRepoDir(wsDir, sendingAgentID)
 	if sendingRepoDir != "" {
+		// provenance metadata only: an unreadable HEAD leaves workspace_revision blank.
 		if headSHA, _ := GetWorkspaceHeadCommit(sendingRepoDir); headSHA != "" {
 			newMetaMap["workspace_revision"] = headSHA
 		}

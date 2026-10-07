@@ -85,7 +85,7 @@ func TestAside_ContextualAnswerAndNothingPersisted(t *testing.T) {
 	}
 	before := snapshot()
 
-	result, err := sdk.asideTurn(context.Background(), "asideagent", "what is the project state?")
+	result, err := asideComplete(context.Background(), sdk, "asideagent", "what is the project state?")
 	if err != nil {
 		t.Fatalf("asideTurn: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestAside_ToolInvocationDenied(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(origCwd) })
 
 	sdk := NewSDK(wsDir)
-	result, err := sdk.asideTurn(context.Background(), agentID, "echo hi")
+	result, err := asideComplete(context.Background(), sdk, agentID, "echo hi")
 	if err != nil {
 		t.Fatalf("asideTurn: %v", err)
 	}
@@ -194,11 +194,31 @@ func TestAside_DoesNotContendWithLiveTurnLock(t *testing.T) {
 	}
 	defer lock.Release()
 
-	result, err := sdk.asideTurn(context.Background(), "asideagent", "are you there?")
+	result, err := asideComplete(context.Background(), sdk, "asideagent", "are you there?")
 	if err != nil {
 		t.Fatalf("aside should succeed while session lock is held: %v", err)
 	}
 	if !strings.Contains(result.Text, "lock-safe answer") {
 		t.Fatalf("unexpected answer: %q", result.Text)
 	}
+}
+
+// asideComplete drives the streaming aside surface to completion for tests. The production
+// non-streaming surface is AsideQuestion over this same iterator, so the aggregation lives
+// here rather than as a second production twin.
+func asideComplete(ctx context.Context, s *AgentSDK, agentID, question string) (*asideTurnResult, error) {
+	result := &asideTurnResult{}
+	var chunks, warnings []string
+	for chunk, err := range s.asideTurnStreamWithResultWorkspace(ctx, s.WorkspaceDir, agentID, question, result,
+		func(w string) { warnings = append(warnings, w) }) {
+		if err != nil {
+			return nil, err
+		}
+		if chunk != "" {
+			chunks = append(chunks, chunk)
+		}
+	}
+	result.Text = strings.Join(chunks, "\n\n")
+	result.Warnings = warnings
+	return result, nil
 }

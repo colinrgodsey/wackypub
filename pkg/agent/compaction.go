@@ -391,34 +391,6 @@ func truncateTurnTextToBudget(text string, budgetChars int) string {
 // runner.Run call, D45) sends a request whose shared prefix - system
 // instruction, tools, memory turn, the archived turns - is structurally
 // identical to a real generation call, unlike the hand-built request this
-// used to send directly to an *model.LLM (no Tools, system prompt glued into
-// cfgOverride, when non-nil, replaces the agent's COMPACT.md configuration without
-// reading or modifying it on disk (D83). When nil, LoadCompactConfig(agentDir) is used.
-//
-// toolDenials, when non-nil, is the counter a compaction-scoped agent's BeforeToolCallback
-// increments per denied tool call (D50/CompactionToolDenials). CheckAndCompactSession owns
-// its full lifecycle for this run: reset before the compaction runner executes, read once
-// more for the post-compact hook payload. Pass nil for a no-tools compaction agent, where
-// denials are structurally impossible.
-//
-// Hook lifecycle (pre-compact/post-compact/compact-failed): this function is the single
-// choke point every compaction trigger - the natural token-threshold check, an explicit
-// force from a CLI/RPC call, and a mid-turn short-circuit - routes through, so hooking here
-// once covers all of them. pre-compact and compact-failed run synchronously and never alter
-// or abort compaction (hook failures are logged as warnings only); post-compact runs
-// asynchronously so a slow hook script never taxes the next turn.
-// CheckAndCompactSession checks if the session exceeds contextWindow and performs compaction,
-// preserving the exact session prefix to optimize prompt caching according to D38/D45.
-// force skips the contextWindow/token-estimate gate checks below (D44) - still
-// refuses on a genuinely empty session regardless, since forcing compaction with
-// nothing to compact isn't a testing use case, it's a no-op either way.
-//
-// adkAgent is the calling FolderAgent's real ADK agent (fa.ADKAgent) - already
-// carries the agent's system instruction and tool declarations, so routing the
-// compaction call through it (via a disposable in-memory session + one
-// runner.Run call, D45) sends a request whose shared prefix - system
-// instruction, tools, memory turn, the archived turns - is structurally
-// identical to a real generation call, unlike the hand-built request this
 // used to send directly to an *model.LLM (no Tools, system prompt glued into the
 // message - the cache-prefix identity fix).
 //
@@ -431,12 +403,9 @@ func truncateTurnTextToBudget(text string, budgetChars int) string {
 // more for the post-compact hook payload. Pass nil for a no-tools compaction agent, where
 // denials are structurally impossible.
 //
-// Hook lifecycle (pre-compact/post-compact/compact-failed): this function is the single
-// choke point every compaction trigger - the natural token-threshold check, an explicit
-// force from a CLI/RPC call, and a mid-turn short-circuit - routes through, so hooking here
-// once covers all of them. pre-compact and compact-failed run synchronously and never alter
-// or abort compaction (hook failures are logged as warnings only); post-compact runs
-// asynchronously so a slow hook script never taxes the next turn.
+// Hook lifecycle (pre-compact/post-compact/compact-failed) runs inside
+// CheckAndCompactSessionWithFallback, which this wrapper delegates to with exactly one
+// backend level; that function's doc carries the trigger and hook contract.
 //
 // This is the LOW-LEVEL single-backend entry. The runtime fallback chain is walked by
 // CheckAndCompactSessionWithFallback; this wrapper keeps the pre-fallback API for direct
@@ -467,6 +436,13 @@ func backendName(cfg *RuntimeConfig) string {
 // counter) for the given RuntimeConfig. The primary level is normally the caller's already-
 // built fa.CompactionAgent; fallback levels call loadFolderAgentFromRuntime (or the caller's
 // equivalent per-level loader) so the model constructor re-runs per provider.
+//
+// Hook lifecycle (pre-compact/post-compact/compact-failed): this is the single choke point
+// every compaction trigger - the natural token-threshold check, an explicit force from a
+// CLI/RPC call, and a mid-turn short-circuit - routes through, so hooking here once covers
+// all of them. pre-compact and compact-failed run synchronously and never alter or abort
+// compaction (hook failures are logged as warnings only); post-compact runs asynchronously
+// so a slow hook script never taxes the next turn.
 func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, runtimeCfg *RuntimeConfig, loadCompactionAgent func(cfg *RuntimeConfig) (agent.Agent, *int64, error), force bool, cfgOverride *CompactConfig) (bool, error) {
 	agentID := filepath.Base(agentDir)
 	sessionPath := filepath.Join(agentDir, SessionFileName)

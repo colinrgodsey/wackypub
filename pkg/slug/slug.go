@@ -21,6 +21,7 @@ const (
 // returns an error, so there is no fallback path (Colin 2026-09-29).
 func New() string {
 	var b [3]byte
+	// crypto/rand.Read fills the buffer or panics; it has no error path to check.
 	_, _ = rand.Read(b[:])
 	return NewWith(b)
 }
