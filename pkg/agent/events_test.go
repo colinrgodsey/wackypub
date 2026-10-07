@@ -717,9 +717,9 @@ func TestScannerErrorPropagation(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	// Write an oversized line (17MB, exceeding 16MB bufio.Scanner buffer cap)
+	// Write an oversized line (testScannerOverflowLine, exceeding MaxSessionLineBytes)
 	sessionPath := filepath.Join(agentDir, SessionFileName)
-	oversized := make([]byte, 17*1024*1024)
+	oversized := make([]byte, testScannerOverflowLine)
 	for i := range oversized {
 		oversized[i] = 'a'
 	}
@@ -731,7 +731,7 @@ func TestScannerErrorPropagation(t *testing.T) {
 	// ReadSessionEventsFromDisk must fail loudly, NOT return a truncated slice with err == nil
 	_, _, _, _, err := ReadSessionEventsFromDisk(agentDir)
 	if err == nil {
-		t.Fatalf("expected ReadSessionEventsFromDisk to return scanner error on 17MB line, got nil")
+		t.Fatalf("expected ReadSessionEventsFromDisk to return scanner error on over-cap line, got nil")
 	}
 	if !strings.Contains(err.Error(), "token too long") {
 		t.Errorf("expected error to mention 'token too long', got: %v", err)

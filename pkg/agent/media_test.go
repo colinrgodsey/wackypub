@@ -347,7 +347,7 @@ func TestD49_DeferredImageScratchpad(t *testing.T) {
 
 	// Add initial user turn to session.jsonl
 	uMsg := genai.NewContentFromText("please inspect the image in scratchpad", "user")
-	if err := AppendSessionContent(agentDir, uMsg); err != nil {
+	if _, err := AppendSessionContent(agentDir, uMsg); err != nil {
 		t.Fatalf("AppendSessionContent failed: %v", err)
 	}
 
@@ -426,7 +426,7 @@ func TestD49_DeferredImageScratchpad(t *testing.T) {
 	}
 
 	// Add a user turn so generate precondition holds
-	_ = AppendSessionContent(agentDir, genai.NewContentFromText("check binary", "user"))
+	_, _ = AppendSessionContent(agentDir, genai.NewContentFromText("check binary", "user"))
 	_, _ = fa.GenerateTurn(context.Background())
 
 	turnsAfter, _ := ReadSessionTurns(agentDir)
@@ -460,7 +460,7 @@ func TestD49_DeferredImageScratchpad(t *testing.T) {
 		t.Fatalf("BuildADKAgentWithConfig failed: %v", err)
 	}
 
-	_ = AppendSessionContent(agentDir, genai.NewContentFromText("check gated image", "user"))
+	_, _ = AppendSessionContent(agentDir, genai.NewContentFromText("check gated image", "user"))
 	_, _ = faGated.GenerateTurn(context.Background())
 
 	turnsGated, _ := ReadSessionTurns(agentDir)
@@ -524,7 +524,7 @@ func TestDeferredImage_FailureNoticeAppended(t *testing.T) {
 	}
 
 	// Add initial user turn
-	_ = AppendSessionContent(agentDir, genai.NewContentFromText("please inspect corrupted image", "user"))
+	_, _ = AppendSessionContent(agentDir, genai.NewContentFromText("please inspect corrupted image", "user"))
 
 	respText, err := fa.GenerateTurn(context.Background())
 	if err != nil {

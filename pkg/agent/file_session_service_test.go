@@ -44,7 +44,7 @@ func TestFileSessionService(t *testing.T) {
 
 	// Append user turn
 	uMsg := genai.NewContentFromText("Hello Bob", "user")
-	if err := AppendSessionContent(agentDir, uMsg); err != nil {
+	if _, err := AppendSessionContent(agentDir, uMsg); err != nil {
 		t.Fatalf("AppendSessionContent failed: %v", err)
 	}
 
@@ -112,7 +112,7 @@ func TestNoUserTurnDuplication(t *testing.T) {
 
 	// Add single user turn
 	uMsg := genai.NewContentFromText("unique user query", "user")
-	if err := AppendSessionContent(agentDir, uMsg); err != nil {
+	if _, err := AppendSessionContent(agentDir, uMsg); err != nil {
 		t.Fatalf("AppendSessionContent failed: %v", err)
 	}
 
@@ -191,7 +191,7 @@ func TestMaxToolTurnsLimit(t *testing.T) {
 	}
 
 	uMsg := genai.NewContentFromText("trigger loop", "user")
-	if err := AppendSessionContent(agentDir, uMsg); err != nil {
+	if _, err := AppendSessionContent(agentDir, uMsg); err != nil {
 		t.Fatalf("AppendSessionContent failed: %v", err)
 	}
 

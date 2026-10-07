@@ -401,7 +401,7 @@ func TestStreamHandler_RePanicsOnUnrecoverableError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Write(append([]byte(strings.Repeat("x", 17*1024*1024)), '\n')); err != nil {
+	if _, err := f.Write(append([]byte(strings.Repeat("x", testScannerOverflowLine)), '\n')); err != nil {
 		t.Fatal(err)
 	}
 	f.Close()
@@ -433,13 +433,13 @@ func TestStreamHandler_RePanicsOnUnrecoverableError(t *testing.T) {
 }
 
 // TestRecoverMaxSeqFromLog_ScannerErrorIsUnrecoverable verifies the #88 fail-closed path
-// now carries the unrecoverable marker: a session log with a line over the 16MiB scanner
-// cap cannot be safely allocated from, so the error is marked corrupt-state, which the
+// now carries the unrecoverable marker: a session log with a line over the MaxSessionLineBytes
+// scanner cap cannot be safely allocated from, so the error is marked corrupt-state, which the
 // #90 supervision (stdio-serve / ProcessDialer) turns into a process restart instead of
 // failing every subsequent turn individually.
 func TestRecoverMaxSeqFromLog_ScannerErrorIsUnrecoverable(t *testing.T) {
 	agentDir := t.TempDir()
-	// One small turn, then a line far beyond the 16MiB scanner buffer.
+	// One small turn, then a line far beyond the MaxSessionLineBytes scanner buffer.
 	turns := []*genai.Content{genai.NewContentFromText("seed", "user")}
 	if err := WriteSessionTurns(agentDir, turns); err != nil {
 		t.Fatalf("WriteSessionTurns: %v", err)
@@ -448,15 +448,15 @@ func TestRecoverMaxSeqFromLog_ScannerErrorIsUnrecoverable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 17MiB line - exceeds scanner buffer (16MiB).
-	if _, err := f.Write(append([]byte(strings.Repeat("x", 17*1024*1024)), '\n')); err != nil {
+	// testScannerOverflowLine - exceeds the scanner buffer (MaxSessionLineBytes).
+	if _, err := f.Write(append([]byte(strings.Repeat("x", testScannerOverflowLine)), '\n')); err != nil {
 		t.Fatal(err)
 	}
 	f.Close()
 
 	_, err = recoverMaxSeqFromLog(agentDir)
 	if err == nil {
-		t.Fatal("expected scanner error from 17MiB line")
+		t.Fatal("expected scanner error from over-cap line")
 	}
 	if !IsUnrecoverable(err) {
 		t.Fatalf("scanner error should be marked unrecoverable, got: %v", err)

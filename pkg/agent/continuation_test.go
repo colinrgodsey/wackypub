@@ -1046,8 +1046,9 @@ func TestD101_ErrorTransparency_ReadSessionError(t *testing.T) {
 	if err := os.MkdirAll(toolsDir, 0755); err != nil {
 		t.Fatalf("failed creating tools dir: %v", err)
 	}
-	// Tool script writes a 17MB line to session.jsonl to trigger scanner buffer overflow on post-turn read
-	toolScript := fmt.Sprintf("#!/bin/sh\npython3 -c 'print(\"x\" * 17000000)' >> %s/session.jsonl\necho 'done'\n", agentDir)
+	// Tool script writes a testScannerOverflowLine-length line to session.jsonl to trigger
+	// scanner buffer overflow on post-turn read.
+	toolScript := fmt.Sprintf("#!/bin/sh\npython3 -c 'print(\"x\" * %d)' >> %s/session.jsonl\necho 'done'\n", testScannerOverflowLine, agentDir)
 	if err := os.WriteFile(filepath.Join(toolsDir, "corrupt_tool.sh"), []byte(toolScript), 0755); err != nil {
 		t.Fatalf("failed creating tool script: %v", err)
 	}

@@ -279,7 +279,7 @@ func TestAppendSessionContentHealsTrailingNewline(t *testing.T) {
 
 	// Appending should heal the missing newline rather than merging with the prior turn.
 	secondTurn := genai.NewContentFromText("turn appended after hand-edit", "model")
-	if err := AppendSessionContent(tempDir, secondTurn); err != nil {
+	if _, err := AppendSessionContent(tempDir, secondTurn); err != nil {
 		t.Fatalf("AppendSessionContent failed: %v", err)
 	}
 
@@ -366,7 +366,7 @@ func TestAppendSessionContent_TruncatesOversizedTextPart(t *testing.T) {
 	largeText := sb.String()
 
 	content := genai.NewContentFromText(largeText, "model")
-	if err := AppendSessionContent(agentDir, content); err != nil {
+	if _, err := AppendSessionContent(agentDir, content); err != nil {
 		t.Fatalf("AppendSessionContent failed: %v", err)
 	}
 
@@ -416,7 +416,7 @@ func TestAppendSessionContent_TruncationPreservesSmallParts(t *testing.T) {
 	}
 	expectedData = append(expectedData, '\n')
 
-	if err := AppendSessionContent(agentDir, content); err != nil {
+	if _, err := AppendSessionContent(agentDir, content); err != nil {
 		t.Fatalf("AppendSessionContent failed: %v", err)
 	}
 
@@ -441,23 +441,24 @@ func TestAppendSessionContent_TruncationPreservesSmallParts(t *testing.T) {
 func TestAppendSessionContent_WholeContentFallback(t *testing.T) {
 	agentDir := t.TempDir()
 
-	// 3 text parts of 200KB each (total 600KB > 512KB MaxPersistTurnBytes).
-	// Each part is <= 256KB, so part-level capping does not trigger.
-	// Whole-content fallback must trigger and clamp total size to <= 512KB.
+	// The whole-turn fallback is exercised with an image part: text parts are capped
+	// individually at MaxPersistTextPartBytes (256KB), so a text-only turn can no longer
+	// exceed the 64MiB turn cap on its own - the fallback is the image path. 49MiB of
+	// InlineData marshals to ~65MiB of base64, past the 64MiB cap, so the fallback must
+	// keep only the first text part plus the drop banner.
+	image := make([]byte, 49*1024*1024)
 	part1 := "PART1_" + strings.Repeat("a", 200*1024-6)
-	part2 := "PART2_" + strings.Repeat("b", 200*1024-6)
-	part3 := "PART3_" + strings.Repeat("c", 200*1024-6)
 
 	content := &genai.Content{
-		Role: "model",
+		Role: "user",
 		Parts: []*genai.Part{
 			{Text: part1},
-			{Text: part2},
-			{Text: part3},
+			{InlineData: &genai.Blob{MIMEType: "image/jpeg", Data: image}},
 		},
 	}
 
-	if err := AppendSessionContent(agentDir, content); err != nil {
+	report, err := AppendSessionContent(agentDir, content)
+	if err != nil {
 		t.Fatalf("AppendSessionContent failed: %v", err)
 	}
 
@@ -487,6 +488,14 @@ func TestAppendSessionContent_WholeContentFallback(t *testing.T) {
 	}
 	if !strings.Contains(turns[0].Parts[1].Text, "remaining content dropped") {
 		t.Errorf("expected second part to be drop banner, got: %q", turns[0].Parts[1].Text)
+	}
+
+	// The drop must be reported, not silent: one part (the image) of known size.
+	if report.DroppedParts != 1 {
+		t.Errorf("expected DroppedParts 1, got %d", report.DroppedParts)
+	}
+	if report.DroppedBytes != int64(len(image)) {
+		t.Errorf("expected DroppedBytes %d, got %d", len(image), report.DroppedBytes)
 	}
 }
 

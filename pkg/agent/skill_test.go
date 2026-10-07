@@ -232,7 +232,7 @@ Step 1: Check logs.
 	}
 
 	uMsg := genai.NewContentFromText("load debugging skill", "user")
-	if err := AppendSessionContent(agentDir, uMsg); err != nil {
+	if _, err := AppendSessionContent(agentDir, uMsg); err != nil {
 		t.Fatalf("AppendSessionContent failed: %v", err)
 	}
 
@@ -478,7 +478,7 @@ Use load_skill_extra and run_skill_script for extras.
 		t.Fatalf("BuildADKAgentWithConfigAndTracker failed: %v", err)
 	}
 
-	_ = AppendSessionContent(agentDir, genai.NewContentFromText("load schema", "user"))
+	_, _ = AppendSessionContent(agentDir, genai.NewContentFromText("load schema", "user"))
 	_, _ = faText.GenerateTurn(context.Background())
 
 	turns, err := ReadSessionTurns(agentDir)
@@ -520,7 +520,7 @@ Use load_skill_extra and run_skill_script for extras.
 		t.Fatalf("BuildADKAgentWithConfigAndTracker failed: %v", err)
 	}
 
-	_ = AppendSessionContent(agentDir, genai.NewContentFromText("run script", "user"))
+	_, _ = AppendSessionContent(agentDir, genai.NewContentFromText("run script", "user"))
 	_, _ = faScript.GenerateTurn(context.Background())
 
 	turns, _ = ReadSessionTurns(agentDir)
@@ -558,7 +558,7 @@ Use load_skill_extra and run_skill_script for extras.
 		t.Fatalf("BuildADKAgentWithConfigAndTracker failed: %v", err)
 	}
 
-	_ = AppendSessionContent(agentDir, genai.NewContentFromText("load image", "user"))
+	_, _ = AppendSessionContent(agentDir, genai.NewContentFromText("load image", "user"))
 	respText, err := faImg.GenerateTurn(context.Background())
 	if err != nil {
 		t.Fatalf("GenerateTurn failed: %v", err)

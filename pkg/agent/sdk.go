@@ -139,10 +139,11 @@ func (s *AgentSDK) AddUserTurn(ctx context.Context, req *agentv1.AddUserTurnRequ
 	finalMsg, hookEnv, warnings, _ := RunUserMessageHooks(agentDir, message)
 
 	content := genai.NewContentFromText(finalMsg, "user")
-	seq, err := AppendSessionContentGetSeq(agentDir, content)
+	seq, report, err := AppendSessionContentGetSeq(agentDir, content)
 	if err != nil {
 		return nil, err
 	}
+	logPersistReport(agentID, "user", report)
 
 	s.setLastHookEnv(agentID, hookEnv)
 
@@ -228,10 +229,19 @@ func (s *AgentSDK) AddMedia(ctx context.Context, req *agentv1.AddMediaRequest) (
 		},
 	}
 
-	seq, err := AppendSessionContentGetSeq(agentDir, content)
+	seq, report, err := AppendSessionContentGetSeq(agentDir, content)
 	if err != nil {
 		return nil, fmt.Errorf("failed to append image turn: %w", err)
 	}
+	if report.Dropped() {
+		// The attachment was accepted, normalized, and appended - but the persisted
+		// line lost the image. Returning success would be the silent-drop bug itself:
+		// the caller gets a delivered-confirmation for content that is not in the
+		// session. The banner version of the turn is in the file; the caller gets
+		// the failure it needs to retry with a smaller image.
+		return nil, fmt.Errorf("image attachment for agent %q was dropped at persist: the marshaled turn exceeded the %d-byte persist cap (image was %d bytes after normalization). Re-attach a smaller image.", agentID, MaxPersistTurnBytes, len(jpegBytes))
+	}
+	logPersistReport(agentID, "user (media)", report)
 
 	_ = CommitWorkspaceEvent(wsDir, agentID, "user (media)")
 

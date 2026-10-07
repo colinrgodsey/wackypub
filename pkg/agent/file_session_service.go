@@ -218,5 +218,9 @@ func (s *FileSessionService) AppendEvent(ctx context.Context, sess session.Sessi
 		}
 	}
 
-	return AppendSessionContent(agentDir, evt.Content)
+	report, err := AppendSessionContent(agentDir, evt.Content)
+	if err == nil {
+		logPersistReport(filepath.Base(agentDir), "session event", report)
+	}
+	return err
 }

@@ -14,10 +14,33 @@ import (
 const (
 	SessionFileName = "session.jsonl"
 
+	// MaxPersistTextPartBytes caps a single text part (head/tail truncation with a
+	// visible banner, D101). Text truncation is deliberate and unchanged by the
+	// turn-cap raise.
 	MaxPersistTextPartBytes = 256 * 1024
-	MaxPersistTurnBytes     = 512 * 1024
-	PersistTruncationHead   = 8192
-	PersistTruncationTail   = 8192
+
+	// MaxPersistTurnBytes is the hard cap on a marshaled turn written to
+	// session.jsonl. Raised 512KiB -> 64MiB (tasks/wackypub/raise-persist-cap-images):
+	// queued scratchpad images persist as base64 InlineData (file size x 4/3), and the
+	// old cap silently dropped any image turn whose normalized image exceeded ~370KB
+	// of JPEG - for downscaled photographs that was effectively every real image. 64MiB
+	// marshaled covers a 48MiB source file (Colin: at least 40MiB). The cap is flat by
+	// design: the kill mechanism is the whole-turn fallback, which drops every part
+	// except the first text one - a per-kind cap would not change which content
+	// survives, only which label the drop gets. Text parts are capped separately above.
+	MaxPersistTurnBytes = 64 * 1024 * 1024
+
+	// MaxSessionLineBytes is the longest line any session.jsonl reader must tolerate:
+	// double the persist cap, so a legitimate max-size turn round-trips through the
+	// read, replay, and seq-recovery scanners with margin. This is the second half of
+	// the cap raise - before it, every reader was capped at 16MiB (32x the 512KiB cap,
+	// same 32x relationship), and a 40MiB+ turn line would have been skipped by the
+	// read path or marked unrecoverable by seq inference. Sized to the cap, not the
+	// other way around.
+	MaxSessionLineBytes = MaxPersistTurnBytes * 2
+
+	PersistTruncationHead = 8192
+	PersistTruncationTail = 8192
 )
 
 // ReadSessionTurns reads all turns from <agent_dir>/session.jsonl as plain content.
@@ -72,15 +95,57 @@ type PersistedTurn struct {
 	Seq int64 `json:"seq,omitempty"`
 }
 
+// PersistReport describes what sanitizeContentForPersist changed between the in-memory
+// content and the line actually persisted. DroppedParts/DroppedBytes cover parts removed
+// by the whole-turn fallback (inline images etc.); TruncatedBytes covers text removed by
+// per-part truncation or the hard clamp. Callers must surface a non-zero report: a
+// persist drop must never be silent. The pre-raise bug was the platform reporting a
+// queued image as delivered when only a drop banner reached the session file.
+type PersistReport struct {
+	DroppedParts   int
+	DroppedBytes   int64
+	TruncatedBytes int64
+}
+
+// Dropped reports whether any part was removed from the persisted turn.
+func (r PersistReport) Dropped() bool { return r.DroppedParts > 0 }
+
+// partBytes estimates a part's in-memory footprint for drop reporting.
+func partBytes(p *genai.Part) int64 {
+	if p == nil {
+		return 0
+	}
+	var n int64
+	if p.InlineData != nil {
+		n += int64(len(p.InlineData.Data))
+	}
+	if p.Text != "" {
+		n += int64(len(p.Text))
+	}
+	return n
+}
+
+// logPersistReport is the stderr half of loud persist: every non-zero report must
+// reach the operator log with the size and the cap that caused it.
+func logPersistReport(agentID, eventLabel string, report PersistReport) {
+	if report.DroppedParts > 0 {
+		fmt.Fprintf(os.Stderr, "Warning: persist DROPPED %d part(s) (%d bytes) from %s turn for agent %s: the marshaled turn exceeded the %d-byte persist cap; the persisted turn carries the drop banner.\n", report.DroppedParts, report.DroppedBytes, eventLabel, agentID, MaxPersistTurnBytes)
+	}
+	if report.TruncatedBytes > 0 {
+		fmt.Fprintf(os.Stderr, "Warning: persist truncated %d text bytes from %s turn for agent %s (per-part and clamp caps)\n", report.TruncatedBytes, eventLabel, agentID)
+	}
+}
+
 // sanitizeContentForPersist caps oversized text parts and enforces the MaxPersistTurnBytes
-// hard cap before session.jsonl serialization (D101).
-func sanitizeContentForPersist(content *genai.Content) ([]byte, error) {
+// hard cap before session.jsonl serialization (D101), reporting every change.
+func sanitizeContentForPersist(content *genai.Content) ([]byte, PersistReport, error) {
 	return sanitizeContentForPersistWithSeq(content, 0)
 }
 
-func sanitizeContentForPersistWithSeq(content *genai.Content, seq int64) ([]byte, error) {
+func sanitizeContentForPersistWithSeq(content *genai.Content, seq int64) ([]byte, PersistReport, error) {
+	var report PersistReport
 	if content == nil {
-		return []byte("null"), nil
+		return []byte("null"), report, nil
 	}
 
 	toPersist := *content
@@ -90,6 +155,7 @@ func sanitizeContentForPersistWithSeq(content *genai.Content, seq int64) ([]byte
 			if isTextPart(p) && len(p.Text) > MaxPersistTextPartBytes {
 				cloned := *p
 				cloned.Text = truncatePersistTextPart(p.Text)
+				report.TruncatedBytes += int64(len(p.Text) - len(cloned.Text))
 				toPersist.Parts[i] = &cloned
 			} else {
 				toPersist.Parts[i] = p
@@ -106,10 +172,10 @@ func sanitizeContentForPersistWithSeq(content *genai.Content, seq int64) ([]byte
 
 	data, err := marshalTurn(toPersist.Role, toPersist.Parts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal content: %w", err)
+		return nil, report, fmt.Errorf("failed to marshal content: %w", err)
 	}
 
-	// Whole-content fallback: if marshaled JSON still exceeds MaxPersistTurnBytes (512KB),
+	// Whole-content fallback: if marshaled JSON still exceeds MaxPersistTurnBytes (64MiB),
 	// retain only the first text part (capped as above) plus a banner noting the drop.
 	if len(data) > MaxPersistTurnBytes {
 		var firstTextPart *genai.Part
@@ -120,11 +186,21 @@ func sanitizeContentForPersistWithSeq(content *genai.Content, seq int64) ([]byte
 			}
 		}
 
+		// Account every part the fallback removes. A nil firstTextPart (an image-only
+		// turn) means everything is dropped - the exact queued-image shape.
+		for _, p := range toPersist.Parts {
+			if p == firstTextPart {
+				continue
+			}
+			report.DroppedParts++
+			report.DroppedBytes += partBytes(p)
+		}
 		var fallbackParts []*genai.Part
 		if firstTextPart != nil {
 			if len(firstTextPart.Text) > MaxPersistTextPartBytes {
 				cloned := *firstTextPart
 				cloned.Text = truncatePersistTextPart(firstTextPart.Text)
+				report.TruncatedBytes += int64(len(firstTextPart.Text) - len(cloned.Text))
 				firstTextPart = &cloned
 			}
 			fallbackParts = append(fallbackParts, firstTextPart)
@@ -135,38 +211,43 @@ func sanitizeContentForPersistWithSeq(content *genai.Content, seq int64) ([]byte
 
 		data, err = marshalTurn(toPersist.Role, toPersist.Parts)
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal fallback content: %w", err)
+			return nil, report, fmt.Errorf("failed to marshal fallback content: %w", err)
 		}
 
-		// Hard invariant guarantee: no marshaled turn may exceed MaxPersistTurnBytes (512KB).
+		// Hard invariant guarantee: no marshaled turn may exceed MaxPersistTurnBytes (64MiB).
 		if len(data) > MaxPersistTurnBytes {
 			if len(fallbackParts) > 0 && fallbackParts[0] != nil {
 				cloned := *fallbackParts[0]
+				origLen := len(cloned.Text)
 				if len(cloned.Text) > PersistTruncationHead+PersistTruncationTail {
 					head := cloned.Text[:PersistTruncationHead]
 					tail := cloned.Text[len(cloned.Text)-PersistTruncationTail:]
 					cloned.Text = head + "\n[...truncated to fit turn limit...]\n" + tail
+					report.TruncatedBytes += int64(origLen - len(cloned.Text))
 				}
 				fallbackParts[0] = &cloned
 				toPersist.Parts = fallbackParts
 				data, err = marshalTurn(toPersist.Role, toPersist.Parts)
 				if err != nil {
-					return nil, fmt.Errorf("failed to marshal clamped content: %w", err)
+					return nil, report, fmt.Errorf("failed to marshal clamped content: %w", err)
 				}
 			}
 		}
 
 		if len(data) > MaxPersistTurnBytes {
+			for _, p := range toPersist.Parts {
+				report.TruncatedBytes += partBytes(p)
+			}
 			finalBanner := fmt.Sprintf("[...turn truncated - content exceeded %d bytes limit...]", MaxPersistTurnBytes)
 			toPersist.Parts = []*genai.Part{{Text: finalBanner}}
 			data, err = marshalTurn(toPersist.Role, toPersist.Parts)
 			if err != nil {
-				return nil, fmt.Errorf("failed to marshal minimal content: %w", err)
+				return nil, report, fmt.Errorf("failed to marshal minimal content: %w", err)
 			}
 		}
 	}
 
-	return data, nil
+	return data, report, nil
 }
 
 // AppendSessionContentGetSeq appends a genai.Content turn to <agent_dir>/session.jsonl,
@@ -178,39 +259,40 @@ func sanitizeContentForPersistWithSeq(content *genai.Content, seq int64) ([]byte
 // the tail only advances when the stamped turn is written, and the lock is what serializes
 // writers against each other. NextSeq skips re-acquiring when the lock is already held, so
 // callers that already hold it (the whole-turn lock in generation) are unaffected.
-func AppendSessionContentGetSeq(agentDir string, content *genai.Content) (int64, error) {
+func AppendSessionContentGetSeq(agentDir string, content *genai.Content) (int64, PersistReport, error) {
 	if !IsSessionLockedByCurrentProcess(agentDir) {
 		lock, err := AcquireSessionLock(agentDir)
 		if err != nil {
-			return 0, fmt.Errorf("acquiring session lock for append: %w", err)
+			return 0, PersistReport{}, fmt.Errorf("acquiring session lock for append: %w", err)
 		}
 		defer lock.Release()
 	}
 	seq, err := NextSeq(agentDir)
 	if err != nil {
-		return 0, fmt.Errorf("allocating sequence number for turn: %w", err)
+		return 0, PersistReport{}, fmt.Errorf("allocating sequence number for turn: %w", err)
 	}
-	if err := AppendSessionContentWithSeq(agentDir, content, seq); err != nil {
-		return 0, err
+	report, err := AppendSessionContentWithSeq(agentDir, content, seq)
+	if err != nil {
+		return 0, report, err
 	}
-	return seq, nil
+	return seq, report, nil
 }
 
 // AppendSessionContent appends a genai.Content turn to <agent_dir>/session.jsonl,
 // allocating a new strictly monotonic sequence number stamped on the persisted turn.
-func AppendSessionContent(agentDir string, content *genai.Content) error {
-	_, err := AppendSessionContentGetSeq(agentDir, content)
-	return err
+func AppendSessionContent(agentDir string, content *genai.Content) (PersistReport, error) {
+	_, report, err := AppendSessionContentGetSeq(agentDir, content)
+	return report, err
 }
 
 // AppendSessionContentWithSeq appends a genai.Content turn to <agent_dir>/session.jsonl
 // with an explicit sequence number.
-func AppendSessionContentWithSeq(agentDir string, content *genai.Content, seq int64) error {
+func AppendSessionContentWithSeq(agentDir string, content *genai.Content, seq int64) (PersistReport, error) {
 	sessionPath := filepath.Join(agentDir, SessionFileName)
 
-	data, err := sanitizeContentForPersistWithSeq(content, seq)
+	data, report, err := sanitizeContentForPersistWithSeq(content, seq)
 	if err != nil {
-		return err
+		return report, err
 	}
 	data = append(data, '\n')
 
@@ -218,43 +300,45 @@ func AppendSessionContentWithSeq(agentDir string, content *genai.Content, seq in
 	// O_APPEND ensures writes are still atomically forced to end-of-file.
 	file, err := os.OpenFile(sessionPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
-		return fmt.Errorf("failed to open %s for writing: %w", SessionFileName, err)
+		return report, fmt.Errorf("failed to open %s for writing: %w", SessionFileName, err)
 	}
 	defer file.Close()
 
 	info, err := file.Stat()
 	if err != nil {
-		return fmt.Errorf("failed to stat %s: %w", SessionFileName, err)
+		return report, fmt.Errorf("failed to stat %s: %w", SessionFileName, err)
 	}
 	if info.Size() > 0 {
 		lastByte := make([]byte, 1)
 		if _, err := file.ReadAt(lastByte, info.Size()-1); err != nil {
-			return fmt.Errorf("failed to read last byte of %s: %w", SessionFileName, err)
+			return report, fmt.Errorf("failed to read last byte of %s: %w", SessionFileName, err)
 		}
 		if lastByte[0] != '\n' {
 			if _, err := file.Write([]byte{'\n'}); err != nil {
-				return fmt.Errorf("failed to write healing newline to %s: %w", SessionFileName, err)
+				return report, fmt.Errorf("failed to write healing newline to %s: %w", SessionFileName, err)
 			}
 		}
 	}
 
 	if _, err := file.Write(data); err != nil {
-		return fmt.Errorf("failed to write content to %s: %w", SessionFileName, err)
+		return report, fmt.Errorf("failed to write content to %s: %w", SessionFileName, err)
 	}
 
 	NotifySessionActivity(agentDir)
-	return nil
+	return report, nil
 }
 
 // AppendSessionTurn is a convenience wrapper that appends a simple text turn.
 func AppendSessionTurn(agentDir string, role string, text string) error {
-	return AppendSessionContent(agentDir, genai.NewContentFromText(text, genai.Role(role)))
+	_, err := AppendSessionContent(agentDir, genai.NewContentFromText(text, genai.Role(role)))
+	return err
 }
 
 // AppendSessionTurnGetSeq is a convenience wrapper that appends a simple text turn
 // and returns the allocated sequence number.
 func AppendSessionTurnGetSeq(agentDir string, role string, text string) (int64, error) {
-	return AppendSessionContentGetSeq(agentDir, genai.NewContentFromText(text, genai.Role(role)))
+	seq, _, err := AppendSessionContentGetSeq(agentDir, genai.NewContentFromText(text, genai.Role(role)))
+	return seq, err
 }
 
 // ReadPersistedTurns reads all turns from <agent_dir>/session.jsonl as PersistedTurn objects.
@@ -272,7 +356,7 @@ func ReadPersistedTurns(agentDir string) ([]PersistedTurn, error) {
 
 	var turns []PersistedTurn
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
+	scanner.Buffer(make([]byte, 1024*1024), MaxSessionLineBytes)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {

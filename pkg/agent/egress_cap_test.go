@@ -86,7 +86,7 @@ func TestTruncatePersistTextPart_ExactBoundary(t *testing.T) {
 	}
 
 	content := &genai.Content{Role: "user", Parts: []*genai.Part{{Text: exactText}}}
-	sanitized, err := sanitizeContentForPersist(content)
+	sanitized, _, err := sanitizeContentForPersist(content)
 	if err != nil {
 		t.Fatalf("sanitizeContentForPersist failed: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestTruncatePersistTextPart_ExactBoundary(t *testing.T) {
 	}
 
 	overContent := &genai.Content{Role: "user", Parts: []*genai.Part{{Text: overText}}}
-	sanitizedOver, err := sanitizeContentForPersist(overContent)
+	sanitizedOver, _, err := sanitizeContentForPersist(overContent)
 	if err != nil {
 		t.Fatalf("sanitizeContentForPersist failed on overText: %v", err)
 	}

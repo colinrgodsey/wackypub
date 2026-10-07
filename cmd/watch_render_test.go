@@ -135,7 +135,7 @@ func TestWatchRender_PersistedThoughtRoundTrip(t *testing.T) {
 			{Text: "persisted reply"},
 		},
 	}
-	if _, err := adkAgent.AppendSessionContentGetSeq(agentDir, &content); err != nil {
+	if _, _, err := adkAgent.AppendSessionContentGetSeq(agentDir, &content); err != nil {
 		t.Fatalf("AppendSessionContentGetSeq: %v", err)
 	}
 
