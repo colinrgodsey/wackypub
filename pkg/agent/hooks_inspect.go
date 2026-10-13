@@ -50,7 +50,7 @@ type HookObservation struct {
 // having no hooks installed is a normal, unremarkable state, not an error.
 func InspectAgentHooks(wsDir, agentID string) ([]HookObservation, error) {
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 
 	agentDir := filepath.Join(wsDir, agentID)

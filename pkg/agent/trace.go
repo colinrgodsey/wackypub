@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -499,7 +500,12 @@ func parseCommitMessage(msg string) (string, *A2AMetadata) {
 	idx := strings.Index(msg, "AGENT2AGENT:")
 	if idx != -1 {
 		jsonStr := strings.TrimSpace(msg[idx+len("AGENT2AGENT:"):])
-		_ = json.Unmarshal([]byte(jsonStr), &a2aMeta)
+		if err := json.Unmarshal([]byte(jsonStr), &a2aMeta); err != nil {
+			// Attribution is metadata on a trace line we wrote ourselves, so a payload that
+			// will not parse means the line was corrupted: classify the event anyway, but
+			// say so rather than dropping the caller and call chain silently.
+			log.Printf("trace: ignoring unparseable A2A metadata for %q: %v", eventType, err)
+		}
 	}
 
 	return eventType, a2aMeta
@@ -581,10 +587,14 @@ func renderVerbosity2(sb *strings.Builder, step TraceStep) {
 				}
 			}
 			if p.FunctionCall != nil {
+				// re-marshalling a value read straight back off a persisted turn, so
+				// unsupported types cannot reach here and a failure is not reachable.
 				argsBytes, _ := json.Marshal(p.FunctionCall.Args)
 				sb.WriteString(fmt.Sprintf("        ToolCall: %s(%s)\n", p.FunctionCall.Name, string(argsBytes)))
 			}
 			if p.FunctionResponse != nil {
+				// re-marshalling a value read straight back off a persisted turn, so
+				// unsupported types cannot reach here and a failure is not reachable.
 				respBytes, _ := json.Marshal(p.FunctionResponse.Response)
 				sb.WriteString(fmt.Sprintf("        ToolResp: %s => %s\n", p.FunctionResponse.Name, string(respBytes)))
 			}
@@ -606,10 +616,14 @@ func renderVerbosity3(sb *strings.Builder, step TraceStep) {
 				sb.WriteString(fmt.Sprintf("        Text:\n%s\n", indentText(strings.TrimSpace(p.Text), "          ")))
 			}
 			if p.FunctionCall != nil {
+				// re-marshalling a value read straight back off a persisted turn, so
+				// unsupported types cannot reach here and a failure is not reachable.
 				argsBytes, _ := json.Marshal(p.FunctionCall.Args)
 				sb.WriteString(fmt.Sprintf("        ToolCall: %s(%s)\n", p.FunctionCall.Name, string(argsBytes)))
 			}
 			if p.FunctionResponse != nil {
+				// re-marshalling a value read straight back off a persisted turn, so
+				// unsupported types cannot reach here and a failure is not reachable.
 				respBytes, _ := json.Marshal(p.FunctionResponse.Response)
 				sb.WriteString(fmt.Sprintf("        ToolResp: %s => %s\n", p.FunctionResponse.Name, string(respBytes)))
 			}
@@ -621,6 +635,8 @@ func renderVerbosity4(sb *strings.Builder, step TraceStep) {
 	if len(step.TurnContents) > 0 {
 		sb.WriteString("        Turns (JSONL):\n")
 		for _, turn := range step.TurnContents {
+			// re-marshalling a value read straight back off a persisted turn, so
+			// unsupported types cannot reach here and a failure is not reachable.
 			bytes, _ := json.Marshal(turn)
 			sb.WriteString(fmt.Sprintf("          %s\n", string(bytes)))
 		}

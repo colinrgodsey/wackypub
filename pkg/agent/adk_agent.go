@@ -420,6 +420,7 @@ func toolInvocationSig(name string, args map[string]any) string {
 		data = []byte("<unmarshalable>")
 	}
 	h := fnv.New32a()
+	// hash.Hash.Write cannot fail, so there is nothing to check on this trio.
 	_, _ = h.Write([]byte(name))
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write(data)

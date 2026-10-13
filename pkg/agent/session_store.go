@@ -492,6 +492,8 @@ func EstimateTokens(turns []*genai.Content, includeThinking bool) int {
 			if p.FunctionCall != nil {
 				chars += len(p.FunctionCall.Name)
 				if p.FunctionCall.Args != nil {
+					// re-marshalling a value read straight back off a persisted turn, so
+					// unsupported types cannot reach here and a failure is not reachable.
 					b, _ := json.Marshal(p.FunctionCall.Args)
 					chars += len(b)
 				}
@@ -499,6 +501,8 @@ func EstimateTokens(turns []*genai.Content, includeThinking bool) int {
 			if p.FunctionResponse != nil {
 				chars += len(p.FunctionResponse.Name)
 				if p.FunctionResponse.Response != nil {
+					// re-marshalling a value read straight back off a persisted turn, so
+					// unsupported types cannot reach here and a failure is not reachable.
 					b, _ := json.Marshal(p.FunctionResponse.Response)
 					chars += len(b)
 				}

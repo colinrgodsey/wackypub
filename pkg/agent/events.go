@@ -204,6 +204,7 @@ func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64,
 	if len(events) > 0 {
 		latestSeq = events[len(events)-1].Seq
 	}
+	// no readable seq file simply means nothing beyond the event list to account for.
 	cur, _ := CurrentSeq(agentDir)
 	if cur > latestSeq {
 		latestSeq = cur
@@ -223,7 +224,7 @@ func (s *AgentSDK) ReadSessionEvents(ctx context.Context, req *agentv1.ReadSessi
 		agentID = req.GetAgentId()
 	}
 	if agentID == "" {
-		return nil, fmt.Errorf("agentID cannot be empty")
+		return nil, errAgentIDRequired
 	}
 
 	if err := AuthorizeAgentTarget(agentID); err != nil {
@@ -335,7 +336,7 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 	}()
 
 	if agentID == "" {
-		return fmt.Errorf("agentID cannot be empty")
+		return errAgentIDRequired
 	}
 
 	if err := AuthorizeAgentTarget(agentID); err != nil {

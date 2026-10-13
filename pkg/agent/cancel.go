@@ -76,7 +76,7 @@ type TurnCancellation struct {
 // so the session is immediately usable again instead of wedged.
 func (s *AgentSDK) CancelAgentTurn(agentID string) (TurnCancellation, error) {
 	if agentID == "" {
-		return TurnCancellation{}, fmt.Errorf("agentID cannot be empty")
+		return TurnCancellation{}, errAgentIDRequired
 	}
 	if _, err := ValidateAgentTarget(agentID); err != nil {
 		return TurnCancellation{}, err
