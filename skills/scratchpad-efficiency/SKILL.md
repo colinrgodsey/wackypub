@@ -156,6 +156,38 @@ The server recognizes `<<.../>>` and emits the inner single-tag form. No macro e
 **Why doubled-token and not backslash:** the older form using a leading backslash before the macro was buggy -- it consumed the backslash and emitted a re-expandable token. The doubled form is shape-distinct (it can never be confused with a real macro) and survives intact through any further pass that scans for scratchpad references.
 
 
+
+### Using macros for escape-literal payloads (the heredoc-mangling fix)
+
+`run_command` args and stdin are JSON strings. Before the command runs, the JSON
+layer decodes escape sequences - `\n` becomes a real newline, `\t` a real tab,
+`\"` a real quote, `\\` a single backslash. That is correct RFC 8259 behavior,
+not a bug: every normal multiline arg depends on it. It only bites when you embed
+source that ITSELF contains escape literals (python string literals, regexes with
+backslashes, printf/host quoting). A python heredoc whose source says `x = 'a\nb'`
+arrives with a REAL newline inside the string literal - syntax error, or silently
+the wrong string.
+
+The clean path for such payloads is a scratchpad macro: expansion happens AFTER
+the JSON decode boundary, so an entry's bytes substitute byte-exact. Stage the
+source in an entry first, then pass it through:
+
+```json
+{
+  "command": "bash",
+  "args": ["-c", "python3 - <<'PYEOF'\n<SCRATCHPAD_DATA id="pysrc" />\nPYEOF"],
+}
+```
+
+The entry bytes land as-is: `\n` in the entry stays two characters, a real
+newline stays a real newline, and python parses exactly what was staged. This
+is the definitive rule for python heredocs, multi-line regexes, and any payload
+whose escape literals must survive the journey.
+
+The escape hatch in the other direction is `json_escape="true"`: it JSON-encodes
+the entry text (doubling backslashes, escaping newlines) for downstream JSON
+consumers, and is the inverse of the byte-exact default.
+
 ### Reach for these macros by default
 
 The `args`/`stdin` macros are the most efficient hand-off primitive in the system, and it is easy to overlook them in favour of the CLI deposit in section 1. Both are server-side and cost no generation tokens, but the macro route has properties the CLI route does not:
