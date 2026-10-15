@@ -48,6 +48,7 @@ Everything below is on-disk convention — `wackypub workspace <agent_id>` will 
    - **Loading modes**:
      - `always_load: true`: The skill's entire markdown body is automatically appended to the agent's rendered system prompt (`<AUTOLOADED_SKILLS>`) on every turn.
      - `always_load: false` (default): The skill is registered in the on-demand catalog presented to the model via the built-in `load_skill` tool, loaded only when relevant.
+   - **Stability tag** (optional): `stability: stable | testing | experimental` marks how trustworthy a skill is. In the rendered `<AUTOLOADED_SKILLS>` prompt block, always-loaded skills are sorted by stability - `stable` first, then `testing`, then `experimental`, and untagged skills last; name order is preserved within a tier. Sort-only: the tag never adds or removes a skill, and an invalid value fails skill parsing. Workspace listings surface the tag as `(stability: X)`. The on-demand `load_skill` catalog is unaffected.
    - To share common skills across multiple agents, maintain a workspace `skillsets/` folder and symlink into agent directories.
 
 6. **Agent Authorization (`<ws_dir>/<agent_id>/WACKYPUB_ALLOWED_AGENTS`)**:

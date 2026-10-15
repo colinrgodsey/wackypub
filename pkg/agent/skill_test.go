@@ -640,3 +640,116 @@ func TestFormatLoadedSkill_RealNewlines(t *testing.T) {
 		t.Errorf("expected name attribute, got: %q", result)
 	}
 }
+
+// --- Stability frontmatter (tasks/wackypub/skill-stability-frontmatter) ---
+
+func TestParseSkillContent_StabilityField(t *testing.T) {
+	// Tagged values are normalized to lowercase.
+	sk, err := ParseSkillContent("---\nname: a\ndescription: d\nstability: STABLE\n---\nbody\n", "a")
+	if err != nil {
+		t.Fatalf("parse tagged skill: %v", err)
+	}
+	if sk.Stability != "stable" {
+		t.Errorf("expected stability stable, got %q", sk.Stability)
+	}
+
+	// Absent stays "" (untagged).
+	sk, err = ParseSkillContent("---\nname: b\ndescription: d\n---\nbody\n", "b")
+	if err != nil {
+		t.Fatalf("parse untagged skill: %v", err)
+	}
+	if sk.Stability != "" {
+		t.Errorf("expected untagged skill to have empty stability, got %q", sk.Stability)
+	}
+
+	// Invalid enum values fail parsing loudly.
+	_, err = ParseSkillContent("---\nname: c\ndescription: d\nstability: stabl\n---\nbody\n", "c")
+	if err == nil || !strings.Contains(err.Error(), "invalid stability") {
+		t.Fatalf("expected invalid-stability error, got %v", err)
+	}
+
+	// Unknown-key tolerance must keep working (same contract files-rw#11 pinned):
+	// unknown keys are ignored, known keys still parse.
+	sk, err = ParseSkillContent("---\nname: e\ndescription: d\nalways_load: true\nstability: testing\nsome_unknown_key: [a, b]\nauthor: colin\n---\nbody\n", "e")
+	if err != nil {
+		t.Fatalf("unknown keys should be tolerated: %v", err)
+	}
+	if !sk.AlwaysLoad || sk.Stability != "testing" {
+		t.Errorf("expected always_load + testing to survive unknown keys, got %+v", sk)
+	}
+}
+
+func TestRenderAutoloadedSkills_StabilitySort(t *testing.T) {
+	agentDir := filepath.Join(t.TempDir(), "carol")
+	skillsDir := filepath.Join(agentDir, "skills")
+
+	writeSkill := func(dir, stability string) {
+		t.Helper()
+		d := filepath.Join(skillsDir, dir)
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		content := "---\nname: " + dir + "\ndescription: skill " + dir + "\nalways_load: true\n"
+		if stability != "" {
+			content += "stability: " + stability + "\n"
+		}
+		content += "---\nbody of " + dir + "\n"
+		if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte(content), 0644); err != nil {
+			t.Fatalf("write %s: %v", dir, err)
+		}
+	}
+
+	// Two skills per tier, deliberately unordered across tiers.
+	writeSkill("z-zeta", "stable")
+	writeSkill("a-alpha", "stable")
+	writeSkill("m-mid", "testing")
+	writeSkill("b-beta", "experimental")
+	writeSkill("k-keep", "experimental")
+	writeSkill("q-quiet", "")
+	writeSkill("n-novel", "")
+
+	block, err := RenderAutoloadedSkills(agentDir)
+	if err != nil {
+		t.Fatalf("RenderAutoloadedSkills: %v", err)
+	}
+
+	var got []string
+	rest := block
+	for {
+		i := strings.Index(rest, `<SKILL name="`)
+		if i < 0 {
+			break
+		}
+		rest = rest[i+len(`<SKILL name="`):]
+		j := strings.Index(rest, `"`)
+		if j < 0 {
+			t.Fatalf("unterminated skill name in %q", rest)
+		}
+		got = append(got, rest[:j])
+		rest = rest[j+1:]
+	}
+
+	// Sort-only: all seven present; stable tier, testing, experimental, untagged last,
+	// name order within a tier.
+	want := []string{"a-alpha", "z-zeta", "m-mid", "b-beta", "k-keep", "n-novel", "q-quiet"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d skills (sort-only, no filtering), got %d: %v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("skill order mismatch: got %v, want %v", got, want)
+		}
+	}
+
+	// Discovery contract unchanged: the alwaysLoaded slice stays name-sorted - the
+	// stability sort happens at render time only.
+	_, _, alwaysLoaded, err := DiscoverAgentSkills(agentDir)
+	if err != nil {
+		t.Fatalf("DiscoverAgentSkills: %v", err)
+	}
+	for i := 1; i < len(alwaysLoaded); i++ {
+		if alwaysLoaded[i-1].Name >= alwaysLoaded[i].Name {
+			t.Fatalf("discovery should stay name-sorted, got %v", alwaysLoaded)
+		}
+	}
+}
