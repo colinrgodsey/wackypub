@@ -20,12 +20,14 @@ type SkillFrontmatter struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
 	AlwaysLoad  bool   `yaml:"always_load"`
+	Stability   string `yaml:"stability"`
 }
 
 type Skill struct {
 	Name        string
 	Description string
 	AlwaysLoad  bool
+	Stability   string
 	Body        string
 	Path        string
 }
@@ -75,12 +77,33 @@ func ParseSkillContent(content string, fallbackName string) (*Skill, error) {
 		desc = fmt.Sprintf("Skill %s", name)
 	}
 
+	stability, err := normalizeStability(fm.Stability)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Skill{
 		Name:        name,
 		Description: desc,
 		AlwaysLoad:  fm.AlwaysLoad,
+		Stability:   stability,
 		Body:        body,
 	}, nil
+}
+
+// normalizeStability trims and lowercases the raw frontmatter value and enforces the
+// stability enum. Absent or empty is the untagged state and stays "".
+func normalizeStability(raw string) (string, error) {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if s == "" {
+		return "", nil
+	}
+	switch s {
+	case "stable", "testing", "experimental":
+		return s, nil
+	default:
+		return "", fmt.Errorf("invalid stability %q: valid values are stable, testing, experimental", s)
+	}
 }
 
 // DiscoverAgentSkillsMap walks <agentDir>/skills/ recursively looking for SKILL.md files according to D20.
@@ -183,6 +206,32 @@ func DiscoverAgentSkills(agentDir string) (map[string]*Skill, []*Skill, []*Skill
 	return skillsMap, onDemand, alwaysLoaded, err
 }
 
+// stabilityRank orders the auto-loaded section: most stable first, untagged last.
+func stabilityRank(sk *Skill) int {
+	switch sk.Stability {
+	case "stable":
+		return 0
+	case "testing":
+		return 1
+	case "experimental":
+		return 2
+	default:
+		return 3
+	}
+}
+
+// sortAutoloadedStability sorts an always-loaded skill slice stability-first, keeping
+// name order within a tier. Sort-only: nothing is added or dropped.
+func sortAutoloadedStability(skills []*Skill) {
+	sort.Slice(skills, func(i, j int) bool {
+		ri, rj := stabilityRank(skills[i]), stabilityRank(skills[j])
+		if ri != rj {
+			return ri < rj
+		}
+		return skills[i].Name < skills[j].Name
+	})
+}
+
 // RenderAutoloadedSkills formats always-loaded skills into the <AUTOLOADED_SKILLS> system prompt block.
 
 func RenderAutoloadedSkills(agentDir string) (string, error) {
@@ -190,6 +239,8 @@ func RenderAutoloadedSkills(agentDir string) (string, error) {
 	if err != nil || len(alwaysLoaded) == 0 {
 		return "", err
 	}
+
+	sortAutoloadedStability(alwaysLoaded)
 
 	var sb strings.Builder
 	sb.WriteString("<AUTOLOADED_SKILLS>\n")
@@ -311,4 +362,14 @@ func ListSkillExtraFiles(skillDir string) ([]string, error) {
 
 	sort.Strings(files)
 	return files, nil
+}
+
+// skillNameMarker renders a discovered skill name for workspace listings, surfacing
+// the stability tag when present.
+func skillNameMarker(sk *Skill, suffix string) string {
+	name := sk.Name + suffix
+	if sk.Stability != "" {
+		name += fmt.Sprintf(" (stability: %s)", sk.Stability)
+	}
+	return name
 }
