@@ -430,6 +430,20 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 		testHookPreSnapshotRead()
 	}
 
+	sessionPath := filepath.Join(agentDir, SessionFileName)
+	var lastFileInfo os.FileInfo
+	var lastOffset int64
+	var lastFileExists bool
+	// Stat BEFORE the snapshot read: lastOffset must not exceed the content the snapshot
+	// already delivered. A post-read stat would bake appends made during the replay into
+	// lastOffset, and the incremental read (which starts at lastOffset) would skip them
+	// forever - a missed update. Overlap re-reads are deduped by the seq filter.
+	if fi, err := os.Stat(sessionPath); err == nil {
+		lastFileInfo = fi
+		lastOffset = fi.Size()
+		lastFileExists = true
+	}
+
 	// 1. Initial snapshot & replay
 	events, baselineSeq, latestSeq, _, err := ReadSessionEventsFromDisk(agentDir)
 	if err != nil {
@@ -489,16 +503,6 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 		}
 	}
 
-	sessionPath := filepath.Join(agentDir, SessionFileName)
-	var lastFileInfo os.FileInfo
-	var lastOffset int64
-	var lastFileExists bool
-	if fi, err := os.Stat(sessionPath); err == nil {
-		lastFileInfo = fi
-		lastOffset = fi.Size()
-		lastFileExists = true
-	}
-
 	// 2. Live streaming loop with bounded buffer
 	ticker := time.NewTicker(subscribeTickerInterval)
 	defer ticker.Stop()
@@ -553,6 +557,8 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 					// Fallback to full re-read if incremental read failed
 					newEvents, _, _, _, err = ReadSessionEventsFromDisk(agentDir)
 					if err != nil {
+						lastFileInfo = fi
+						lastFileExists = true
 						select {
 						case <-ctx.Done():
 							return ctx.Err()
@@ -569,6 +575,8 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 				// File was created, replaced (compaction rename), or truncated
 				newEvents, _, _, _, err = ReadSessionEventsFromDisk(agentDir)
 				if err != nil {
+					lastFileInfo = fi
+					lastFileExists = true
 					select {
 					case <-ctx.Done():
 						return ctx.Err()

@@ -1189,3 +1189,78 @@ func TestSubscribeSession_FiveIdleWatchersProduceZeroDiskReads(t *testing.T) {
 	cancel()
 	wg.Wait()
 }
+
+// TestSubscribeSession_CorruptSessionDoesNotHotPoll verifies that an unreadable/corrupt
+// session file (e.g. line exceeding MaxSessionLineBytes) does not cause the 50ms polling loop
+// to spin re-opening and re-reading the unchanged corrupt file.
+func TestSubscribeSession_CorruptSessionDoesNotHotPoll(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	agentID := "corrupt-agent"
+	agentDir := filepath.Join(tempDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	_ = AppendSessionTurn(agentDir, "user", "turn 1")
+
+	var diskReadCount atomic.Int64
+	origHook := testHookSessionDiskRead
+	testHookSessionDiskRead = func() {
+		diskReadCount.Add(1)
+	}
+	defer func() { testHookSessionDiskRead = origHook }()
+
+	sdk := NewSDK(tempDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &mockSubscribeStream{ctx: ctx}
+	streamDone := make(chan error, 1)
+
+	go func() {
+		streamDone <- sdk.SubscribeSession(&agentv1.SubscribeSessionRequest{
+			AgentId:      agentID,
+			WorkspaceDir: tempDir,
+		}, stream)
+	}()
+
+	// Wait for turn 1 replay
+	time.Sleep(100 * time.Millisecond)
+	readsAfterReplay := diskReadCount.Load()
+
+	// Append an oversized line exceeding MaxSessionLineBytes to trigger read error
+	sessionPath := filepath.Join(agentDir, SessionFileName)
+	oversized := make([]byte, testScannerOverflowLine)
+	for i := range oversized {
+		oversized[i] = 'a'
+	}
+	oversized[len(oversized)-1] = '\n'
+	f, err := os.OpenFile(sessionPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	_, _ = f.Write(oversized)
+	_ = f.Sync()
+	_ = f.Close()
+
+	// Wait for subscriber to attempt reading the corrupted file
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && diskReadCount.Load() == readsAfterReplay {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if diskReadCount.Load() == readsAfterReplay {
+		t.Fatalf("subscriber never attempted to read corrupted session")
+	}
+	// Give 300ms for fallback pass to complete and settle on lastFileInfo
+	time.Sleep(300 * time.Millisecond)
+	readsAfterCorrupt := diskReadCount.Load()
+
+	// Idle over 500ms (10 poll ticks): since the corrupt file did not change, zero further reads should occur
+	time.Sleep(500 * time.Millisecond)
+	readsAfterWait := diskReadCount.Load() - readsAfterCorrupt
+	if readsAfterWait != 0 {
+		t.Fatalf("expected 0 disk reads during corrupt idle period, got %d (still hot-polling)", readsAfterWait)
+	}
+
+	cancel()
+	<-streamDone
+}
