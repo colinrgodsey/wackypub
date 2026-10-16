@@ -90,6 +90,10 @@ func AcquireSessionLockContext(ctx context.Context, agentDir string) (*SessionLo
 	// contended is set on the first EWOULDBLOCK so the wait-visibility line prints ONCE
 	// instead of every 25ms tick.
 	contended := false
+	var (
+		namedHolder string
+		holderDue   time.Time
+	)
 	for {
 		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
@@ -106,6 +110,19 @@ func AcquireSessionLockContext(ctx context.Context, agentDir string) (*SessionLo
 		if !contended {
 			contended = true
 			fmt.Fprintf(os.Stderr, "waiting for session.lock on %s (held by another process)\n", lockPath)
+			holderDue = time.Now().Add(lockWaitGrace)
+		}
+
+		// Only a wait that is already stuck pays for a holder lookup, and then at most once per
+		// refresh interval: the hot path stays one LOCK_NB attempt plus a tick.
+		if !holderDue.IsZero() && !time.Now().Before(holderDue) {
+			holderDue = time.Now().Add(lockWaitRefreshInterval)
+			if h, ok := resolveLockWaitHolder(lockPath); ok {
+				if desc := h.describe(); desc != "" && desc != namedHolder {
+					namedHolder = desc
+					fmt.Fprintf(os.Stderr, "waiting for session.lock on %s (%s)\n", lockPath, desc)
+				}
+			}
 		}
 
 		select {
