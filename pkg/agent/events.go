@@ -2,9 +2,12 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -75,6 +78,129 @@ const maxSubscriberBuffer = 64
 // Used in tests to verify that broker registration before snapshot read eliminates the race window.
 var testHookPreSnapshotRead func()
 
+// testHookSessionDiskRead is invoked whenever session.jsonl is opened from disk (either full
+// read or incremental read). Used in regression tests to verify that idle watch sessions
+// produce zero read activity.
+var testHookSessionDiskRead func()
+
+func parseSessionEventFromLine(lineBytes []byte, fallbackSeq int64) (*agentv1.SessionEvent, bool) {
+	if len(lineBytes) == 0 {
+		return nil, false
+	}
+	rawLine := string(lineBytes)
+
+	var pt PersistedTurn
+	if err := json.Unmarshal(lineBytes, &pt); err != nil {
+		return nil, false
+	}
+
+	seq := pt.Seq
+	if seq <= 0 {
+		seq = fallbackSeq
+	}
+
+	st := &agentv1.SessionTurn{
+		Role: pt.Role,
+		Seq:  seq,
+	}
+	if contentJSON, err := json.Marshal(&pt.Content); err == nil {
+		st.ContentJson = string(contentJSON)
+	}
+	var isCompaction bool
+	var compactionText string
+	for _, p := range pt.Parts {
+		if p == nil {
+			continue
+		}
+		sp := &agentv1.SessionPart{
+			Text: p.Text,
+		}
+		if p.InlineData != nil {
+			sp.InlineData = p.InlineData.Data
+			sp.MimeType = p.InlineData.MIMEType
+		}
+		st.Parts = append(st.Parts, sp)
+		if strings.Contains(p.Text, "<COMPACTION_NOTICE>") {
+			isCompaction = true
+			compactionText = p.Text
+		}
+	}
+
+	sev := &agentv1.SessionEvent{
+		Seq: seq,
+		Raw: rawLine,
+	}
+	if isCompaction {
+		sev.Event = &agentv1.SessionEvent_Compaction{
+			Compaction: &agentv1.CompactionEvent{
+				Summary: compactionText,
+				Turn:    st,
+			},
+		}
+	} else {
+		sev.Event = &agentv1.SessionEvent_Turn{
+			Turn: st,
+		}
+	}
+	return sev, isCompaction
+}
+
+// readSessionEventsIncremental reads newly appended lines from session.jsonl starting from startOffset.
+func readSessionEventsIncremental(sessionPath string, startOffset int64, lastEmittedSeq int64) ([]*agentv1.SessionEvent, int64, error) {
+	f, err := os.Open(sessionPath)
+	if err != nil {
+		return nil, startOffset, err
+	}
+	defer f.Close()
+
+	if testHookSessionDiskRead != nil {
+		testHookSessionDiskRead()
+	}
+
+	if startOffset > 0 {
+		if _, err := f.Seek(startOffset, io.SeekStart); err != nil {
+			return nil, startOffset, fmt.Errorf("seeking to %d in %s: %w", startOffset, SessionFileName, err)
+		}
+	}
+
+	reader := bufio.NewReaderSize(f, 64*1024)
+	offset := startOffset
+	var events []*agentv1.SessionEvent
+	fallbackSeq := lastEmittedSeq
+
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			if line[len(line)-1] != '\n' {
+				// Incomplete line write in progress! Do not advance offset past it.
+				// Next poll/notify tick will read the complete line once flushed with \n.
+				break
+			}
+			if len(line) > MaxSessionLineBytes {
+				return events, offset, fmt.Errorf("line exceeds maximum length of %d bytes", MaxSessionLineBytes)
+			}
+			offset += int64(len(line))
+			trimmed := bytes.TrimRight(line, "\r\n")
+			fallbackSeq++
+			sev, _ := parseSessionEventFromLine(trimmed, fallbackSeq)
+			if sev != nil {
+				if sev.Seq > fallbackSeq {
+					fallbackSeq = sev.Seq
+				}
+				events = append(events, sev)
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return events, offset, readErr
+		}
+	}
+
+	return events, offset, nil
+}
+
 // ReadSessionEventsFromDisk reads the durable event stream from session.jsonl, the only
 // durable source. A tool attempt that never reached a persisted turn is not in it and
 // reaches consumers live instead.
@@ -87,81 +213,31 @@ func ReadSessionEventsFromDisk(agentDir string) ([]*agentv1.SessionEvent, int64,
 	// 1. Read session.jsonl
 	sessionPath := filepath.Join(agentDir, SessionFileName)
 	if f, err := os.Open(sessionPath); err == nil {
+		if testHookSessionDiskRead != nil {
+			testHookSessionDiskRead()
+		}
 		scanner := bufio.NewScanner(f)
 		scanner.Buffer(make([]byte, 1024*1024), MaxSessionLineBytes)
 		var lineIdx int64
 		for scanner.Scan() {
 			lineIdx++
 			lineBytes := scanner.Bytes()
-			if len(lineBytes) == 0 {
+			sev, isCompaction := parseSessionEventFromLine(lineBytes, lineIdx)
+			if sev == nil {
 				continue
 			}
-			rawLine := string(lineBytes)
-
-			var pt PersistedTurn
-			if err := json.Unmarshal(lineBytes, &pt); err != nil {
-				continue
-			}
-
-			seq := pt.Seq
-			if seq <= 0 {
-				seq = lineIdx
-			}
-
-			// Convert to proto turn
-			st := &agentv1.SessionTurn{
-				Role: pt.Role,
-				Seq:  seq,
-			}
-			if contentJSON, err := json.Marshal(&pt.Content); err == nil {
-				st.ContentJson = string(contentJSON)
-			}
-			var isCompaction bool
-			var compactionText string
-			for _, p := range pt.Parts {
-				if p == nil {
-					continue
+			seq := sev.Seq
+			if isCompaction {
+				hasCompaction = true
+				if sessionBaselineSeq == 0 {
+					sessionBaselineSeq = seq
 				}
-				sp := &agentv1.SessionPart{
-					Text: p.Text,
-				}
-				if p.InlineData != nil {
-					sp.InlineData = p.InlineData.Data
-					sp.MimeType = p.InlineData.MIMEType
-				}
-				st.Parts = append(st.Parts, sp)
-				if strings.Contains(p.Text, "<COMPACTION_NOTICE>") {
-					isCompaction = true
-					hasCompaction = true
-					compactionText = p.Text
-				}
-			}
-
-			if !isCompaction {
+			} else {
 				if sessionBaselineSeq == 0 || seq < sessionBaselineSeq {
 					sessionBaselineSeq = seq
 				}
 				if seq > latestTurnSeq {
 					latestTurnSeq = seq
-				}
-			} else if sessionBaselineSeq == 0 {
-				sessionBaselineSeq = seq
-			}
-
-			sev := &agentv1.SessionEvent{
-				Seq: seq,
-				Raw: rawLine,
-			}
-			if isCompaction {
-				sev.Event = &agentv1.SessionEvent_Compaction{
-					Compaction: &agentv1.CompactionEvent{
-						Summary: compactionText,
-						Turn:    st,
-					},
-				}
-			} else {
-				sev.Event = &agentv1.SessionEvent_Turn{
-					Turn: st,
 				}
 			}
 			events = append(events, sev)
@@ -413,10 +489,21 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 		}
 	}
 
+	sessionPath := filepath.Join(agentDir, SessionFileName)
+	var lastFileInfo os.FileInfo
+	var lastOffset int64
+	var lastFileExists bool
+	if fi, err := os.Stat(sessionPath); err == nil {
+		lastFileInfo = fi
+		lastOffset = fi.Size()
+		lastFileExists = true
+	}
+
 	// 2. Live streaming loop with bounded buffer
 	ticker := time.NewTicker(subscribeTickerInterval)
 	defer ticker.Stop()
 
+	var pending []*agentv1.SessionEvent
 	var hasMore bool
 
 	for {
@@ -430,29 +517,98 @@ func (s *AgentSDK) SubscribeSession(req *agentv1.SubscribeSessionRequest, stream
 		}
 		hasMore = false
 
-		// Check for newly committed events on disk
-		newEvents, _, _, _, err := ReadSessionEventsFromDisk(agentDir)
-		if err != nil {
-			continue
-		}
+		if len(pending) == 0 {
+			fi, err := os.Stat(sessionPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					if lastFileExists {
+						// File was removed
+						lastFileExists = false
+						lastFileInfo = nil
+						lastOffset = 0
+					}
+					continue
+				}
+				// Stat error other than NotExist: back off to avoid spinning
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(50 * time.Millisecond):
+				}
+				continue
+			}
 
-		var pending []*agentv1.SessionEvent
-		for _, ev := range newEvents {
-			if ev.Seq > lastEmittedSeq {
-				pending = append(pending, ev)
+			// File exists. Check if it changed since last read.
+			if lastFileExists && lastFileInfo != nil && os.SameFile(lastFileInfo, fi) &&
+				fi.Size() == lastFileInfo.Size() && fi.ModTime().Equal(lastFileInfo.ModTime()) {
+				// Watched session is idle: zero read activity required.
+				continue
+			}
+
+			var newEvents []*agentv1.SessionEvent
+			if lastFileExists && lastFileInfo != nil && os.SameFile(lastFileInfo, fi) && fi.Size() >= lastOffset {
+				// Incremental append path
+				readEvs, newOff, readErr := readSessionEventsIncremental(sessionPath, lastOffset, lastEmittedSeq)
+				if readErr != nil {
+					// Fallback to full re-read if incremental read failed
+					newEvents, _, _, _, err = ReadSessionEventsFromDisk(agentDir)
+					if err != nil {
+						select {
+						case <-ctx.Done():
+							return ctx.Err()
+						case <-time.After(50 * time.Millisecond):
+						}
+						continue
+					}
+					lastOffset = fi.Size()
+				} else {
+					newEvents = readEvs
+					lastOffset = newOff
+				}
+			} else {
+				// File was created, replaced (compaction rename), or truncated
+				newEvents, _, _, _, err = ReadSessionEventsFromDisk(agentDir)
+				if err != nil {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(50 * time.Millisecond):
+					}
+					continue
+				}
+				lastOffset = fi.Size()
+			}
+
+			lastFileInfo = fi
+			lastFileExists = true
+
+			for _, ev := range newEvents {
+				if ev.Seq > lastEmittedSeq {
+					pending = append(pending, ev)
+				}
 			}
 		}
 
-		if len(pending) > maxSubscriberBuffer {
-			pending = pending[:maxSubscriberBuffer]
+		if len(pending) > 0 {
+			batchSize := len(pending)
+			if batchSize > maxSubscriberBuffer {
+				batchSize = maxSubscriberBuffer
+			}
+			batch := pending[:batchSize]
+			pending = pending[batchSize:]
+
+			for _, ev := range batch {
+				if err := stream.Send(&agentv1.SubscribeSessionResponse{Event: ev}); err != nil {
+					return err
+				}
+				if ev.Seq > lastEmittedSeq {
+					lastEmittedSeq = ev.Seq
+				}
+			}
+		}
+
+		if len(pending) > 0 {
 			hasMore = true
-		}
-
-		for _, ev := range pending {
-			if err := stream.Send(&agentv1.SubscribeSessionResponse{Event: ev}); err != nil {
-				return err
-			}
-			lastEmittedSeq = ev.Seq
 		}
 	}
 }
