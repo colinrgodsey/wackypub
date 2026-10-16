@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -206,5 +207,162 @@ func TestFastUncontendedAcquisitionIsSilent(t *testing.T) {
 	})
 	if out != "" {
 		t.Errorf("an uncontended acquisition must print nothing, got %q", out)
+	}
+}
+
+// agy's blocking finding: a stale PID hint must never mask a live kernel holder. The case is a
+// holder that was killed, leaving its PID in session.lock, while a different process now holds the
+// flock. Naming the dead PID sends an operator to a process that died an hour ago.
+func TestChooseLockHolderPID(t *testing.T) {
+	cases := []struct {
+		name     string
+		kernel   int
+		hint     int
+		hintLive bool
+		want     int
+	}{
+		{"stale hint never masks a live kernel holder", 4123, 9999, false, 4123},
+		{"agreeing candidates", 4123, 4123, true, 4123},
+		{"no hint, kernel only", 4123, 0, false, 4123},
+		{"live hint disagreeing with the kernel row wins", 4123, 7777, true, 7777},
+		{"no kernel row, live hint", 0, 7777, true, 7777},
+		{"nothing known", 0, 0, false, 0},
+		{"kernel missing and hint dead names nobody", 0, 9999, false, 0},
+	}
+	for _, tc := range cases {
+		if got := chooseLockHolderPID(tc.kernel, tc.hint, tc.hintLive); got != tc.want {
+			t.Errorf("%s: chooseLockHolderPID(%d, %d, %v) = %d, want %d", tc.name, tc.kernel, tc.hint, tc.hintLive, got, tc.want)
+		}
+	}
+}
+
+func TestHolderPIDFromProcLocksTextSkipsNonFlockRows(t *testing.T) {
+	const inode = "08:01:2949123"
+	self := os.Getpid()
+	// A POSIX (fcntl) lock and an OFD lock on the same inode do not block flock(2), so their
+	// owners must not be named as the blocker. Only the FLOCK row counts.
+	fixture := strings.Join([]string{
+		"1: POSIX  ADVISORY  WRITE 2222 " + inode + " 0 EOF",
+		"2: OFDLCK ADVISORY  WRITE 3333 " + inode + " 0 EOF",
+		"3: FLOCK  ADVISORY  WRITE 4444 " + inode + " 0 EOF",
+	}, "\n")
+	if got := holderPIDFromProcLocksText(fixture, inode, self); got != 4444 {
+		t.Errorf("want the flock owner 4444, got %d", got)
+	}
+
+	onlyPosix := "1: POSIX  ADVISORY  WRITE 2222 " + inode + " 0 EOF"
+	if got := holderPIDFromProcLocksText(onlyPosix, inode, self); got != 0 {
+		t.Errorf("a POSIX-only inode must name nobody, got %d", got)
+	}
+	onlyOfd := "1: OFDLCK ADVISORY  WRITE 3333 " + inode + " 0 EOF"
+	if got := holderPIDFromProcLocksText(onlyOfd, inode, self); got != 0 {
+		t.Errorf("an OFD-only inode must name nobody, got %d", got)
+	}
+}
+
+func TestFdInfoReportsLock(t *testing.T) {
+	dir := t.TempDir()
+
+	// Real kernel shapes, sampled on this host: an unlocked fd reports only pos/flags/mnt_id/ino.
+	unlocked := filepath.Join(dir, "fdinfo-unlocked")
+	if err := os.WriteFile(unlocked, []byte("pos:\t0\nflags:\t02402002\nmnt_id:\t44\nino:\t132794\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(dir, "fdinfo-locked")
+	if err := os.WriteFile(locked, []byte("pos:\t0\nflags:\t02402002\nmnt_id:\t44\nino:\t132794\nlock:\t1: FLOCK  ADVISORY  WRITE 904706 b3:02:132794 0 EOF\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	posixOnly := filepath.Join(dir, "fdinfo-posix")
+	if err := os.WriteFile(posixOnly, []byte("pos:\t0\nflags:\t02\nmnt_id:\t44\nino:\t1\nlock:\t2: POSIX  ADVISORY  WRITE 5 b3:02:1 0 EOF\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if fdInfoReportsLock(unlocked) {
+		t.Error("an fd with no lock row must not be reported as a holder")
+	}
+	if !fdInfoReportsLock(locked) {
+		t.Error("an fd whose fdinfo names a FLOCK row must be reported as a holder")
+	}
+	if fdInfoReportsLock(posixOnly) {
+		t.Error("a POSIX lock row must not satisfy the flock check")
+	}
+
+	// And against the live kernel: a file this test actually flocks must read back as held.
+	lockPath := filepath.Join(dir, "session.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if fdInfoReportsLock(fmt.Sprintf("/proc/self/fdinfo/%d", f.Fd())) {
+		t.Error("the fd is not locked yet, so it must read as unlocked")
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Skipf("flock unavailable here: %v", err)
+	}
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+	if !fdInfoReportsLock(fmt.Sprintf("/proc/self/fdinfo/%d", f.Fd())) {
+		t.Error("a fd this test holds an exclusive flock on must read as a holder")
+	}
+}
+
+func TestHolderCommandLineStaysSingleLineAndRedactsSecrets(t *testing.T) {
+	argv := []string{
+		"/usr/local/bin/wackypub", "agent", "phineas", "prompt",
+		"--token", "s3crret-do-not-print",
+		"multi\nline\tprompt body",
+	}
+	got := singleLine(strings.Join(shortenCommandArgs(argv, holderArgvTokenLimit), " "))
+	if strings.ContainsAny(got, "\n\r") {
+		t.Errorf("the holder notice must be one line, got %q", got)
+	}
+	if strings.Contains(got, "s3crret-do-not-print") {
+		t.Errorf("a credential flag value must never be printed, got %q", got)
+	}
+	if !strings.Contains(got, "[redacted]") {
+		t.Errorf("a redacted credential flag must be visible as such, got %q", got)
+	}
+	if !strings.Contains(got, "wackypub") || !strings.Contains(got, "phineas") {
+		t.Errorf("the notice must still identify the command, got %q", got)
+	}
+	if !strings.Contains(got, "multi line prompt body") {
+		t.Errorf("embedded whitespace must collapse to single spaces, got %q", got)
+	}
+
+	// Same guarantees against a real /proc read: a live child whose argv carries both a newline and
+	// a credential flag.
+	if _, err := exec.LookPath("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	cmd := exec.Command("/bin/sh", "-c", "sleep 30\n", "holder", "--token", "s3crret-real")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting child: %v", err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
+
+	// A child that has not finished exec reports an empty cmdline for a moment, which correctly
+	// falls back to comm, so wait for the real argv rather than racing it. A holder we name in
+	// production has already held the lock for the whole grace period, so this is a fixture
+	// concern only.
+	var line string
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		line = holderCommandLine(cmd.Process.Pid)
+		if strings.Contains(line, "sleep") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !strings.Contains(line, "sleep") {
+		t.Fatalf("never read the child's real argv, last saw %q", line)
+	}
+	if strings.ContainsAny(line, "\n\r") {
+		t.Errorf("a real argv containing a newline must still render one line, got %q", line)
+	}
+	if strings.Contains(line, "s3crret-real") {
+		t.Errorf("real argv must be redacted before it is printed, got %q", line)
+	}
+	if !strings.Contains(line, "sh") || !strings.Contains(line, "[redacted]") {
+		t.Errorf("expected the program name and a redaction marker, got %q", line)
 	}
 }
