@@ -3321,8 +3321,11 @@ type GenerateTurnStreamResponse struct {
 	ToolCall *ToolCall `protobuf:"bytes,3,opt,name=tool_call,json=toolCall,proto3" json:"tool_call,omitempty"`
 	// tool_call_update reports a tool invocation outcome (additive; empty when not present).
 	ToolCallUpdate *ToolCallUpdate `protobuf:"bytes,4,opt,name=tool_call_update,json=toolCallUpdate,proto3" json:"tool_call_update,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// warning carries a non-fatal turn warning (fallback engaged/skipped, turn watchdog).
+	// Text and Usage are empty on warning responses.
+	Warning       string `protobuf:"bytes,5,opt,name=warning,proto3" json:"warning,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GenerateTurnStreamResponse) Reset() {
@@ -3381,6 +3384,13 @@ func (x *GenerateTurnStreamResponse) GetToolCallUpdate() *ToolCallUpdate {
 		return x.ToolCallUpdate
 	}
 	return nil
+}
+
+func (x *GenerateTurnStreamResponse) GetWarning() string {
+	if x != nil {
+		return x.Warning
+	}
+	return ""
 }
 
 // GenerateTurnRequest specifies parameters for the non-streaming generate twin.
@@ -5284,12 +5294,13 @@ const file_agent_proto_rawDesc = "" +
 	"resultHead\x12\x1d\n" +
 	"\n" +
 	"result_ref\x18\x06 \x01(\tR\tresultRef\x12\x10\n" +
-	"\x03seq\x18\a \x01(\x03R\x03seq\"\xeb\x01\n" +
+	"\x03seq\x18\a \x01(\x03R\x03seq\"\x85\x02\n" +
 	"\x1aGenerateTurnStreamResponse\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x122\n" +
 	"\x05usage\x18\x02 \x01(\v2\x1c.wackypub.agent.v1.TurnUsageR\x05usage\x128\n" +
 	"\ttool_call\x18\x03 \x01(\v2\x1b.wackypub.agent.v1.ToolCallR\btoolCall\x12K\n" +
-	"\x10tool_call_update\x18\x04 \x01(\v2!.wackypub.agent.v1.ToolCallUpdateR\x0etoolCallUpdate\"U\n" +
+	"\x10tool_call_update\x18\x04 \x01(\v2!.wackypub.agent.v1.ToolCallUpdateR\x0etoolCallUpdate\x12\x18\n" +
+	"\awarning\x18\x05 \x01(\tR\awarning\"U\n" +
 	"\x13GenerateTurnRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
 	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\"^\n" +

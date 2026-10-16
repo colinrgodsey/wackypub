@@ -916,6 +916,10 @@ message GenerateTurnStreamResponse {
 
   // tool_call_update reports a tool invocation outcome (additive; empty when not present).
   ToolCallUpdate tool_call_update = 4;
+
+  // warning carries a non-fatal turn warning (fallback engaged/skipped, turn watchdog).
+  // Text and Usage are empty on warning responses.
+  string warning = 5;
 }
 
 // GenerateTurnRequest specifies parameters for the non-streaming generate twin.
