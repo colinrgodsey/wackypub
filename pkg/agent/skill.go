@@ -2,10 +2,12 @@ package agent
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -20,14 +22,14 @@ type SkillFrontmatter struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
 	AlwaysLoad  bool   `yaml:"always_load"`
-	Stability   string `yaml:"stability"`
+	Stability   any    `yaml:"stability"`
 }
 
 type Skill struct {
 	Name        string
 	Description string
 	AlwaysLoad  bool
-	Stability   string
+	Stability   *float64
 	Body        string
 	Path        string
 }
@@ -91,18 +93,40 @@ func ParseSkillContent(content string, fallbackName string) (*Skill, error) {
 	}, nil
 }
 
-// normalizeStability trims and lowercases the raw frontmatter value and enforces the
-// stability enum. Absent or empty is the untagged state and stays "".
-func normalizeStability(raw string) (string, error) {
-	s := strings.ToLower(strings.TrimSpace(raw))
-	if s == "" {
-		return "", nil
+// normalizeStability validates the stability ordering hint. It is an unbounded float
+// used purely for ordering (see stabilityLess): a lower value means the skill changes
+// less often and sorts earlier in the auto-loaded prompt section, which protects the
+// cache prefix. It is a hint, not a category - no valid range is enforced. Absent or
+// empty is the untagged state (nil) and sorts last. NaN is rejected: it is not an
+// ordering and breaks comparisons.
+func normalizeStability(raw any) (*float64, error) {
+	if raw == nil {
+		return nil, nil
 	}
-	switch s {
-	case "stable", "testing", "experimental":
-		return s, nil
+	hint := "invalid stability %v: must be a number (unbounded float ordering hint; lower = more stable = sorts earlier)"
+	switch v := raw.(type) {
+	case int:
+		f := float64(v)
+		return &f, nil
+	case int64:
+		f := float64(v)
+		return &f, nil
+	case float64:
+		if math.IsNaN(v) {
+			return nil, fmt.Errorf(hint, v)
+		}
+		return &v, nil
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return nil, nil
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return &f, nil
+		}
+		return nil, fmt.Errorf(hint, v)
 	default:
-		return "", fmt.Errorf("invalid stability %q: valid values are stable, testing, experimental", s)
+		return nil, fmt.Errorf(hint, v)
 	}
 }
 
@@ -206,29 +230,30 @@ func DiscoverAgentSkills(agentDir string) (map[string]*Skill, []*Skill, []*Skill
 	return skillsMap, onDemand, alwaysLoaded, err
 }
 
-// stabilityRank orders the auto-loaded section: most stable first, untagged last.
-func stabilityRank(sk *Skill) int {
-	switch sk.Stability {
-	case "stable":
-		return 0
-	case "testing":
-		return 1
-	case "experimental":
-		return 2
-	default:
-		return 3
+// stabilityLess orders the auto-loaded section by the stability hint: lower value
+// first (lower = changes less often = earlier, protecting the cache prefix), untagged
+// last, name order within equal values. NaN is unreachable - normalizeStability
+// rejects it at parse time.
+func stabilityLess(a, b *Skill) bool {
+	sa, sb := a.Stability, b.Stability
+	switch {
+	case sa == nil && sb == nil:
+		return a.Name < b.Name
+	case sa == nil:
+		return false // untagged sorts after any tagged value
+	case sb == nil:
+		return true // tagged before untagged
+	case *sa != *sb:
+		return *sa < *sb
 	}
+	return a.Name < b.Name
 }
 
-// sortAutoloadedStability sorts an always-loaded skill slice stability-first, keeping
-// name order within a tier. Sort-only: nothing is added or dropped.
+// sortAutoloadedStability sorts an always-loaded skill slice by stability hint, keeping
+// name order for equal values. Sort-only: nothing is added or dropped.
 func sortAutoloadedStability(skills []*Skill) {
 	sort.Slice(skills, func(i, j int) bool {
-		ri, rj := stabilityRank(skills[i]), stabilityRank(skills[j])
-		if ri != rj {
-			return ri < rj
-		}
-		return skills[i].Name < skills[j].Name
+		return stabilityLess(skills[i], skills[j])
 	})
 }
 
@@ -365,11 +390,11 @@ func ListSkillExtraFiles(skillDir string) ([]string, error) {
 }
 
 // skillNameMarker renders a discovered skill name for workspace listings, surfacing
-// the stability tag when present.
+// the stability hint when present.
 func skillNameMarker(sk *Skill, suffix string) string {
 	name := sk.Name + suffix
-	if sk.Stability != "" {
-		name += fmt.Sprintf(" (stability: %s)", sk.Stability)
+	if sk.Stability != nil {
+		name += fmt.Sprintf(" (stability: %s)", strconv.FormatFloat(*sk.Stability, 'g', -1, 64))
 	}
 	return name
 }
