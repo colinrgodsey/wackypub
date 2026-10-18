@@ -1227,31 +1227,32 @@ func TestSubscribeSession_CorruptSessionDoesNotHotPoll(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	readsAfterReplay := diskReadCount.Load()
 
-	// Append an oversized line exceeding MaxSessionLineBytes to trigger read error
+	// Write the oversized line to a temp file and atomically replace session.jsonl
+	// so the concurrent watcher does not observe an intermediate partially-written state.
 	sessionPath := filepath.Join(agentDir, SessionFileName)
 	oversized := make([]byte, testScannerOverflowLine)
 	for i := range oversized {
 		oversized[i] = 'a'
 	}
 	oversized[len(oversized)-1] = '\n'
-	f, err := os.OpenFile(sessionPath, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		t.Fatalf("open session: %v", err)
+	tmpPath := sessionPath + ".tmp"
+	if err := os.WriteFile(tmpPath, oversized, 0644); err != nil {
+		t.Fatalf("write tmp: %v", err)
 	}
-	_, _ = f.Write(oversized)
-	_ = f.Sync()
-	_ = f.Close()
+	if err := os.Rename(tmpPath, sessionPath); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
 
-	// Wait for subscriber to attempt reading the corrupted file
-	deadline := time.Now().Add(3 * time.Second)
+	// Wait for subscriber to attempt reading the replaced file
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) && diskReadCount.Load() == readsAfterReplay {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if diskReadCount.Load() == readsAfterReplay {
 		t.Fatalf("subscriber never attempted to read corrupted session")
 	}
-	// Give 300ms for fallback pass to complete and settle on lastFileInfo
-	time.Sleep(300 * time.Millisecond)
+	// Give a short tick for the subscriber to set lastFileInfo and re-enter select
+	time.Sleep(100 * time.Millisecond)
 	readsAfterCorrupt := diskReadCount.Load()
 
 	// Idle over 500ms (10 poll ticks): since the corrupt file did not change, zero further reads should occur
