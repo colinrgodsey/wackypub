@@ -400,13 +400,18 @@ func (s *AgentSDK) backendFailedUntilReset(cfg *RuntimeConfig) bool {
 // are skipped at turn start so a provably-down quota doesn't burn a turn. Every turn starts
 // primary-first again unless that primary is inside its failed-until window (fail-forward
 // per turn, never sticky beyond the reset hint).
+// A per-level turn watchdog (RuntimeConfig.TurnDeadline) bounds each backend attempt:
+// the level's stream runs on its own goroutine and the walk selects on the deadline,
+// so a stream that never terminates - which would otherwise hold the session lock for
+// the whole turn - cannot wedge the walk. The named deadline error is qualifying, so a
+// zero-text wedge descends to the fallback like any other zero-text failure.
 func (s *AgentSDK) runTurnWithRuntimeFallback(
 	ctx context.Context,
 	agentID string,
 	primary *FolderAgent,
 	chain []*RuntimeConfig,
 	load func(cfg *RuntimeConfig) (*FolderAgent, error),
-	yieldStream func(fa *FolderAgent) iter.Seq2[string, error],
+	yieldStream func(fa *FolderAgent, level int, streamCtx context.Context) iter.Seq2[string, error],
 	onWarnings []func(string),
 	yield func(string, error) bool,
 ) {
@@ -433,49 +438,100 @@ func (s *AgentSDK) runTurnWithRuntimeFallback(
 			}
 		}
 
+		// Turn watchdog: an overall per-level deadline bounding this backend attempt.
+		// The level's stream runs on its own goroutine and the walk selects on the
+		// deadline, so a stream that never terminates cannot hold the turn (and the
+		// session lock) hostage: the deadline wins and fails the level with a named
+		// error naming the backend. If the stream respects its context the goroutine
+		// exits with it; a truly context-deaf stream leaves its goroutine behind until
+		// the stream dies on its own - the turn and the lock are already released, which
+		// is the guarantee the watchdog exists to provide.
+		deadline := levelCfg.TurnDeadline()
+		levelCtx, levelCancel := context.WithTimeout(ctx, deadline)
+		defer levelCancel()
+
+		type levelItem struct {
+			chunk string
+			err   error
+		}
+		items := make(chan levelItem, 16)
+		go func() {
+			defer close(items)
+			for chunk, err := range yieldStream(fa, level, levelCtx) {
+				select {
+				case items <- levelItem{chunk: chunk, err: err}:
+				case <-levelCtx.Done():
+					return
+				}
+			}
+		}()
+
 		var yieldedText bool
 		descend := false
-		for chunk, err := range yieldStream(fa) {
-			if err != nil {
-				lastErr = err
-				// Record quota-reset metadata when the provider supplies it, so the NEXT turn skips
-				// this backend instead of waiting for another fresh 429 (semantics 3, v1 in-memory).
-				if resetAt, ok := ParseQuotaResetHint(err); ok {
-					s.markFailedUntil(levelCfg, resetAt)
-				}
-				if !yieldedText && IsQualifyingFallbackError(err) && level+1 < len(chain) {
-					// Zero-text mid-turn failover (semantics 1): nothing was emitted, so re-running
-					// the turn from scratch on the fallback is clean - no frankenstein risk.
+		levelDone := false
+		for !levelDone {
+			select {
+			case <-levelCtx.Done():
+				lastErr = turnWatchdogError(levelCtx, levelCfg)
+				if !yieldedText && IsQualifyingFallbackError(lastErr) && level+1 < len(chain) {
 					descend = true
+				} else {
+					yield("", lastErr)
+					return
+				}
+				levelDone = true
+			case it, ok := <-items:
+				if !ok {
+					// Iterator returned without an error: the turn completed on this level.
+					levelDone = true
 					break
 				}
-				// Text was already emitted: never swap backends mid-stream (frankenstein guard).
-				// Surface the failure with an annotated warning naming the backend and, when known,
-				// its quota reset time so the operator/agent knows the next turn will skip it.
-				if IsQualifyingFallbackError(err) {
-					warn := fmt.Sprintf("backend %s/%s failed mid-turn: %v", levelCfg.Endpoint, levelCfg.Model, err)
-					if resetAt, ok := ParseQuotaResetHint(err); ok {
-						warn += fmt.Sprintf("; usage limit reached, resets %s", resetAt.Format("2006-01-02 15:04:05"))
+				if it.err != nil {
+					// A deadline that fired while the stream was winding down names the
+					// watchdog, not the raw context error, so the terminal state stays loud
+					// and backend-attributed.
+					if errors.Is(levelCtx.Err(), context.DeadlineExceeded) {
+						lastErr = turnWatchdogError(levelCtx, levelCfg)
+					} else {
+						lastErr = it.err
 					}
-					for _, fn := range onWarnings {
-						if fn != nil {
-							fn(warn)
+					// Record quota-reset metadata when the provider supplies it, so the NEXT turn
+					// skips this backend instead of waiting for another fresh 429 (semantics 3, v1 in-memory).
+					if resetAt, ok := ParseQuotaResetHint(lastErr); ok {
+						s.markFailedUntil(levelCfg, resetAt)
+					}
+					if !yieldedText && IsQualifyingFallbackError(lastErr) && level+1 < len(chain) {
+						// Zero-text mid-turn failover (semantics 1): nothing was emitted, so re-running
+						// the turn from scratch on the fallback is clean - no frankenstein risk.
+						descend = true
+					} else {
+						// Text was already emitted: never swap backends mid-stream (frankenstein guard).
+						// Surface the failure with an annotated warning naming the backend and, when known,
+						// its quota reset time so the operator/agent knows the next turn will skip it.
+						if IsQualifyingFallbackError(lastErr) {
+							warn := fmt.Sprintf("backend %s/%s failed mid-turn: %v", levelCfg.Endpoint, levelCfg.Model, lastErr)
+							if resetAt, ok := ParseQuotaResetHint(lastErr); ok {
+								warn += fmt.Sprintf("; usage limit reached, resets %s", resetAt.Format("2006-01-02 15:04:05"))
+							}
+							for _, fn := range onWarnings {
+								if fn != nil {
+									fn(warn)
+								}
+							}
 						}
+						yield("", lastErr)
+						return
+					}
+					levelDone = true
+				} else {
+					if it.chunk != "" {
+						yieldedText = true
+					}
+					if !yield(it.chunk, nil) {
+						return
 					}
 				}
-				yield("", err)
-				return
 			}
-			if chunk != "" {
-				yieldedText = true
-			}
-			if !yield(chunk, nil) {
-				return
-			}
-		}
-		if ctx.Err() != nil {
-			yield("", ctx.Err())
-			return
 		}
 		if !descend {
 			return
@@ -503,17 +559,29 @@ func (s *AgentSDK) runTurnWithRuntimeFallback(
 	yield("", fmt.Errorf("no runtime backend available for agent %q: all backends were skipped as failed-until-reset", agentID))
 }
 
+// turnWatchdogError names the terminal state for a level whose stream did not terminate
+// within the turn deadline. It is deliberately qualifying (it carries "deadline
+// exceeded"), so a zero-text wedge descends to the fallback like any other qualifying
+// failure; a level cancelled for another reason (client cancel) surfaces the plain
+// context error instead.
+func turnWatchdogError(levelCtx context.Context, cfg *RuntimeConfig) error {
+	if errors.Is(levelCtx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("turn watchdog: deadline exceeded on backend %s/%s (stream did not terminate within %v; named terminal state, session lock released)", cfg.Endpoint, cfg.Model, cfg.TurnDeadline())
+	}
+	return levelCtx.Err()
+}
+
 // generateTurnStreamImpl loads the folder agent and generates the assistant turn yielding text chunks as they arrive.
 // Holds the session lock for the entire duration of the stream.
 //
 // workspaceDir, when non-empty, is the workspace root the turn runs against
 // (per-request override for the stdio service mode); empty defaults to the
 // SDK's configured workspace.
-func (s *AgentSDK) generateTurnStreamImpl(ctx context.Context, agentID string) iter.Seq2[string, error] {
-	return s.generateTurnStreamImplWorkspace(ctx, "", agentID)
+func (s *AgentSDK) generateTurnStreamImpl(ctx context.Context, agentID string, onWarning ...func(string)) iter.Seq2[string, error] {
+	return s.generateTurnStreamImplWorkspace(ctx, "", agentID, onWarning...)
 }
 
-func (s *AgentSDK) generateTurnStreamImplWorkspace(ctx context.Context, workspaceDir, agentID string) iter.Seq2[string, error] {
+func (s *AgentSDK) generateTurnStreamImplWorkspace(ctx context.Context, workspaceDir, agentID string, onWarning ...func(string)) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		if agentID == "" {
 			yield("", errAgentIDRequired)
@@ -560,15 +628,21 @@ func (s *AgentSDK) generateTurnStreamImplWorkspace(ctx context.Context, workspac
 			return loadFolderAgentFromRuntime(primary.AgentDir, wsDir, agentID, a2aMeta, hookEnv, cfg, primary.DotEnv, s.MaxToolTurns, primary.ToolEvents, s.CommandTimeoutSeconds)
 		}
 		s.runTurnWithRuntimeFallback(turnCtx, agentID, primary, chain, load,
-			func(fa *FolderAgent) iter.Seq2[string, error] { return fa.GenerateTurnStream(turnCtx) },
-			nil, yield)
+			func(fa *FolderAgent, level int, streamCtx context.Context) iter.Seq2[string, error] {
+				if level > 0 {
+					return fa.GenerateTurnStreamResumable(streamCtx)
+				}
+				return fa.GenerateTurnStream(streamCtx)
+			},
+			onWarning, yield)
 	}
 }
 
 // GenerateTurnStream satisfies agentv1.AgentServiceServer (D112 Phase 2 canary). It runs
 // the continue-only generation path and pushes each text chunk onto the in-process server
-// stream. Warnings do not apply here (no user-message hooks run for a continue-only turn),
-// so every chunk carries text. Cancellation flows through stream.Context().
+// stream. Turn-level warnings (runtime fallback engaged/skipped, turn watchdog) ride the
+// stream as warning responses; no user-message hooks run on a continue-only turn.
+// Cancellation flows through stream.Context().
 func (s *AgentSDK) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, stream grpc.ServerStreamingServer[agentv1.GenerateTurnStreamResponse]) error {
 	agentID := ""
 	if req != nil {
@@ -589,6 +663,16 @@ func (s *AgentSDK) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, st
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 	ctx = withToolEvents(ctx, sink)
+
+	// Turn-level warnings (fallback engaged/skipped, turn watchdog) are surfaced on the
+	// stream as warning responses, the same shape as the add-and-generate path.
+	warnings := make(chan string, 16)
+	onWarning := func(w string) {
+		select {
+		case warnings <- w:
+		case <-ctx.Done():
+		}
+	}
 
 	// M1 liveness: the impl iterator is pulled on its own goroutine so the handler can select
 	// on sink.Notify() while a tool is still running. ADK yields nothing between the model
@@ -616,7 +700,7 @@ func (s *AgentSDK) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, st
 				}
 			}
 		}()
-		for chunk, err := range s.generateTurnStreamImplWorkspace(ctx, wsDir, agentID) {
+		for chunk, err := range s.generateTurnStreamImplWorkspace(ctx, wsDir, agentID, onWarning) {
 			select {
 			case items <- genItem{chunk: chunk, err: err}:
 			case <-ctx.Done():
@@ -633,14 +717,44 @@ func (s *AgentSDK) GenerateTurnStream(req *agentv1.GenerateTurnStreamRequest, st
 			if err := sendGenToolEvents(stream, sink.Drain()); err != nil {
 				return err
 			}
+		case w := <-warnings:
+			if w == "" {
+				continue
+			}
+			if err := stream.Send(&agentv1.GenerateTurnStreamResponse{Warning: w}); err != nil {
+				return err
+			}
 		case it, ok := <-items:
 			if !ok {
-				if events := sink.Drain(); len(events) > 0 {
-					if err := sendGenToolEvents(stream, events); err != nil {
-						return err
+				// Generator finished: drain any remaining warnings (ok-form handles the closed
+				// channel - a closed channel is always ready, so single-value receive would spin)
+				// then flush pending tool events and return.
+				for {
+					select {
+					case w, ok2 := <-warnings:
+						if !ok2 {
+							if events := sink.Drain(); len(events) > 0 {
+								if err := sendGenToolEvents(stream, events); err != nil {
+									return err
+								}
+							}
+							return nil
+						}
+						if w != "" {
+							if err := stream.Send(&agentv1.GenerateTurnStreamResponse{Warning: w}); err != nil {
+								return err
+							}
+						}
+					default:
+						// No more warnings pending (not yet closed): flush events, return.
+						if events := sink.Drain(); len(events) > 0 {
+							if err := sendGenToolEvents(stream, events); err != nil {
+								return err
+							}
+						}
+						return nil
 					}
 				}
-				return nil
 			}
 			if it.err != nil {
 				return it.err
@@ -852,7 +966,12 @@ func (s *AgentSDK) addAndGenerateTurnStreamImplWorkspace(ctx context.Context, wo
 			return loadFolderAgentFromRuntime(primary.AgentDir, wsDir, agentID, a2aMeta, hookEnv, cfg, primary.DotEnv, s.MaxToolTurns, primary.ToolEvents, s.CommandTimeoutSeconds)
 		}
 		s.runTurnWithRuntimeFallback(turnCtx, agentID, primary, chain, load,
-			func(fa *FolderAgent) iter.Seq2[string, error] { return fa.GenerateTurnStream(turnCtx) },
+			func(fa *FolderAgent, level int, streamCtx context.Context) iter.Seq2[string, error] {
+				if level > 0 {
+					return fa.GenerateTurnStreamResumable(streamCtx)
+				}
+				return fa.GenerateTurnStream(streamCtx)
+			},
 			onWarning, yield)
 	}
 }

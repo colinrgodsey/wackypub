@@ -16,6 +16,13 @@ import (
 // DefaultHTTPTimeoutSeconds is the default timeout (15 minutes) for HTTP client calls to LLM backends.
 const DefaultHTTPTimeoutSeconds = 900
 
+// DefaultTurnDeadlineSeconds bounds a single fallback-level stream (the turn watchdog). One
+// hour sits well above the longest legitimate single iteration (a 900s model call plus a
+// 900s tool) while still converting an infinite wedge - a stream that never terminates, which
+// would otherwise hold the session lock for the whole turn - into a named, terminal, backend-
+// named error.
+const DefaultTurnDeadlineSeconds = 3600
+
 // RuntimeConfig represents the agent's runtime.json configuration.
 type RuntimeConfig struct {
 	// Provider selects the model provider: "openai" (default when Endpoint is set),
@@ -35,6 +42,13 @@ type RuntimeConfig struct {
 	// TimeoutSeconds sets the HTTP client timeout in seconds for API calls to the LLM backend.
 	// Defaults to DefaultHTTPTimeoutSeconds (900s / 15 minutes) when unset or <= 0.
 	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
+
+	// TurnDeadlineSeconds bounds a single fallback level's stream via the turn watchdog:
+	// if the level's stream does not terminate within the bound, the level fails with a
+	// named terminal error naming the backend (zero-text wedges descend to the fallback
+	// like any other qualifying failure). Defaults to DefaultTurnDeadlineSeconds (3600s)
+	// when unset or <= 0.
+	TurnDeadlineSeconds int `json:"turnDeadlineSeconds,omitempty"`
 
 	// Anthropic-specific thinking fields:
 	AnthropicThinkingBudgetTokens *int   `json:"anthropicThinkingBudgetTokens,omitempty"`
@@ -99,6 +113,14 @@ type RuntimeConfig struct {
 	// inheritance - and may itself carry a Fallback, giving a recursive failover chain.
 	// Validated at load time: depth capped at MaxFallbackDepth, cycles rejected.
 	Fallback *RuntimeConfig `json:"fallback,omitempty"`
+}
+
+// TurnDeadline returns the effective turn-watchdog bound for this level.
+func (c *RuntimeConfig) TurnDeadline() time.Duration {
+	if c.TurnDeadlineSeconds > 0 {
+		return time.Duration(c.TurnDeadlineSeconds) * time.Second
+	}
+	return DefaultTurnDeadlineSeconds * time.Second
 }
 
 // MaxFallbackDepth caps how deeply a runtime.json fallback chain may nest. Inline JSON

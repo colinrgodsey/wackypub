@@ -31,7 +31,7 @@ Everything below is on-disk convention — `wackypub workspace <agent_id>` will 
    Model ids go stale. Confirm the id against your provider's live model list
    (`curl -s https://openrouter.ai/api/v1/models`) before copying one from this page.
    To share backend configs across agents, use symlinks (e.g. `ln -s ../runtimes/openrouter-sonnet.json ws/<agent_id>/runtime.json`).
-
+   Fault tolerance: nest a fully-specified `"fallback"` config (itself optionally nested) in `runtime.json`. On a zero-text backend failure the turn re-runs on the fallback, and the switch surfaces as a warning response on the `GenerateTurnStream` stream (same shape as `AddAndGenerateTurnStream`). `turnDeadlineSeconds` (default 3600) is the turn watchdog: it bounds each fallback level's stream, so a backend that never terminates fails the level with a named error naming the backend instead of holding the session lock open.
 4. **Tools Directory (`<ws_dir>/<agent_id>/tools/`)**:
    - **Discovery trigger set**: Tools are discovered recursively under `<agent_id>/tools/`. Any regular file or symlink with the executable bit set (`0111`, e.g. `chmod +x`) is registered as a callable tool. Non-executable files and broken symlinks are ignored. The executable name determines the tool name.
    - **External tool wiring**: To enable capabilities like cross-agent calling, file access, or process supervision, symlink the corresponding binary into `tools/`:
