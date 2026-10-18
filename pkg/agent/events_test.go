@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1031,4 +1032,236 @@ func TestWatchReadPath_DoesNotBlockOnSessionLock(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("ReadSessionEvents blocked on the session lock - watch is not lock-free")
 	}
+}
+
+// TestSubscribeSession_IdleSessionProducesZeroDiskReads verifies that watching an idle session
+// produces zero file open/read activity across poll ticks (regression for bugs/wackypub/watch-hot-poll-spin).
+func TestSubscribeSession_IdleSessionProducesZeroDiskReads(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	agentID := "idle-watch-agent"
+	agentDir := filepath.Join(tempDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// 1. Initial history: turns 1 and 2
+	_ = AppendSessionTurn(agentDir, "user", "History 1")
+	_ = AppendSessionTurn(agentDir, "model", "History 2")
+
+	sdk := NewSDK(tempDir)
+
+	var diskReadCount atomic.Int64
+	origHook := testHookSessionDiskRead
+	testHookSessionDiskRead = func() {
+		diskReadCount.Add(1)
+	}
+	defer func() { testHookSessionDiskRead = origHook }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stream := &mockSubscribeStream{ctx: ctx}
+	streamDone := make(chan error, 1)
+	go func() {
+		streamDone <- sdk.SubscribeSession(&agentv1.SubscribeSessionRequest{
+			AgentId:      agentID,
+			WorkspaceDir: tempDir,
+		}, stream)
+	}()
+
+	// Wait for replay of turns 1 and 2
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(stream.getResponses()) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(stream.getResponses()) < 2 {
+		t.Fatalf("timed out waiting for replay: got %d", len(stream.getResponses()))
+	}
+
+	// Initial snapshot read must have occurred.
+	readsAfterReplay := diskReadCount.Load()
+	if readsAfterReplay == 0 {
+		t.Fatalf("expected at least 1 disk read during initial snapshot, got 0")
+	}
+
+	// 2. Idle period: sleep 1 second (at 50ms ticker, that is 20 poll ticks).
+	// Under the old bug, this performed 20 full file re-reads and JSON parses.
+	// With the fix, exactly ZERO disk reads occur.
+	time.Sleep(1 * time.Second)
+
+	readsDuringIdle := diskReadCount.Load() - readsAfterReplay
+	if readsDuringIdle != 0 {
+		t.Fatalf("expected 0 disk reads during 1s idle period, got %d", readsDuringIdle)
+	}
+
+	// 3. Append a new turn and verify that exactly 1 incremental read occurs to deliver it.
+	_ = AppendSessionTurn(agentDir, "user", "Live Turn 3")
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(stream.getResponses()) >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(stream.getResponses()) < 3 {
+		t.Fatalf("timed out waiting for live turn: got %d", len(stream.getResponses()))
+	}
+
+	readsAfterAppend := diskReadCount.Load() - readsAfterReplay
+	if readsAfterAppend != 1 {
+		t.Fatalf("expected exactly 1 incremental disk read for appended turn, got %d", readsAfterAppend)
+	}
+
+	// 4. Second idle period: sleep 500ms (10 poll ticks) and verify zero additional reads.
+	time.Sleep(500 * time.Millisecond)
+	readsAfterSecondIdle := diskReadCount.Load() - readsAfterReplay
+	if readsAfterSecondIdle != 1 {
+		t.Fatalf("expected still 1 disk read after second idle period, got %d", readsAfterSecondIdle)
+	}
+
+	cancel()
+	<-streamDone
+}
+
+// TestSubscribeSession_FiveIdleWatchersProduceZeroDiskReads mirrors the production failure mode:
+// 5 bindings established at startup sharing one serve child, all idle.
+func TestSubscribeSession_FiveIdleWatchersProduceZeroDiskReads(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	sdk := NewSDK(tempDir)
+
+	const numAgents = 5
+	agentIDs := make([]string, numAgents)
+	for i := 0; i < numAgents; i++ {
+		agentIDs[i] = fmt.Sprintf("idle-agent-%d", i)
+		dir := filepath.Join(tempDir, agentIDs[i])
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		_ = AppendSessionTurn(dir, "user", fmt.Sprintf("Initial %d", i))
+	}
+
+	var diskReadCount atomic.Int64
+	origHook := testHookSessionDiskRead
+	testHookSessionDiskRead = func() {
+		diskReadCount.Add(1)
+	}
+	defer func() { testHookSessionDiskRead = origHook }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+	for _, id := range agentIDs {
+		wg.Add(1)
+		stream := &mockSubscribeStream{ctx: ctx}
+		go func(agID string, st *mockSubscribeStream) {
+			defer wg.Done()
+			_ = sdk.SubscribeSession(&agentv1.SubscribeSessionRequest{
+				AgentId:      agID,
+				WorkspaceDir: tempDir,
+			}, st)
+		}(id, stream)
+	}
+
+	// Wait 200ms for all 5 to complete initial replay
+	time.Sleep(200 * time.Millisecond)
+	readsAfterInit := diskReadCount.Load()
+	if readsAfterInit < numAgents {
+		t.Fatalf("expected at least %d initial snapshot reads, got %d", numAgents, readsAfterInit)
+	}
+
+	// Idle period: sleep 1s (20 ticks per watcher * 5 watchers = 100 ticks).
+	// Under the old bug, 100 full file re-reads would happen.
+	// With the fix, ZERO reads occur across all 5 watchers.
+	time.Sleep(1 * time.Second)
+
+	readsDuringIdle := diskReadCount.Load() - readsAfterInit
+	if readsDuringIdle != 0 {
+		t.Fatalf("expected 0 disk reads across 5 idle watchers over 1s, got %d", readsDuringIdle)
+	}
+
+	cancel()
+	wg.Wait()
+}
+
+// TestSubscribeSession_CorruptSessionDoesNotHotPoll verifies that an unreadable/corrupt
+// session file (e.g. line exceeding MaxSessionLineBytes) does not cause the 50ms polling loop
+// to spin re-opening and re-reading the unchanged corrupt file.
+func TestSubscribeSession_CorruptSessionDoesNotHotPoll(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	agentID := "corrupt-agent"
+	agentDir := filepath.Join(tempDir, agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	_ = AppendSessionTurn(agentDir, "user", "turn 1")
+
+	var diskReadCount atomic.Int64
+	origHook := testHookSessionDiskRead
+	testHookSessionDiskRead = func() {
+		diskReadCount.Add(1)
+	}
+	defer func() { testHookSessionDiskRead = origHook }()
+
+	sdk := NewSDK(tempDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &mockSubscribeStream{ctx: ctx}
+	streamDone := make(chan error, 1)
+
+	go func() {
+		streamDone <- sdk.SubscribeSession(&agentv1.SubscribeSessionRequest{
+			AgentId:      agentID,
+			WorkspaceDir: tempDir,
+		}, stream)
+	}()
+
+	// Wait for turn 1 replay
+	time.Sleep(100 * time.Millisecond)
+	readsAfterReplay := diskReadCount.Load()
+
+	// Write the oversized line to a temp file and atomically replace session.jsonl
+	// so the concurrent watcher does not observe an intermediate partially-written state.
+	sessionPath := filepath.Join(agentDir, SessionFileName)
+	oversized := make([]byte, testScannerOverflowLine)
+	for i := range oversized {
+		oversized[i] = 'a'
+	}
+	oversized[len(oversized)-1] = '\n'
+	tmpPath := sessionPath + ".tmp"
+	if err := os.WriteFile(tmpPath, oversized, 0644); err != nil {
+		t.Fatalf("write tmp: %v", err)
+	}
+	if err := os.Rename(tmpPath, sessionPath); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	// Wait for subscriber to attempt reading the replaced file
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && diskReadCount.Load() == readsAfterReplay {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if diskReadCount.Load() == readsAfterReplay {
+		t.Fatalf("subscriber never attempted to read corrupted session")
+	}
+	// Give a short tick for the subscriber to set lastFileInfo and re-enter select
+	time.Sleep(100 * time.Millisecond)
+	readsAfterCorrupt := diskReadCount.Load()
+
+	// Idle over 500ms (10 poll ticks): since the corrupt file did not change, zero further reads should occur
+	time.Sleep(500 * time.Millisecond)
+	readsAfterWait := diskReadCount.Load() - readsAfterCorrupt
+	if readsAfterWait != 0 {
+		t.Fatalf("expected 0 disk reads during corrupt idle period, got %d (still hot-polling)", readsAfterWait)
+	}
+
+	cancel()
+	<-streamDone
 }
