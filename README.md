@@ -59,6 +59,20 @@ Then hand your agent a prompt along these lines:
 
 That's the whole point of the bundled skills (D34, D40): the CLI teaches your agent how to use itself. Nothing in this README is required reading for it to get started.
 
+## Recipes: Purpose-Built Workspaces
+
+Once you have a running agent, the [recipes](recipes/README.md) in this repo are
+single-file setup guides for specific workspace shapes - coding agents, read-only
+research agents, long-lived Discord community agents. Each recipe is a runnable
+walkthrough with machine-readable frontmatter (its container confinement, the skills
+it installs, the tools it gates) and verification checkpoints, so you can follow it
+by hand or hand it to an agent to execute.
+
+If the quick-start prompt above is "teach me the fundamentals", a recipe is "set up a
+[coding agent](recipes/coding-agent.md)" or "set up a
+[Discord community agent](recipes/discord-community-agent.md)" - opinionated,
+complete, and built on the same bundled skills.
+
 ## Philosophy
 
 **The CLI is the interface — for you and for the agent.** Most agent frameworks hide the CLI behind a bespoke tool schema and an SDK. WackyPub doesn't: the thing an agent gets access to *is* `wackypub` itself, one command at a time. If `--help` alone is enough for a human to drive it correctly, it's enough for a model too — and holding to that constraint has caught real bugs (a `--help` routing gap, a misleading error label) an SDK-only design would never have surfaced. Same surface for humans via Discord, coordinator agents, shell scripts, and programs — every driver meets one interface, none gets a bespoke integration.
