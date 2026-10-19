@@ -472,10 +472,10 @@ func InspectAgentDir(wsDir, agentID string) (*AgentInspection, error) {
 		}
 		var skillNames []string
 		for _, sk := range onDemand {
-			skillNames = append(skillNames, sk.Name)
+			skillNames = append(skillNames, skillNameMarker(sk, ""))
 		}
 		for _, sk := range alwaysLoaded {
-			skillNames = append(skillNames, sk.Name+" (always_load)")
+			skillNames = append(skillNames, skillNameMarker(sk, " (always_load)"))
 		}
 		insp.DiscoveredSkills = skillNames
 		insp.ShadowedSkills = shadowed

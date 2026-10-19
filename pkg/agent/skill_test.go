@@ -640,3 +640,159 @@ func TestFormatLoadedSkill_RealNewlines(t *testing.T) {
 		t.Errorf("expected name attribute, got: %q", result)
 	}
 }
+
+// --- Stability frontmatter (tasks/wackypub/skill-stability-frontmatter) ---
+
+func TestParseSkillContent_StabilityField(t *testing.T) {
+	// Float hints parse (YAML float, YAML int, and quoted number).
+	sk, err := ParseSkillContent("---\nname: a\ndescription: d\nstability: 0.5\n---\nbody\n", "a")
+	if err != nil {
+		t.Fatalf("parse float stability: %v", err)
+	}
+	if sk.Stability == nil || *sk.Stability != 0.5 {
+		t.Errorf("expected stability 0.5, got %v", sk.Stability)
+	}
+
+	sk, err = ParseSkillContent("---\nname: a2\ndescription: d\nstability: 3\n---\nbody\n", "a2")
+	if err != nil {
+		t.Fatalf("parse int stability: %v", err)
+	}
+	if sk.Stability == nil || *sk.Stability != 3 {
+		t.Errorf("expected stability 3, got %v", sk.Stability)
+	}
+
+	sk, err = ParseSkillContent("---\nname: a3\ndescription: d\nstability: \"2.5\"\n---\nbody\n", "a3")
+	if err != nil {
+		t.Fatalf("parse quoted stability: %v", err)
+	}
+	if sk.Stability == nil || *sk.Stability != 2.5 {
+		t.Errorf("expected stability 2.5, got %v", sk.Stability)
+	}
+
+	// Absent stays untagged (nil).
+	sk, err = ParseSkillContent("---\nname: b\ndescription: d\n---\nbody\n", "b")
+	if err != nil {
+		t.Fatalf("parse untagged skill: %v", err)
+	}
+	if sk.Stability != nil {
+		t.Errorf("expected untagged skill to have nil stability, got %v", *sk.Stability)
+	}
+
+	// Non-numeric hints fail loudly (the old enum terms are no longer values).
+	_, err = ParseSkillContent("---\nname: c\ndescription: d\nstability: stable\n---\nbody\n", "c")
+	if err == nil || !strings.Contains(err.Error(), "invalid stability") || !strings.Contains(err.Error(), "number") {
+		t.Fatalf("expected an invalid-stability error naming a number, got %v", err)
+	}
+
+	// NaN is not an ordering.
+	_, err = ParseSkillContent("---\nname: n\ndescription: d\nstability: .nan\n---\nbody\n", "n")
+	if err == nil || !strings.Contains(err.Error(), "invalid stability") {
+		t.Fatalf("expected NaN stability to fail parsing, got %v", err)
+	}
+
+	// Unknown-key tolerance must keep working (same contract files-rw#11 pinned):
+	// unknown keys are ignored, known keys still parse.
+	sk, err = ParseSkillContent("---\nname: e\ndescription: d\nalways_load: true\nstability: 1.5\nsome_unknown_key: [a, b]\nauthor: colin\n---\nbody\n", "e")
+	if err != nil {
+		t.Fatalf("unknown keys should be tolerated: %v", err)
+	}
+	if !sk.AlwaysLoad || sk.Stability == nil || *sk.Stability != 1.5 {
+		t.Errorf("expected always_load + 1.5 to survive unknown keys, got %+v", sk)
+	}
+}
+
+func TestRenderAutoloadedSkills_StabilitySort(t *testing.T) {
+	agentDir := filepath.Join(t.TempDir(), "carol")
+	skillsDir := filepath.Join(agentDir, "skills")
+
+	writeSkill := func(dir, stability string) {
+		t.Helper()
+		d := filepath.Join(skillsDir, dir)
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		content := "---\nname: " + dir + "\ndescription: skill " + dir + "\nalways_load: true\n"
+		if stability != "" {
+			content += "stability: " + stability + "\n"
+		}
+		content += "---\nbody of " + dir + "\n"
+		if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte(content), 0644); err != nil {
+			t.Fatalf("write %s: %v", dir, err)
+		}
+	}
+
+	// Fractional hints, an exact tie, a high finite value, and two untagged,
+	// deliberately unordered.
+	writeSkill("z-zeta", "2")
+	writeSkill("a-alpha", "2")
+	writeSkill("m-mid", "0.5")
+	writeSkill("b-beta", "10")
+	writeSkill("k-keep", "0.5")
+	writeSkill("q-quiet", "")
+	writeSkill("n-novel", "")
+
+	block, err := RenderAutoloadedSkills(agentDir)
+	if err != nil {
+		t.Fatalf("RenderAutoloadedSkills: %v", err)
+	}
+
+	var got []string
+	rest := block
+	for {
+		i := strings.Index(rest, `<SKILL name="`)
+		if i < 0 {
+			break
+		}
+		rest = rest[i+len(`<SKILL name="`):]
+		j := strings.Index(rest, `"`)
+		if j < 0 {
+			t.Fatalf("unterminated skill name in %q", rest)
+		}
+		got = append(got, rest[:j])
+		rest = rest[j+1:]
+	}
+
+	// Sort-only: all seven present; ascending by hint with name order on ties,
+	// untagged last (name order) - a tagged value of any magnitude sorts before
+	// untagged.
+	want := []string{"k-keep", "m-mid", "a-alpha", "z-zeta", "b-beta", "n-novel", "q-quiet"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d skills (sort-only, no filtering), got %d: %v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("skill order mismatch: got %v, want %v", got, want)
+		}
+	}
+
+	// Discovery contract unchanged: the alwaysLoaded slice stays name-sorted - the
+	// stability sort happens at render time only.
+	_, _, alwaysLoaded, err := DiscoverAgentSkills(agentDir)
+	if err != nil {
+		t.Fatalf("DiscoverAgentSkills: %v", err)
+	}
+	for i := 1; i < len(alwaysLoaded); i++ {
+		if alwaysLoaded[i-1].Name >= alwaysLoaded[i].Name {
+			t.Fatalf("discovery should stay name-sorted, got %v", alwaysLoaded)
+		}
+	}
+}
+
+func TestSkillNameMarker_StabilityDisplay(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	if got := skillNameMarker(&Skill{Name: "a", Stability: f(0.5)}, ""); got != "a (stability: 0.5)" {
+		t.Errorf("0.5 display: got %q", got)
+	}
+	if got := skillNameMarker(&Skill{Name: "b", Stability: f(3)}, ""); got != "b (stability: 3)" {
+		t.Errorf("3 display: got %q", got)
+	}
+	if got := skillNameMarker(&Skill{Name: "c", Stability: f(1e12)}, ""); got != "c (stability: 1e+12)" {
+		t.Errorf("1e12 display: got %q", got)
+	}
+	if got := skillNameMarker(&Skill{Name: "d"}, ""); got != "d" {
+		t.Errorf("untagged display: got %q", got)
+	}
+	if got := skillNameMarker(&Skill{Name: "a", Stability: f(2)}, " (always_load)"); got != "a (always_load) (stability: 2)" {
+		t.Errorf("suffix display: got %q", got)
+	}
+}
