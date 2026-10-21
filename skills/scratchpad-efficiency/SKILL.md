@@ -156,6 +156,14 @@ The server recognizes `<<.../>>` and emits the inner single-tag form. No macro e
 **Why doubled-token and not backslash:** the older form using a leading backslash before the macro was buggy -- it consumed the backslash and emitted a re-expandable token. The doubled form is shape-distinct (it can never be confused with a real macro) and survives intact through any further pass that scans for scratchpad references.
 
 
+
+### Escape-literal payloads (heredoc mangling)
+
+For source containing escape literals (python heredocs, regexes, printf), pass it via
+a scratchpad macro in `args`/`stdin` - expansion happens after the JSON decode boundary,
+so entry bytes substitute byte-exact. The full matrix and worked example live in the
+**bash-usage** skill ("Embedding source with escape literals"), which owns this topic.
+
 ### Reach for these macros by default
 
 The `args`/`stdin` macros are the most efficient hand-off primitive in the system, and it is easy to overlook them in favour of the CLI deposit in section 1. Both are server-side and cost no generation tokens, but the macro route has properties the CLI route does not:
