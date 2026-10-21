@@ -21,6 +21,12 @@ import (
 const DefaultCompactionPct = 50.0
 const DefaultCompactionOverheadPct = 20.0
 
+// DefaultMajorCompactOverheadPct is major-compact-overhead-pct's fallback:
+// deliberately larger than DefaultCompactionOverheadPct, because a major pass
+// reads and rewrites the whole document in one generation rather than
+// emitting a short append.
+const DefaultMajorCompactOverheadPct = 40.0
+
 // DefaultCompactMD holds examples/compaction/COMPACT-append.md's content, in the same
 // append-only/compact-pct frontmatter + body shape a real <agentDir>/COMPACT.md
 // has - parsed through the exact same ParseCompactConfig path, according to D44.
@@ -36,10 +42,13 @@ const DefaultCompactionOverheadPct = 20.0
 var DefaultCompactMD string
 
 type CompactFrontmatter struct {
-	AppendOnly         *bool    `yaml:"append-only"`
-	CompactPct         *float64 `yaml:"compact-pct"`
-	CompactOverheadPct *float64 `yaml:"compact-overhead-pct"`
-	CompactionNotice   *string  `yaml:"compaction-notice"`
+	AppendOnly              *bool    `yaml:"append-only"`
+	CompactPct              *float64 `yaml:"compact-pct"`
+	CompactOverheadPct      *float64 `yaml:"compact-overhead-pct"`
+	CompactionNotice        *string  `yaml:"compaction-notice"`
+	MajorCompactEvery       *int     `yaml:"major-compact-every"`
+	MajorCompactMemoryPct   *float64 `yaml:"major-compact-memory-pct"`
+	MajorCompactOverheadPct *float64 `yaml:"major-compact-overhead-pct"`
 }
 
 type CompactConfig struct {
@@ -48,6 +57,12 @@ type CompactConfig struct {
 	CompactOverheadPct float64
 	CompactionNotice   string
 	Prompt             string
+	// Major-compact trigger conditions (they OR together): a major pass runs
+	// every MajorCompactEveryth compaction cycle, or whenever MEMORY.md itself
+	// crosses MajorCompactMemoryPct of the context window. 0 = off.
+	MajorCompactEvery       int
+	MajorCompactMemoryPct   float64
+	MajorCompactOverheadPct float64
 }
 
 // defaultCompactionNotice is CompactConfig.CompactionNotice's fallback when a
@@ -64,10 +79,11 @@ const defaultCompactionNotice = "Some turns from earlier in this session were ju
 // defaults before calling if that matters, the way LoadCompactConfig does.
 func ParseCompactConfig(content string) (*CompactConfig, error) {
 	cfg := &CompactConfig{
-		AppendOnly:         true,
-		CompactPct:         DefaultCompactionPct,
-		CompactOverheadPct: DefaultCompactionOverheadPct,
-		CompactionNotice:   defaultCompactionNotice,
+		AppendOnly:              true,
+		CompactPct:              DefaultCompactionPct,
+		CompactOverheadPct:      DefaultCompactionOverheadPct,
+		CompactionNotice:        defaultCompactionNotice,
+		MajorCompactOverheadPct: DefaultMajorCompactOverheadPct,
 	}
 
 	body := strings.TrimSpace(content)
@@ -104,6 +120,24 @@ func ParseCompactConfig(content string) (*CompactConfig, error) {
 
 	if fm.CompactionNotice != nil {
 		cfg.CompactionNotice = *fm.CompactionNotice
+	}
+
+	if fm.MajorCompactEvery != nil && *fm.MajorCompactEvery > 0 {
+		cfg.MajorCompactEvery = *fm.MajorCompactEvery
+	}
+
+	if fm.MajorCompactMemoryPct != nil {
+		pct := *fm.MajorCompactMemoryPct
+		if pct > 0 && pct <= 100 {
+			cfg.MajorCompactMemoryPct = pct
+		}
+	}
+
+	if fm.MajorCompactOverheadPct != nil {
+		overhead := *fm.MajorCompactOverheadPct
+		if overhead >= 0 && overhead < 100 {
+			cfg.MajorCompactOverheadPct = overhead
+		}
 	}
 
 	cfg.Prompt = body
