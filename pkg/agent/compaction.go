@@ -515,6 +515,23 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 		}
 	}
 
+	// Read and reconcile the memory file BEFORE the token gate: the gate must
+	// use the pass that is about to run (a major pass reserves more
+	// generation headroom), and the summary must be written against
+	// reconciled state. A read failure on a session the gate would reject is
+	// not a compaction failure, so it only becomes fatal once we have
+	// committed to compacting.
+	var existingMemory string
+	memErr := func() error {
+		var e error
+		existingMemory, e = ReadMemoryFile(agentDir)
+		return e
+	}()
+	isMajor := false
+	if memErr == nil {
+		isMajor = decideMemoryPass(existingMemory, compactCfg, runtimeCfg)
+	}
+
 	if !force {
 		if runtimeCfg == nil || runtimeCfg.ContextWindow <= 0 {
 			return false, nil
@@ -530,10 +547,18 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 		// 500k window the trigger rose from 400,000 tokens to 485,952, because the
 		// reserve and margin replace the flat 20% share. Production always sends
 		// force: true, so nothing depends on this today.
-		budget := contextBudget(runtimeCfg.ContextWindow, runtimeCfg.MaxOutputReserve, compactCfg.CompactOverheadPct)
+		overheadPct := compactCfg.CompactOverheadPct
+		if isMajor {
+			overheadPct = compactCfg.MajorCompactOverheadPct
+		}
+		budget := contextBudget(runtimeCfg.ContextWindow, runtimeCfg.MaxOutputReserve, overheadPct)
 		if EstimateTokens(turns, runtimeCfg.PreserveThinking) < budget {
 			return false, nil
 		}
+	}
+
+	if memErr != nil {
+		return fail("read-memory", memErr)
 	}
 
 	// Calculate turns to compact based on compactCfg.CompactPct (D38/D63).
@@ -593,17 +618,13 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 		Trigger:       trigger,
 	})
 
-	existingMemory, err := ReadMemoryFile(agentDir)
-	if err != nil {
-		return fail("read-memory", err)
-	}
-
 	// Reconcile claims before the summary call, so the summary is written
 	// against true state: a reconciler that ran after the summary would just
 	// re-inject the stale claims into the new file. Deterministic and
 	// zero-token; a failure never blocks compaction.
 	wsDir := filepath.Dir(agentDir)
 	reconciled, rep, rerr := ReconcileMemoryClaims(existingMemory, wsDir, time.Now())
+	nextCycle := memoryCycleOf(existingMemory) + 1
 	if rerr == nil && reconciled != existingMemory {
 		if werr := WriteMemoryFile(agentDir, reconciled); werr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: claims reconcile write failed for agent %s: %v\n", agentID, werr)
@@ -685,7 +706,15 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 	if runtimeCfg != nil {
 		chain = runtimeCfg.FallbackChain()
 	}
-	directive := genai.NewContentFromText(compactCfg.Prompt, "user")
+	directiveText := compactCfg.Prompt
+	if isMajor || compactCfg.AppendOnly {
+		var dErr error
+		directiveText, dErr = renderCompactionDirective(directiveText, isMajor)
+		if dErr != nil {
+			return fail("render-directive", dErr)
+		}
+	}
+	directive := genai.NewContentFromText(directiveText, "user")
 
 	for level, levelCfg := range chain {
 		if backendFailedUntilReset(levelCfg) {
@@ -772,14 +801,19 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 	addendum = strings.TrimSpace(addendum)
 	if addendum != "" {
 		var newMemory string
-		if compactCfg.AppendOnly {
-			existingTrimmed := strings.TrimSpace(existingMemory)
-			if existingTrimmed != "" {
-				newMemory = existingTrimmed + "\n\n" + addendum
-			} else {
-				newMemory = addendum
-			}
-		} else {
+		commitLabel := "compact (memory)"
+		switch {
+		case isMajor:
+			// Lossy full rewrite - the design retention decision: the agents
+			// own git history is the archive, and this commit carries the
+			// pre-rewrite content. The message doubles as the per-pass audit
+			// log (size delta; the diff shows exactly what was dropped).
+			newMemory = applyMajorRewrite(addendum, nextCycle)
+			commitLabel = fmt.Sprintf("compact (memory) [major cycle %d, full rewrite: %d -> %d bytes]", nextCycle, len(existingMemory), len(newMemory))
+		case compactCfg.AppendOnly:
+			newMemory = applyMinorAppend(existingMemory, addendum, nextCycle)
+			commitLabel = fmt.Sprintf("compact (memory) [minor cycle %d]", nextCycle)
+		default:
 			newMemory = addendum
 		}
 
@@ -787,8 +821,7 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 			return fail("write-memory", fmt.Errorf("failed to update MEMORY.md: %w", err))
 		}
 
-		wsDir := filepath.Dir(agentDir)
-		commitEventBestEffort(wsDir, agentID, "compact (memory)")
+		commitEventBestEffort(wsDir, agentID, commitLabel)
 	}
 
 	// Flag the discontinuity to whatever generates the next real turn (D46):
