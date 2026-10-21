@@ -1404,7 +1404,9 @@ func TestCompactSessionWithConfig_Passthrough(t *testing.T) {
 	if !resp.GetCompacted() {
 		t.Fatal("expected compaction to succeed")
 	}
-	if capturedPrompt != "SDK override prompt" {
+	// The SDK override here is append-only, so the managed PASS MODE block is
+	// appended to the base directive.
+	if !strings.HasPrefix(capturedPrompt, "SDK override prompt") {
 		t.Errorf("expected prompt %q, got %q", "SDK override prompt", capturedPrompt)
 	}
 }
