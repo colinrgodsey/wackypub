@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -563,6 +564,25 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 		return fail("read-memory", err)
 	}
 
+	// Reconcile claims before the summary call, so the summary is written
+	// against true state: a reconciler that ran after the summary would just
+	// re-inject the stale claims into the new file. Deterministic and
+	// zero-token; a failure never blocks compaction.
+	wsDir := filepath.Dir(agentDir)
+	reconciled, rep, rerr := ReconcileMemoryClaims(existingMemory, wsDir, time.Now())
+	if rerr == nil && reconciled != existingMemory {
+		if werr := WriteMemoryFile(agentDir, reconciled); werr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: claims reconcile write failed for agent %s: %v\n", agentID, werr)
+		} else {
+			existingMemory = reconciled
+		}
+	} else if rerr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: claims reconcile failed for agent %s: %v\n", agentID, rerr)
+	}
+	if rep.Stale > 0 {
+		fmt.Fprintf(os.Stderr, "Warning: %d stale claim(s) reconciled in MEMORY.md for agent %s: %v\n", rep.Stale, agentID, rep.StaleEvidence)
+	}
+
 	compactSessionID := agentID + "-compact"
 
 	// Seed a fresh, disposable in-memory session with the exact turn shape
@@ -803,7 +823,6 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 		return fail("write-session", fmt.Errorf("failed to update session.jsonl after compaction: %w", err))
 	}
 
-	wsDir := filepath.Dir(agentDir)
 	commitEventBestEffort(wsDir, agentID, "compact")
 	if err := InvalidateLastUsage(agentDir); err != nil {
 		// A stale LastUsageRecord after compaction would mislead the next turn's usage-based
