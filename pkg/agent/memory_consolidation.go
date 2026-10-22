@@ -185,7 +185,7 @@ func applyMinorAppend(existing, addendum string, nextCycle int) string {
 	if !present {
 		mapping = nil
 	}
-	setMemoryKey(mapping, memoryCompactCycleKey, nextCycle)
+	mapping = setMemoryKey(mapping, memoryCompactCycleKey, nextCycle)
 	return renderMemoryContent(mapping, appendAddendumToLedger(body, addendum))
 }
 
@@ -199,8 +199,8 @@ func applyMajorRewrite(output string, nextCycle int) string {
 	if !present {
 		mapping = nil
 	}
-	setMemoryKey(mapping, memoryCompactCycleKey, nextCycle)
-	setMemoryKey(mapping, memoryLastMajorCycleKey, nextCycle)
+	mapping = setMemoryKey(mapping, memoryCompactCycleKey, nextCycle)
+	mapping = setMemoryKey(mapping, memoryLastMajorCycleKey, nextCycle)
 	if !strings.HasSuffix(strings.TrimRight(body, "\n"), ledgerAddendumHeading) {
 		body = strings.TrimRight(body, "\n") + "\n\n" + ledgerAddendumHeading
 	}
