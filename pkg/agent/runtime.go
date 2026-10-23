@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,12 +18,22 @@ import (
 // DefaultHTTPTimeoutSeconds is the default timeout (15 minutes) for HTTP client calls to LLM backends.
 const DefaultHTTPTimeoutSeconds = 900
 
-// DefaultTurnDeadlineSeconds bounds a single fallback-level stream (the turn watchdog). One
-// hour sits well above the longest legitimate single iteration (a 900s model call plus a
-// 900s tool) while still converting an infinite wedge - a stream that never terminates, which
-// would otherwise hold the session lock for the whole turn - into a named, terminal, backend-
-// named error.
-const DefaultTurnDeadlineSeconds = 3600
+// DefaultTurnDeadlineSecondsLocal bounds a single fallback-level stream (the turn watchdog)
+// for a local backend (loopback endpoint, e.g. Ollama/llama.cpp at localhost). One hour sits
+// well above the longest legitimate single iteration (a 900s model call plus a 900s tool)
+// while still converting an infinite wedge - a stream that never terminates, which would
+// otherwise hold the session lock for the whole turn - into a named, terminal, backend-named
+// error. Local inference is the case this generous bound exists for: slow hardware, large
+// models, no provider-side timeout of its own to fall back on.
+const DefaultTurnDeadlineSecondsLocal = 3600
+
+// DefaultTurnDeadlineSecondsRemote bounds a single fallback-level stream for a non-local
+// (cloud/remote) backend. Remote providers front their own infrastructure and already fail
+// fast on real outages; a wedged remote stream is far more likely to be a dead connection than
+// a slow legitimate generation, so the default here is deliberately much tighter than the
+// local bound (Colin, 2026-10-22: "cloud/remote backends should fail fast - 5 minutes is a
+// sensible default candidate").
+const DefaultTurnDeadlineSecondsRemote = 300
 
 // RuntimeConfig represents the agent's runtime.json configuration.
 type RuntimeConfig struct {
@@ -46,8 +58,9 @@ type RuntimeConfig struct {
 	// TurnDeadlineSeconds bounds a single fallback level's stream via the turn watchdog:
 	// if the level's stream does not terminate within the bound, the level fails with a
 	// named terminal error naming the backend (zero-text wedges descend to the fallback
-	// like any other qualifying failure). Defaults to DefaultTurnDeadlineSeconds (3600s)
-	// when unset or <= 0.
+	// like any other qualifying failure). When unset or <= 0, the effective default
+	// depends on whether Endpoint is a local (loopback) address or a remote/cloud one -
+	// see TurnDeadline and DefaultTurnDeadlineSecondsLocal / DefaultTurnDeadlineSecondsRemote.
 	TurnDeadlineSeconds int `json:"turnDeadlineSeconds,omitempty"`
 
 	// Anthropic-specific thinking fields:
@@ -115,12 +128,41 @@ type RuntimeConfig struct {
 	Fallback *RuntimeConfig `json:"fallback,omitempty"`
 }
 
-// TurnDeadline returns the effective turn-watchdog bound for this level.
+// TurnDeadline returns the effective turn-watchdog bound for this level: the explicit
+// TurnDeadlineSeconds override when set, otherwise a default chosen by whether Endpoint
+// looks local (DefaultTurnDeadlineSecondsLocal) or remote (DefaultTurnDeadlineSecondsRemote).
 func (c *RuntimeConfig) TurnDeadline() time.Duration {
 	if c.TurnDeadlineSeconds > 0 {
 		return time.Duration(c.TurnDeadlineSeconds) * time.Second
 	}
-	return DefaultTurnDeadlineSeconds * time.Second
+	if isLocalEndpoint(c.Endpoint) {
+		return DefaultTurnDeadlineSecondsLocal * time.Second
+	}
+	return DefaultTurnDeadlineSecondsRemote * time.Second
+}
+
+// isLocalEndpoint reports whether a RuntimeConfig.Endpoint points at a loopback address
+// (e.g. "http://localhost:11434/v1", "http://127.0.0.1:8080", "http://[::1]:8080") - the
+// local-inference case the longer turn-watchdog default exists for. An empty Endpoint
+// (native Gemini, no self-hosted backend) is treated as remote: it addresses Google's cloud
+// API, not a local process. An unparseable Endpoint is also treated as remote, the safer
+// (tighter) default when the address can't be classified.
+func isLocalEndpoint(endpoint string) bool {
+	if endpoint == "" {
+		return false
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // MaxFallbackDepth caps how deeply a runtime.json fallback chain may nest. Inline JSON
