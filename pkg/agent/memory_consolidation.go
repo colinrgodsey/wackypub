@@ -138,21 +138,40 @@ func decideMemoryPass(existingMemory string, cfg *CompactConfig, runtimeCfg *Run
 	if cfg.MajorCompactEvery > 0 && nextCycle%cfg.MajorCompactEvery == 0 {
 		return true
 	}
-	if cfg.MajorCompactMemoryPct > 0 && runtimeCfg != nil && runtimeCfg.ContextWindow > 0 {
-		memTurn := genai.NewContentFromText(existingMemory, "user")
-		memTokens := EstimateTokens([]*genai.Content{memTurn}, false)
-		if float64(memTokens) >= cfg.MajorCompactMemoryPct/100.0*float64(runtimeCfg.ContextWindow) {
-			return true
-		}
+	return memoryExceedsPct(existingMemory, cfg, runtimeCfg)
+}
+
+// memoryExceedsPct reports whether the memory file crosses
+// major-compact-memory-pct and the cycling guard allows a major this cycle.
+// It is the ONLY session-independent major trigger: major-compact-every is a
+// mode selector for compactions triggered by other means, never a trigger
+// itself.
+func memoryExceedsPct(existingMemory string, cfg *CompactConfig, runtimeCfg *RuntimeConfig) bool {
+	if existingMemory == "" || cfg == nil || cfg.MajorCompactMemoryPct <= 0 {
+		return false
 	}
-	return false
+	if runtimeCfg == nil || runtimeCfg.ContextWindow <= 0 {
+		return false
+	}
+	mapping, _, present := splitMemoryFrontmatter(existingMemory)
+	if !present {
+		mapping = nil
+	}
+	nextCycle := memoryCycleOf(existingMemory) + 1
+	lastMajor, hasLast := memoryIntFromNode(mapping, memoryLastMajorCycleKey)
+	if hasLast && lastMajor == nextCycle-1 {
+		return false
+	}
+	memTurn := genai.NewContentFromText(existingMemory, "user")
+	memTokens := EstimateTokens([]*genai.Content{memTurn}, false)
+	return float64(memTokens) >= cfg.MajorCompactMemoryPct/100.0*float64(runtimeCfg.ContextWindow)
 }
 
 // memoryNeedsMajor reports whether the agent's memory file alone justifies a
-// major pass right now: it crosses major-compact-memory-pct (or the every-N
-// cycle rule) and the cycling guard allows a major this cycle. Read errors
-// are treated as "not needed" - a broken memory read must not force a
-// compaction on every turn.
+// major pass right now: it crosses major-compact-memory-pct and the cycling
+// guard allows a major this cycle. major-compact-every is a mode selector,
+// not a trigger. Read errors are treated as "not needed" - a broken memory
+// read must not force a compaction on every turn.
 func memoryNeedsMajor(agentDir string, runtimeCfg *RuntimeConfig) bool {
 	mem, err := ReadMemoryFile(agentDir)
 	if err != nil || mem == "" {
@@ -162,7 +181,7 @@ func memoryNeedsMajor(agentDir string, runtimeCfg *RuntimeConfig) bool {
 	if err != nil || cfg == nil {
 		return false
 	}
-	return decideMemoryPass(mem, cfg, runtimeCfg)
+	return memoryExceedsPct(mem, cfg, runtimeCfg)
 }
 
 // appendAddendumToLedger places a minor-pass addendum under the document's

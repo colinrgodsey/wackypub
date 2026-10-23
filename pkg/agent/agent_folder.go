@@ -828,7 +828,7 @@ func (fa *FolderAgent) checkPostTurnCompaction(ctx context.Context, wsDir string
 
 	// major-compact-memory-pct is an independent trigger: a bloated
 	// MEMORY.md is consolidated even when the session sits under its budget.
-	// The cycling guard in decideMemoryPass bounds this to at most one
+	// The cycling guard in memoryExceedsPct bounds this to at most one
 	// major per pass cycle.
 	if exceedsBudget(used, budget) || memoryNeedsMajor(fa.AgentDir, fa.RuntimeConfig) {
 		if fa.UsageTracker != nil {

@@ -67,3 +67,61 @@ func TestCheckAndCompact_MemoryPctIndependentTrigger(t *testing.T) {
 		t.Fatal("small session with small memory must not compact, got compacted=true")
 	}
 }
+
+// TestCheckAndCompact_MajorCompactEveryIsNotATrigger pins the round-2
+// regression fix: with major-compact-every satisfied (nextCycle % every == 0)
+// but the session tiny and the memory small, no compaction fires - the
+// every rule is a mode selector, not a session-independent trigger.
+func TestCheckAndCompact_MajorCompactEveryIsNotATrigger(t *testing.T) {
+	turns := []*genai.Content{
+		genai.NewContentFromText("hi", "user"),
+		genai.NewContentFromText("hello", "model"),
+	}
+	cfg := &RuntimeConfig{ContextWindow: 1000, Endpoint: "http://every.test", Model: "every-model"}
+	compactCfg := &CompactConfig{CompactOverheadPct: 20, MajorCompactOverheadPct: 40, MajorCompactEvery: 4}
+
+	tempDir := t.TempDir()
+	if err := WriteSessionTurns(tempDir, turns); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+	// Cycle 3 means the next pass is cycle 4, and 4 % 4 == 0: the every
+	// rule is satisfied, which must not matter on a tiny session.
+	if err := WriteMemoryFile(tempDir, "---\ncompact-cycle: 3\n---\n\nsmall memory\n"); err != nil {
+		t.Fatalf("write memory: %v", err)
+	}
+	stub := &fallbackStubModel{name: "stub", answer: "- done"}
+	var denials int64
+	agent, err := BuildADKAgentWithConfigAndTrackerForCompaction("agent", "system", DefaultMaxToolTurns, cfg, stub, tempDir, nil, &denials)
+	if err != nil {
+		t.Fatalf("build compaction agent: %v", err)
+	}
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, cfg, agent, false, compactCfg, &denials)
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if compacted {
+		t.Fatal("major-compact-every must not fire a compaction on its own: the every rule is a mode selector, not a trigger")
+	}
+}
+
+// TestMemoryExceedsPct_OnlySizeTriggers pins the trigger helper: the every-N
+// rule never qualifies, the size rule does, and the cycling guard still
+// blocks a major the cycle after a major.
+func TestMemoryExceedsPct_OnlySizeTriggers(t *testing.T) {
+	runtimeCfg := &RuntimeConfig{ContextWindow: 1000}
+	cfg := &CompactConfig{MajorCompactEvery: 4, MajorCompactMemoryPct: 10}
+
+	if memoryExceedsPct("---\ncompact-cycle: 3\n---\n\nsmall\n", cfg, runtimeCfg) {
+		t.Error("every-N rule alone must not qualify as an independent trigger")
+	}
+	var mem strings.Builder
+	for i := 0; i < 200; i++ {
+		mem.WriteString("tokenword ")
+	}
+	if !memoryExceedsPct(mem.String(), cfg, runtimeCfg) {
+		t.Error("memory over major-compact-memory-pct must qualify")
+	}
+	if memoryExceedsPct("---\ncompact-cycle: 3\nlast-major-cycle: 3\n---\n"+mem.String(), cfg, runtimeCfg) {
+		t.Error("the cycling guard must block a major the cycle after a major")
+	}
+}
