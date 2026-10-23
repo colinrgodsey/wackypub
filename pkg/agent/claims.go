@@ -45,14 +45,18 @@ const (
 	claimKindWorktree claimKind = "worktree"
 )
 
+// claimBulletRe matches the list markers accepted in the Claims section:
+// '-', '*' and '+' followed by space or tab (the common markdown bullet set).
+var claimBulletRe = regexp.MustCompile(`^[-*+][ \t]+`)
+
 var claimLinePatterns = []struct {
 	kind claimKind
 	re   *regexp.Regexp
 }{
-	{claimKindCard, regexp.MustCompile(`^-[ \t]+card:([^\s]+)[ \t]+as-of[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*$`)},
-	{claimKindBranch, regexp.MustCompile(`^-[ \t]+branch:(.+?)@(\S+)[ \t]+as-of[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*$`)},
-	{claimKindPR, regexp.MustCompile(`^-[ \t]+pr:(\d+)@(\S+)[ \t]+as-of[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*$`)},
-	{claimKindWorktree, regexp.MustCompile(`^-[ \t]+worktree:(\S+)[ \t]+as-of[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*$`)},
+	{claimKindCard, regexp.MustCompile(`^[-*+][ \t]+card:([^\s]+)[ \t]+as-of[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*$`)},
+	{claimKindBranch, regexp.MustCompile(`^[-*+][ \t]+branch:(.+?)@(\S+)[ \t]+as-of[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*$`)},
+	{claimKindPR, regexp.MustCompile(`^[-*+][ \t]+pr:(\d+)@(\S+)[ \t]+as-of[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*$`)},
+	{claimKindWorktree, regexp.MustCompile(`^[-*+][ \t]+worktree:(\S+)[ \t]+as-of[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*$`)},
 }
 
 // Claim is one parsed claim line.
@@ -146,7 +150,7 @@ func ReconcileMemoryClaims(memoryContent, wsDir string, now time.Time) (string, 
 	var stale []ClaimResult
 	for _, l := range lines[start+1 : end] {
 		trimmed := strings.TrimSpace(l)
-		if trimmed == "" || !strings.HasPrefix(trimmed, "- ") {
+		if trimmed == "" || !claimBulletRe.MatchString(trimmed) {
 			kept = append(kept, l)
 			continue
 		}
@@ -237,16 +241,26 @@ func reconcileOne(c Claim, wsDir string) ClaimResult {
 	return ClaimResult{Claim: c, State: state, Evidence: evidence}
 }
 
-// checkCardClaim resolves a card claim against the KB document at
-// <wsDir>/.kb/workspaces/main/<slug>.md. A missing document is a positive
-// closed answer (the card is gone); a present document decides by its
-// frontmatter status.
+// checkCardClaim resolves a card claim against the KB document under
+// <wsDir>/.kb/workspaces/main. The claim carries either a leaf slug or a
+// folder-qualified slug; cards live at the workspace root or in subfolders
+// (tasks/<subsys>/<slug>.md), so a direct join miss falls back to a bounded
+// search for the leaf slug. Only a PRESENT document can prove staleness:
+// a card absent from the local checkout (sparse checkout, unmaterialized,
+// deleted) is not a closed answer and stays unverifiable.
 func checkCardClaim(slug, wsDir string) (ClaimState, string) {
-	kbPath := filepath.Join(wsDir, ".kb", "workspaces", "main", slug+".md")
-	data, err := os.ReadFile(kbPath)
+	kbRoot := filepath.Join(wsDir, ".kb", "workspaces", "main")
+	path, problem := resolveCardFile(kbRoot, slug)
+	if problem != "" {
+		return ClaimUnverifiable, problem
+	}
+	if path == "" {
+		return ClaimUnverifiable, "card not materialized in local KB workspace"
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return ClaimStale, "card not found in KB"
+			return ClaimUnverifiable, "card not materialized in local KB workspace"
 		}
 		return ClaimUnverifiable, "KB document unreadable"
 	}
@@ -260,6 +274,47 @@ func checkCardClaim(slug, wsDir string) (ClaimState, string) {
 	default:
 		return ClaimVerified, "KB status=" + status
 	}
+}
+
+// resolveCardFile locates the card document for slug under kbRoot. A direct
+// join covers root-level cards and folder-qualified slugs; a miss falls back
+// to a bounded walk for the leaf slug, because claims reference subfolder
+// cards by leaf slug. Returns (path, "") when found, ("", "") when the card
+// is simply not present locally, and ("", problem) when the search is
+// ambiguous.
+func resolveCardFile(kbRoot, slug string) (string, string) {
+	direct := filepath.Join(kbRoot, slug+".md")
+	if st, err := os.Stat(direct); err == nil && st.Mode().IsRegular() {
+		return direct, ""
+	}
+	leaf := filepath.Base(slug)
+	rootDepth := strings.Count(kbRoot, string(os.PathSeparator))
+	var matches []string
+	_ = filepath.WalkDir(kbRoot, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // unreadable or absent subtree: skip; the direct join covered the root
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			if strings.Count(p, string(os.PathSeparator))-rootDepth > 6 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if p != direct && filepath.Base(p) == leaf+".md" {
+			matches = append(matches, p)
+		}
+		return nil
+	})
+	if len(matches) > 1 {
+		return "", fmt.Sprintf("ambiguous card slug %q (%d documents)", leaf, len(matches))
+	}
+	if len(matches) == 1 {
+		return matches[0], ""
+	}
+	return "", ""
 }
 
 // kbDocumentStatus extracts the frontmatter status field from a KB document.
@@ -383,7 +438,8 @@ func appendBlankLine(lines []string) []string {
 
 // gitRefPresent reports whether ref exists in the repo at repoPath.
 func gitRefPresent(repoPath, ref string) (bool, error) {
-	cmd := gitCommand(repoPath, "show-ref", "--verify", "--quiet", ref)
+	cmd, cancel := gitCommand(repoPath, "show-ref", "--verify", "--quiet", ref)
+	defer cancel()
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	err := cmd.Run()
@@ -402,7 +458,8 @@ func gitRefPresent(repoPath, ref string) (bool, error) {
 
 // gitListRefs lists refs under pattern in the repo at repoPath.
 func gitListRefs(repoPath, pattern string) ([]string, error) {
-	cmd := gitCommand(repoPath, "for-each-ref", "--format=%(refname)", pattern)
+	cmd, cancel := gitCommand(repoPath, "for-each-ref", "--format=%(refname)", pattern)
+	defer cancel()
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -422,15 +479,17 @@ func gitListRefs(repoPath, pattern string) ([]string, error) {
 	return refs, nil
 }
 
-func gitCommand(repoPath string, args ...string) *exec.Cmd {
+// gitCommand builds a git command bounded by a 5-second timeout. cmd.Cancel
+// is left as CommandContext's default, which kills the process on timeout
+// (a custom Cancel that only cancels the context would never signal git,
+// and Run/Output would hang on a blocking command); WaitDelay bounds the
+// reap after the kill. The caller owns the context's timer and MUST defer
+// the returned cancel in the same scope as the Run/Output call, so the
+// timer is released on the normal path instead of leaking until the
+// deadline.
+func gitCommand(repoPath string, args ...string) (*exec.Cmd, context.CancelFunc) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoPath}, args...)...)
-	// Cancel runs when the process exits (or the deadline hits), not when this
-	// function returns - a deferred cancel would kill the context before git
-	// has even started.
-	cmd.Cancel = func() error {
-		cancel()
-		return nil
-	}
-	return cmd
+	cmd.WaitDelay = time.Second
+	return cmd, cancel
 }

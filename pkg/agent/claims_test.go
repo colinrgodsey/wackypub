@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -116,8 +117,8 @@ func TestReconcile_CardClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileMemoryClaims failed: %v", err)
 	}
-	if rep.ClaimCount != 3 || rep.Verified != 1 || rep.Stale != 2 {
-		t.Fatalf("report = %+v, want 3 claims, 1 verified, 2 stale", rep)
+	if rep.ClaimCount != 3 || rep.Verified != 1 || rep.Stale != 1 || rep.Unverifiable != 1 {
+		t.Fatalf("report = %+v, want 3 claims, 1 verified, 1 stale, 1 unverifiable", rep)
 	}
 	if !strings.Contains(out, "- card:tasks/open-card as-of 2026-10-20") {
 		t.Errorf("verified claim should stay in place, got:\n%s", out)
@@ -128,12 +129,15 @@ func TestReconcile_CardClaim(t *testing.T) {
 	if !strings.Contains(out, "[STALE 2026-10-21: KB status=completed]") {
 		t.Errorf("missing closed-card stale annotation, got:\n%s", out)
 	}
-	if !strings.Contains(out, "[STALE 2026-10-21: card not found in KB]") {
-		t.Errorf("missing gone-card stale annotation, got:\n%s", out)
+	if strings.Contains(out, "card not found in KB") {
+		t.Errorf("gone-card must not be stale-annotated (local absence is not a closed answer), got:\n%s", out)
 	}
 	// stale lines move to Resolved, out of the Claims section
 	claimsPart := out[strings.Index(out, "## Claims"):strings.Index(out, "## Notes")]
-	if strings.Contains(claimsPart, "closed-card") || strings.Contains(claimsPart, "gone-card") {
+	if !strings.Contains(claimsPart, "gone-card") {
+		t.Errorf("unverifiable claims must stay in the Claims section, got: ")
+	}
+	if strings.Contains(claimsPart, "closed-card") {
 		t.Errorf("stale claims should leave the Claims section, got:\n%s", claimsPart)
 	}
 	if !strings.Contains(out, "## Resolved") {
@@ -262,5 +266,125 @@ func TestReconcile_UnparseableUntouched(t *testing.T) {
 	}
 	if out != mem {
 		t.Errorf("unparseable lines must stay put and nothing is stale, so the document must be byte-identical")
+	}
+}
+
+func TestParseClaimLine_BulletMarkers(t *testing.T) {
+	cases := []string{
+		"- card:foo as-of 2026-10-21",
+		"* card:foo as-of 2026-10-21",
+		"+ card:foo as-of 2026-10-21",
+	}
+	for _, in := range cases {
+		claim, ok := parseClaimLine(in)
+		if !ok || claim.Kind != claimKindCard || claim.Value != "foo" || claim.AsOf != "2026-10-21" {
+			t.Errorf("parseClaimLine(%q) = %+v, %v; want card:foo 2026-10-21", in, claim, ok)
+		}
+	}
+}
+
+func TestReconcile_CardClaim_LeafSlugInSubfolder(t *testing.T) {
+	wsDir := t.TempDir()
+	mustWriteKB(t, wsDir, "tasks/wackypub/leaf-card", "active")
+	mustWriteKB(t, wsDir, "tasks/wackypub/done-card", "completed")
+
+	mem := fmt.Sprintf(claimDoc, "- card:leaf-card as-of 2026-10-20\n- card:done-card as-of 2026-10-20\n- card:absent-card as-of 2026-10-20")
+	out, rep, err := ReconcileMemoryClaims(mem, wsDir, now2026())
+	if err != nil {
+		t.Fatalf("ReconcileMemoryClaims failed: %v", err)
+	}
+	if rep.ClaimCount != 3 || rep.Verified != 1 || rep.Stale != 1 || rep.Unverifiable != 1 {
+		t.Fatalf("report = %+v, want 3 claims, 1 verified, 1 stale, 1 unverifiable", rep)
+	}
+	if !strings.Contains(out, "[STALE 2026-10-21: KB status=completed]") {
+		t.Errorf("done-card should be annotated stale, got: ")
+	}
+	if strings.Contains(out, "card not found in KB") {
+		t.Errorf("legacy stale-on-missing text must not appear, got: ")
+	}
+	claimsPart := out[strings.Index(out, "## Claims"):strings.Index(out, "## Notes")]
+	if !strings.Contains(claimsPart, "absent-card") {
+		t.Errorf("absent (unmaterialized) card must stay in the Claims section, got: ")
+	}
+}
+
+func TestReconcile_CardClaim_Ambiguous(t *testing.T) {
+	wsDir := t.TempDir()
+	mustWriteKB(t, wsDir, "tasks/wackypub/two-card", "active")
+	mustWriteKB(t, wsDir, "bugs/nic/two-card", "active")
+
+	mem := fmt.Sprintf(claimDoc, "- card:two-card as-of 2026-10-20")
+	_, rep, err := ReconcileMemoryClaims(mem, wsDir, now2026())
+	if err != nil {
+		t.Fatalf("ReconcileMemoryClaims failed: %v", err)
+	}
+	if rep.Unverifiable != 1 || rep.Verified != 0 || rep.Stale != 0 {
+		t.Fatalf("report = %+v, want 1 unverifiable (ambiguous slug)", rep)
+	}
+}
+
+func TestReconcile_BulletMarkers(t *testing.T) {
+	wsDir := t.TempDir()
+	mustWriteKB(t, wsDir, "open-card", "active")
+	mustWriteKB(t, wsDir, "closed-card", "completed")
+
+	mem := fmt.Sprintf(claimDoc, "* card:open-card as-of 2026-10-20\n+ card:closed-card as-of 2026-10-20")
+	out, rep, err := ReconcileMemoryClaims(mem, wsDir, now2026())
+	if err != nil {
+		t.Fatalf("ReconcileMemoryClaims failed: %v", err)
+	}
+	if rep.ClaimCount != 2 || rep.Verified != 1 || rep.Stale != 1 || len(rep.Unparseable) != 0 {
+		t.Fatalf("report = %+v, want 2 claims: 1 verified, 1 stale, none unparseable", rep)
+	}
+	if !strings.Contains(out, "[STALE 2026-10-21: KB status=completed]") {
+		t.Errorf("+ bullet claim should be reconciled, got: ")
+	}
+}
+
+func TestGitCommand_TimeoutContract(t *testing.T) {
+	dir := t.TempDir()
+	cmd, cancel := gitCommand(dir, "show-ref", "--verify", "--quiet", "refs/heads/none")
+	defer cancel()
+	// The timeout contract is behavioral: a blocking git must be killed at
+	// the deadline (TestGitCommand_KillsHungProcessOnTimeout); the fast path
+	// below must return promptly with an error, not hang.
+	if cmd.WaitDelay <= 0 {
+		t.Fatal("WaitDelay must bound the reap after the kill")
+	}
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected an error running git outside a repository")
+	}
+}
+
+func TestGitCommand_KillsHungProcessOnTimeout(t *testing.T) {
+	repo := t.TempDir()
+	setup := func(args ...string) {
+		c := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if err := c.Run(); err != nil {
+			t.Fatalf("git setup %v: %v", args, err)
+		}
+	}
+	setup("init", "-q")
+	setup("config", "user.email", "t@example.com")
+	setup("config", "user.name", "test")
+	hook := filepath.Join(repo, ".git", "hooks", "pre-commit")
+	hdr := append(append([]byte("#!/bin/sh"), byte(10)), []byte("sleep 30")...)
+	if err := os.WriteFile(hook, hdr, 0755); err != nil {
+		t.Fatalf("write hook: %v", err)
+	}
+
+	cmd, cancel := gitCommand(repo, "commit", "--allow-empty", "-m", "x")
+	defer cancel()
+	start := time.Now()
+	err := cmd.Run()
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected the timeout to kill the commit")
+	}
+	if elapsed < 4*time.Second {
+		t.Fatalf("commit returned after %v: the hook did not engage, so this did not test the timeout path", elapsed)
+	}
+	if elapsed > 20*time.Second {
+		t.Fatalf("commit took %v: the hung process was not killed at the timeout", elapsed)
 	}
 }

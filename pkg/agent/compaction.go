@@ -552,7 +552,12 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 			overheadPct = compactCfg.MajorCompactOverheadPct
 		}
 		budget := contextBudget(runtimeCfg.ContextWindow, runtimeCfg.MaxOutputReserve, overheadPct)
-		if EstimateTokens(turns, runtimeCfg.PreserveThinking) < budget {
+		// The session estimate gates only compactions the session itself
+		// needs. A major memory pass is an independent trigger: once the
+		// memory file crosses major-compact-memory-pct (or the every-N rule)
+		// the pass runs even when the session is small - that is the case the
+		// setting exists for.
+		if !isMajor && EstimateTokens(turns, runtimeCfg.PreserveThinking) < budget {
 			return false, nil
 		}
 	}

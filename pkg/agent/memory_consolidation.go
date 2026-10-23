@@ -148,6 +148,23 @@ func decideMemoryPass(existingMemory string, cfg *CompactConfig, runtimeCfg *Run
 	return false
 }
 
+// memoryNeedsMajor reports whether the agent's memory file alone justifies a
+// major pass right now: it crosses major-compact-memory-pct (or the every-N
+// cycle rule) and the cycling guard allows a major this cycle. Read errors
+// are treated as "not needed" - a broken memory read must not force a
+// compaction on every turn.
+func memoryNeedsMajor(agentDir string, runtimeCfg *RuntimeConfig) bool {
+	mem, err := ReadMemoryFile(agentDir)
+	if err != nil || mem == "" {
+		return false
+	}
+	cfg, err := LoadCompactConfig(agentDir)
+	if err != nil || cfg == nil {
+		return false
+	}
+	return decideMemoryPass(mem, cfg, runtimeCfg)
+}
+
 // appendAddendumToLedger places a minor-pass addendum under the document's
 // Ledger Addendum section, creating the section at the end of the document
 // when it does not exist yet.

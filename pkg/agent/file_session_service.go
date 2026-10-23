@@ -138,6 +138,12 @@ func (s *FileSessionService) Get(ctx context.Context, req *session.GetRequest) (
 				fmt.Fprintf(os.Stderr, "Warning: claims reconcile write failed for agent %s: %v\n", agentID, werr)
 			} else {
 				memContent = reconciled
+				// D35: the reconciled file is a state mutation - commit it here
+				// instead of leaving the workspace tree dirty until the next
+				// turn's commit. Silent no-op when the workspace is not git
+				// tracked.
+				eventType := fmt.Sprintf("reconcile (memory) claims: %d stale", rep.Stale)
+				warnWorkspaceEventCommit(agentID, eventType, CommitWorkspaceEvent(s.wsDir, agentID, eventType))
 			}
 		}
 		if rep.Stale > 0 {
