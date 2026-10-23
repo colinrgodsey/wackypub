@@ -6,8 +6,11 @@ import (
 )
 
 // TestTurnDeadline_DefaultByEndpointLocality pins the local-vs-remote default policy: an
-// unset TurnDeadlineSeconds resolves to the long local bound for a loopback endpoint and the
-// short remote bound for everything else, including an empty Endpoint (native Gemini).
+// unset TurnDeadlineSeconds resolves to the long local bound for a self-hosted/private-network
+// endpoint and the short remote bound for a public cloud endpoint or an empty Endpoint (native
+// Gemini). "Local" is deliberately broader than literal loopback - see isLocalEndpoint's doc
+// comment and the "k8s-internal hostname" case below, which pins the card's own motivating
+// real-world example.
 func TestTurnDeadline_DefaultByEndpointLocality(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -19,7 +22,9 @@ func TestTurnDeadline_DefaultByEndpointLocality(t *testing.T) {
 		{"loopback IPv4", "http://127.0.0.1:8080/v1", DefaultTurnDeadlineSecondsLocal * time.Second},
 		{"loopback IPv6", "http://[::1]:8080/v1", DefaultTurnDeadlineSecondsLocal * time.Second},
 		{"cloud https endpoint", "https://api.openai.com/v1", DefaultTurnDeadlineSecondsRemote * time.Second},
-		{"non-loopback LAN IP is remote", "http://192.168.1.50:8080/v1", DefaultTurnDeadlineSecondsRemote * time.Second},
+		{"private RFC1918 LAN IP is local", "http://192.168.1.50:8080/v1", DefaultTurnDeadlineSecondsLocal * time.Second},
+		{"k8s-internal hostname is local (card's own motivating example)", "http://llamacpp.default.k8s", DefaultTurnDeadlineSecondsLocal * time.Second},
+		{"bare single-label hostname is local", "http://ollama:11434/v1", DefaultTurnDeadlineSecondsLocal * time.Second},
 		{"unparseable endpoint defaults remote (safer/tighter)", "not a url: :::", DefaultTurnDeadlineSecondsRemote * time.Second},
 	}
 

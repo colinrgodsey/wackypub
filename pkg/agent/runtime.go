@@ -141,12 +141,23 @@ func (c *RuntimeConfig) TurnDeadline() time.Duration {
 	return DefaultTurnDeadlineSecondsRemote * time.Second
 }
 
-// isLocalEndpoint reports whether a RuntimeConfig.Endpoint points at a loopback address
-// (e.g. "http://localhost:11434/v1", "http://127.0.0.1:8080", "http://[::1]:8080") - the
-// local-inference case the longer turn-watchdog default exists for. An empty Endpoint
-// (native Gemini, no self-hosted backend) is treated as remote: it addresses Google's cloud
-// API, not a local process. An unparseable Endpoint is also treated as remote, the safer
-// (tighter) default when the address can't be classified.
+// internalHostSuffixes are hostname suffixes conventionally used for self-hosted/cluster-
+// internal service discovery, never by a public cloud model provider - e.g. the exact
+// motivating case this card was filed from, a self-hosted llama.cpp server reached at
+// "llamacpp.default.k8s" inside a Kubernetes cluster.
+var internalHostSuffixes = []string{".local", ".internal", ".lan", ".k8s", ".svc", ".cluster.local", ".home.arpa"}
+
+// isLocalEndpoint reports whether a RuntimeConfig.Endpoint points at a local/self-hosted
+// backend rather than a public cloud API - the local-inference case the longer turn-watchdog
+// default exists for (slow hardware, large models, no provider-side timeout of its own).
+// "Local" here is deliberately broader than literal loopback: a private-network IP (RFC
+// 1918 / link-local) or an internal-looking hostname (single-label, or one of
+// internalHostSuffixes) is just as much "someone's own inference box" as 127.0.0.1 is - the
+// card's own motivating example, "llamacpp.default.k8s", is a Kubernetes-internal DNS name,
+// not a loopback address, and must keep the generous 1h default rather than regressing to
+// the tighter remote one. An empty Endpoint (native Gemini, no self-hosted backend) and an
+// unparseable Endpoint both fall through to remote - the safer (tighter) default when the
+// address can't be classified as someone's own hardware.
 func isLocalEndpoint(endpoint string) bool {
 	if endpoint == "" {
 		return false
@@ -155,12 +166,23 @@ func isLocalEndpoint(endpoint string) bool {
 	if err != nil || u.Hostname() == "" {
 		return false
 	}
-	host := u.Hostname()
-	if host == "localhost" {
+	host := strings.ToLower(u.Hostname())
+
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return true
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback()
+	if !strings.Contains(host, ".") {
+		// A bare single-label hostname (e.g. "llamacpp", "ollama") cannot be a real public
+		// FQDN - public cloud providers always address a fully-qualified domain.
+		return true
+	}
+	for _, suffix := range internalHostSuffixes {
+		if strings.HasSuffix(host, suffix) {
+			return true
+		}
 	}
 	return false
 }
