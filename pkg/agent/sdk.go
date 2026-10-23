@@ -276,6 +276,9 @@ func (s *AgentSDK) AddMedia(ctx context.Context, req *agentv1.AddMediaRequest) (
 // inFlightTurnEntry tracks an active turn cancellation handle (D85).
 type inFlightTurnEntry struct {
 	cancel context.CancelFunc
+	// startedAt stamps the registration so the lock-hold alarm can report how long the
+	// turn has been in flight (a wedged turn announcing itself before the watchdog bound).
+	startedAt time.Time
 }
 
 var (
@@ -286,7 +289,7 @@ var (
 // registerInFlightTurn registers a cancel function for an agent's active turn.
 // Returns a cleanup function that deregisters the turn and invokes cancel.
 func registerInFlightTurn(agentID string, cancel context.CancelFunc) func() {
-	entry := &inFlightTurnEntry{cancel: cancel}
+	entry := &inFlightTurnEntry{cancel: cancel, startedAt: time.Now()}
 	inFlightTurnsMu.Lock()
 	// If a new turn starts for the same agent while one is registered
 	// (shouldn't happen under the session lock, but be safe):
@@ -303,6 +306,20 @@ func registerInFlightTurn(agentID string, cancel context.CancelFunc) func() {
 		}
 		inFlightTurnsMu.Unlock()
 	}
+}
+
+// describeInFlightTurn reports whether agentID has a registered in-flight turn and, when it
+// does, how long it has been registered. The lock-hold alarm uses this to tell "a turn is
+// legitimately holding the lock" (reported with the turn's age) from "the lock is held with
+// no turn at all" (the incident signature, reported as an alarm).
+func describeInFlightTurn(agentID string) (bool, time.Duration) {
+	inFlightTurnsMu.Lock()
+	defer inFlightTurnsMu.Unlock()
+	entry, ok := inFlightTurns[agentID]
+	if !ok {
+		return false, 0
+	}
+	return true, time.Since(entry.startedAt)
 }
 
 // CancelTurn implements the behavior defined in proto/wackypub/v1/agent.proto.
