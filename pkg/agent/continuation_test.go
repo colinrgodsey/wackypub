@@ -562,7 +562,7 @@ func TestD88_MaxAutoContinuationBudgetCap(t *testing.T) {
 			if c%2 == 0 {
 				// Compaction calls
 				respJSON := `{
-					"choices":[{"message":{"role":"assistant","content":"- Compacted memory step."},"finish_reason":"stop"}],
+					"choices":[{"message":{"role":"assistant","content":"- Compacted memory step: archived older turns, nothing else notable to report."},"finish_reason":"stop"}],
 					"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":30}
 				}`
 				io.WriteString(w, respJSON)
@@ -649,7 +649,7 @@ func TestD88_MaxAutoContinuationBudgetCap(t *testing.T) {
 			if c%2 == 0 {
 				// Compaction call
 				respJSON := `{
-					"choices":[{"message":{"role":"assistant","content":"- Compacted memory step."},"finish_reason":"stop"}],
+					"choices":[{"message":{"role":"assistant","content":"- Compacted memory step: archived older turns, nothing else notable to report."},"finish_reason":"stop"}],
 					"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":30}
 				}`
 				io.WriteString(w, respJSON)
