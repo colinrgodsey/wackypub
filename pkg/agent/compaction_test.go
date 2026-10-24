@@ -48,7 +48,12 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic("failed to read examples/runtimes/openrouter-auto.json for tests: " + err.Error())
 	}
-	DefaultRuntimeJSON = string(rtData)
+	// Keep the shipped default content (config semantics, JSON shape) but point its
+	// endpoint at loopback: 2026-10-24 investigation proved full-suite runs made real
+	// OpenRouter 'auto'-model API calls on the host key whenever a test constructed a
+	// client from DefaultRuntimeJSON. 127.0.0.1:9 refuses instantly - no external dial.
+	DefaultRuntimeJSON = strings.Replace(string(rtData),
+		"https://openrouter.ai/api/v1", "http://127.0.0.1:9", 1)
 
 	os.Exit(m.Run())
 }
@@ -1754,5 +1759,20 @@ func TestCompactionNoticeAtTail_WatcherNotDropping(t *testing.T) {
 	}
 	if len(resp.Events) != 1 || resp.Events[0].GetSeq() != noticeSeq+1 {
 		t.Fatalf("expected exactly the post-compaction turn (seq %d), got %d events: %+v", noticeSeq+1, len(resp.Events), resp.Events)
+	}
+}
+
+// TestDefaultRuntimeJSON_EndpointIsLoopbackInTests pins the TestMain guarantee:
+// the seeded default must never carry a real remote endpoint, so no test path can
+// make external API calls through the bundled fallback runtime.
+func TestDefaultRuntimeJSON_EndpointIsLoopbackInTests(t *testing.T) {
+	if DefaultRuntimeJSON == "" {
+		t.Fatal("DefaultRuntimeJSON not seeded")
+	}
+	if strings.Contains(DefaultRuntimeJSON, "openrouter.ai") {
+		t.Error("DefaultRuntimeJSON still points at the real openrouter endpoint; tests would make live API calls")
+	}
+	if !strings.Contains(DefaultRuntimeJSON, "127.0.0.1") {
+		t.Error("DefaultRuntimeJSON endpoint was not repointed at loopback")
 	}
 }
