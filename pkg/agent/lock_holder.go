@@ -47,7 +47,7 @@ func (h lockWaitHolder) describe() string {
 		out += ", " + h.cmd
 	}
 	if h.age > 0 {
-		out += ", " + formatHolderAge(h.age)
+		out += ", process up " + formatHolderAge(h.age)
 	}
 	return out
 }

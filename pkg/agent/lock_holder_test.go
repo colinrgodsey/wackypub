@@ -57,7 +57,7 @@ func TestFormatHolderAge(t *testing.T) {
 	if (lockWaitHolder{}).describe() != "" {
 		t.Error("an unresolved holder must describe as nothing, so the old message stands")
 	}
-	if got := (lockWaitHolder{pid: 12345, cmd: "wackypub agent phineas prompt", age: 45 * time.Minute}).describe(); got != "held by pid 12345, wackypub agent phineas prompt, 45m" {
+	if got := (lockWaitHolder{pid: 12345, cmd: "wackypub agent phineas prompt", age: 45 * time.Minute}).describe(); got != "held by pid 12345, wackypub agent phineas prompt, process up 45m" {
 		t.Errorf("unexpected rendering: %q", got)
 	}
 }

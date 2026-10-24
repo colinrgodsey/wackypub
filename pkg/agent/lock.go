@@ -47,6 +47,11 @@ var (
 var (
 	lockHoldMonitorOnce sync.Once
 	lockHoldWake        = make(chan struct{}, 1)
+
+	// lockHoldAlarmSink emits a hold-time alarm line. A var (not a direct os.Stderr write) so
+	// tests capture the line without swapping the process-wide os.Stderr pointer while the
+	// background monitor goroutine is active. Read and write under heldLocksMu.
+	lockHoldAlarmSink = func(line string) { fmt.Fprintln(os.Stderr, line) }
 )
 
 // startLockHoldMonitor starts the process-wide hold monitor on the first acquisition.
@@ -56,7 +61,17 @@ func startLockHoldMonitor() {
 	lockHoldMonitorOnce.Do(func() {
 		go func() {
 			for {
-				timer := time.NewTimer(lockHoldCheckInterval)
+				heldLocksMu.Lock()
+				idle := len(heldLocks) == 0
+				interval := lockHoldCheckInterval
+				heldLocksMu.Unlock()
+				if idle {
+					// Park: no locks held, so block on the wake channel with no armed timer; a new
+					// acquisition wakes us via lockHoldWake. Zero-idle-wake discipline, #118.
+					<-lockHoldWake
+					continue
+				}
+				timer := time.NewTimer(interval)
 				select {
 				case <-timer.C:
 				case <-lockHoldWake:
@@ -87,6 +102,7 @@ func checkLockHolds() {
 		next  time.Time
 	}
 	var held []heldInfo
+	alarmAfter := lockHoldAlarmAfter
 	for dir, n := range heldLocks {
 		if n > 0 {
 			since := heldLockSince[dir]
@@ -100,18 +116,19 @@ func checkLockHolds() {
 
 	for _, h := range held {
 		heldFor := now.Sub(h.since)
-		if heldFor < lockHoldAlarmAfter {
+		if heldFor < alarmAfter {
 			continue
 		}
 		if !h.next.IsZero() && now.Before(h.next) {
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "%s\n", lockHoldAlarmLine(h.dir, h.since, now))
 		heldLocksMu.Lock()
+		sink := lockHoldAlarmSink
 		if _, still := heldLocks[h.dir]; still {
 			heldLockAlarmNext[h.dir] = now.Add(lockHoldAlarmRepeat)
 		}
 		heldLocksMu.Unlock()
+		sink(lockHoldAlarmLine(h.dir, h.since, now))
 	}
 }
 
@@ -266,15 +283,23 @@ func (l *SessionLock) Release() {
 	if l != nil && l.file != nil {
 		clean := cleanLockDir(l.dir)
 		heldLocksMu.Lock()
+		wasLast := false
 		if heldLocks[clean] > 1 {
 			heldLocks[clean]--
 		} else {
+			wasLast = true
 			delete(heldLocks, clean)
 			delete(heldLockSince, clean)
 			delete(heldLockAlarmNext, clean)
 		}
 		heldLocksMu.Unlock()
 
+		if wasLast {
+			// Truncate the PID hint before unlocking so an idle long-lived holder (stdio-serve)
+			// never leaves its live PID in session.lock for a waiter's holder-naming to misread.
+			_ = l.file.Truncate(0)
+			_, _ = l.file.Seek(0, 0)
+		}
 		_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
 		_ = l.file.Close()
 		l.file = nil
