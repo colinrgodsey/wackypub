@@ -154,14 +154,40 @@ Partial enablement is a common silent-failure trap:
 
 ### Setting Up Background Processes (`wackyproc`)
 
-`wackyproc` is a self-supervising process manager for background tasks, daemons, test runs, and build monitoring.
+`wackyproc` is a zero-daemon background process manager for turn-based agents. Standard `run_command` execution blocks the turn and dies with it - anything long-running (builds, test suites, dev servers, migrations, batch jobs) either wedges the turn or gets lost. `wackyproc` spawns the process detached from the turn lifecycle, captures stdout/stderr, and keeps the record queryable across turns.
+
+Why an agent needs it: fire-and-forget servers, multi-minute builds and test runs, and supervised agent-to-agent async dispatch (`wackypub agent prompt --async` requires wackyproc supervision) all outlive a single turn. Core verbs: `run`, `list` (status snapshots), `wait` (block for terminal state), `peek` (trailing output without pulling the full log), `get` (full output), `stop`/`kill`/`signal` (lifecycle control), `prune`/`remove` (record cleanup). Install the `wackyproc` skill for full lifecycle guidance; the setup steps:
 1. Symlink the `wackyproc` binary into `<agent_id>/tools/wackyproc`:
    ```bash
    ln -s "$(command -v wackyproc)" ws/<agent_id>/tools/wackyproc
    chmod +x ws/<agent_id>/tools/wackyproc
    ```
-2. The agent executes `wackyproc` commands via `run_command` (e.g. `wackyproc run -- <command>`, `wackyproc ps`, `wackyproc log <task_id>`).
+2. The agent executes `wackyproc` commands via `run_command` (e.g. `wackyproc run <tool> [args]`, `wackyproc list`, `wackyproc peek <id>`, `wackyproc get <id>`).
 3. Install the `wackyproc` skill (`skills/wackyproc/SKILL.md`) to provide the agent with full command and lifecycle guidance.
+
+### Bridging External Runtimes (`wackyacp` + `wackyagy`)
+
+`wackyacp` is the Agent Client Protocol (ACP) bridge layer: it lets runtimes that speak ACP - claude-agent-acp, codex-acp, gemini via `wackyagy` - act as full wackypub agents with real session management, workspace, tools, skills, and (since D112) the complete scratchpad protocol (create/read/list/search/diff/delete). Bridged agents are first-class participants in the scratchpad and A2A workflows, not second-class citizens behind RPC `Unimplemented` errors.
+
+Two binaries ship in the wackyacp repo:
+- `wackyacp` - the bridge. `wackyacp [flags]` runs bridge dispatch mode; `wackyacp serve` exposes an agent as an in-process ACP server (stdio by default, `--host/--port` for TCP, or `--remote <host:port> --agent-id <id>` to dial a remote wackypub tcp-serve); `wackyacp model get|set` manages a per-agent model.
+- `wackyagy` - the Gemini harness `wackyacp` drives for gemini-backed agents.
+
+**Routing**: wackypub consults the workspace `REMOTE_MANIFEST` file to decide native vs. bridged per agent id. Each line maps an agent id to its bridge command, e.g.:
+
+```bash
+# <ws_dir>/REMOTE_MANIFEST
+claude: /home/dranbo/go/bin/wackyacp --harness-cmd=/home/dranbo/node_modules/.bin/claude-agent-acp --permission-mode=approve --agent-folder=/home/dranbo/workspace/claude
+agy: /home/dranbo/go/bin/wackyacp --harness-cmd=/home/dranbo/go/bin/wackyagy --permission-mode=approve --agent-folder=/home/dranbo/workspace/agy
+```
+
+**Setup**:
+1. Build/symlink `wackyacp` (and `wackyagy` if gemini-backed) into a stable path.
+2. Create the agent folder (`AGENTS.md`, workspace files) as with any agent.
+3. Add the `REMOTE_MANIFEST` line mapping the agent id to the bridge command with `--agent-folder` pointing at it (`--permission-mode=approve` unless the harness manages approvals).
+4. Dispatch normally - `wackypub agent prompt <id>` resolves the bridge automatically and reaps the subprocess when the turn ends.
+
+Why it matters: harnesses like claude or codex bring frontier capability but no wackypub integration; the bridge gives them the whole workspace contract - locks, scratchpad, causal tracing, tools - without forking the runtime.
 
 ### Skillset Wiring: Bundled vs. Curated
 
