@@ -31,7 +31,10 @@ func TestCheckAndCompact_MemoryPctIndependentTrigger(t *testing.T) {
 	if err := WriteMemoryFile(tempDir, mem.String()); err != nil {
 		t.Fatalf("write memory: %v", err)
 	}
-	stub := &fallbackStubModel{name: "stub", answer: "- done"}
+	// Long enough to clear the major-pass output-quality floor (minMajorOutputChars) - this
+	// test exercises the memory-pct independent trigger, not output validation, so the canned
+	// reply just needs to be realistic, not meaningful.
+	stub := &fallbackStubModel{name: "stub", answer: "# Task Overview\n\nSession consolidated; nothing further to report."}
 	var denials int64
 	agent, err := BuildADKAgentWithConfigAndTrackerForCompaction("agent", "system", DefaultMaxToolTurns, cfg, stub, tempDir, nil, &denials)
 	if err != nil {
