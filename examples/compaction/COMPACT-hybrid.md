@@ -5,9 +5,8 @@ compact-overhead-pct: 20
 major-compact-every: 5
 major-compact-memory-pct: 25
 major-compact-overhead-pct: 40
-compaction-notice: "Some turns from earlier in this session were just archived into persistent memory above during compaction. If what follows references something not fully detailed there, it's no longer directly visible here - consider using memory or search tools to recover it rather than assuming it never happened."
 description: "Hybrid compaction: fast append-only minor passes into a Ledger Addendum section, and a periodic full-rewrite major pass (every major-compact-every cycles, or whenever MEMORY.md itself crosses major-compact-memory-pct of the context window) that consolidates and deduplicates MEMORY.md."
-note: "The {{if .IsMajor}}/{{else}}/{{end}} block below is rendered by the compaction engine on every pass with .IsAppend/.IsMajor set according to that pass's decision (CheckAndCompactSession / decideMemoryPass) - the whole directive, including which mode block renders, is this file's content end to end. Copy this file to an agent's own COMPACT.md to opt into hybrid mode; the plain append-only default (COMPACT-append.md) has none of these major-compact-* keys and never runs a major pass."
+note: "This is the embedded default used when an agent has no COMPACT.md at all (Colin, 2026-10-24) - every agent gets pass-mode conditionals by default now. The {{if .IsMajor}}/{{else}}/{{end}} block below is rendered by the compaction engine on every pass with .IsAppend/.IsMajor set according to that pass's decision (CheckAndCompactSession / decideMemoryPass) - the whole directive, including which mode block renders, is this file's content end to end. Copy COMPACT-append.md in instead to opt back into plain append-only behavior with none of these major-compact-* keys. The post-compaction notice is a single fixed string, not configurable per compaction type; a COMPACT.md may still opt all the way out of it with compaction-notice: \"\"."
 ---
 You are a state compaction engine updating a persistent execution log for this session.
 

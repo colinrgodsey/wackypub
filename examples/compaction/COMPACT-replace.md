@@ -2,9 +2,8 @@
 append-only: false
 compact-pct: 70
 compact-overhead-pct: 30
-compaction-notice: "Some turns from earlier in this session were just archived. MEMORY.md above was just rewritten from scratch to reflect everything known up to this point - if what follows references something not covered there, it's no longer directly visible here."
 description: "This is a replacement compaction that rewrites MEMORY.md wholesale from the existing <PERSISTENT_MEMORY> plus the turns being archived, instead of appending an addendum."
-note: "Copy this file to <agent_dir>/COMPACT.md to use replacement-style compaction instead of the default append-only mode. Produces one cohesive document each pass rather than an ever-growing list of addenda, at the cost of a heavier per-compaction generation (the whole memory gets re-synthesized, not just new content) - compact-overhead-pct is set higher here (30 vs the default 20) to give that heavier pass more headroom before the context window is actually full."
+note: "Copy this file to <agent_dir>/COMPACT.md to use replacement-style compaction instead of the embedded hybrid default (COMPACT-hybrid.md). Produces one cohesive document each pass rather than an ever-growing list of addenda, at the cost of a heavier per-compaction generation (the whole memory gets re-synthesized, not just new content) - compact-overhead-pct is set higher here (30 vs the default 20) to give that heavier pass more headroom before the context window is actually full. The post-compaction notice is a single fixed string, not configurable per compaction type; a COMPACT.md may still opt all the way out of it with compaction-notice: \"\"."
 ---
 You are a state consolidation engine rewriting the persistent execution log for this session.
 

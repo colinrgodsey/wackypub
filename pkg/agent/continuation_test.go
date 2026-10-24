@@ -979,7 +979,7 @@ func TestD101_ErrorTransparency_InsufficientReduction(t *testing.T) {
 	}
 
 	// COMPACT.md with compact-pct: 1 compacts only the initial model turn
-	compactConfig := "---\ncompact-pct: 1\ncompaction-notice: \"Session compacted.\"\n---\nSummarize prior turns.\n"
+	compactConfig := "---\ncompact-pct: 1\n---\nSummarize prior turns.\n"
 	if err := os.WriteFile(filepath.Join(agentDir, "COMPACT.md"), []byte(compactConfig), 0644); err != nil {
 		t.Fatalf("failed to write COMPACT.md: %v", err)
 	}

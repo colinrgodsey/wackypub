@@ -30,6 +30,9 @@ const DefaultMajorCompactOverheadPct = 40.0
 // DefaultCompactMD holds examples/compaction/COMPACT-append.md's content, in the same
 // append-only/compact-pct frontmatter + body shape a real <agentDir>/COMPACT.md
 // has - parsed through the exact same ParseCompactConfig path, according to D44.
+// No longer LoadCompactConfig's fallback (see DefaultCompactMDHybrid below) - stays
+// embedded and available for anyone who copies examples/compaction/COMPACT-append.md
+// in as their own COMPACT.md to opt back into plain append-only behavior.
 //
 // Set from main.go (D45), which embeds examples/compaction/COMPACT-append.md and assigns
 // it here before cmd.Execute() runs - mirrors cmd.BundledA2ASkill/BundledWSSkill (D34),
@@ -43,11 +46,11 @@ var DefaultCompactMD string
 
 // DefaultCompactMDHybrid holds examples/compaction/COMPACT-hybrid.md's content: the hybrid
 // minor/major compaction directive, embedded and set the same way as DefaultCompactMD above
-// (main.go, D45 pattern). It is NOT LoadCompactConfig's fallback - that stays DefaultCompactMD,
-// so an agent with no COMPACT.md at all keeps its existing append-only-only behavior
-// unchanged. This var exists so the hybrid default is guaranteed to ship in the binary and
-// stay in sync with examples/compaction/COMPACT-hybrid.md, available for an agent (or future
-// tooling) to adopt explicitly rather than drifting out of date as a docs-only example.
+// (main.go, D45 pattern). This IS LoadCompactConfig's fallback when an agent has no
+// COMPACT.md at all (Colin, 2026-10-24) - every agent gets the pass-mode-conditional
+// template by default, not just agents that opt in by creating their own COMPACT.md. The
+// other variants (DefaultCompactMD / examples/compaction/COMPACT-replace.md) stay available
+// in examples/ for anyone who wants something else; copy one in as a real COMPACT.md.
 var DefaultCompactMDHybrid string
 
 type CompactFrontmatter struct {
@@ -74,11 +77,11 @@ type CompactConfig struct {
 	MajorCompactOverheadPct float64
 }
 
-// defaultCompactionNotice is CompactConfig.CompactionNotice's fallback when a
-// COMPACT.md doesn't set the field at all (D46) - generic rather than naming
-// any specific search/memory tool, since wackypub has no idea what a given
-// agent actually has available.
-const defaultCompactionNotice = "Some turns from earlier in this session were just archived into persistent memory above during compaction. If what follows references something not fully detailed there, it's no longer directly visible here - consider using memory or search tools to recover it rather than assuming it never happened."
+// defaultCompactionNotice is the fixed D46 notice text (Colin, 2026-10-24: one fixed string,
+// no per-compaction-type frontmatter wording customization - the old wording was misleading).
+// A COMPACT.md may still opt out entirely with an explicit compaction-notice: "" (see
+// ParseCompactConfig); it may not supply different custom wording per compaction type.
+const defaultCompactionNotice = "Some turns from earlier in this session were just archived. PERSISTENT_MEMORY above was just rewritten or appended to reflect everything known up to the start of the session - if what follows references something not covered there, it's no longer directly visible."
 
 // ParseCompactConfig parses COMPACT.md's YAML frontmatter + body from an
 // in-memory string - either read from an agent's own <agentDir>/COMPACT.md or
@@ -127,8 +130,11 @@ func ParseCompactConfig(content string) (*CompactConfig, error) {
 		}
 	}
 
-	if fm.CompactionNotice != nil {
-		cfg.CompactionNotice = *fm.CompactionNotice
+	// Only an explicit empty override is honored (full opt-out, D46) - a non-empty custom
+	// value is ignored in favor of the fixed defaultCompactionNotice, per Colin's 2026-10-24
+	// decision that the wording is one fixed string with no per-compaction-type customization.
+	if fm.CompactionNotice != nil && *fm.CompactionNotice == "" {
+		cfg.CompactionNotice = ""
 	}
 
 	if fm.MajorCompactEvery != nil && *fm.MajorCompactEvery > 0 {
@@ -155,8 +161,13 @@ func ParseCompactConfig(content string) (*CompactConfig, error) {
 }
 
 // LoadCompactConfig loads per-agent COMPACT.md from <agentDir>/COMPACT.md if
-// present according to D38. Falls back to the embedded default (DefaultCompactMD)
-// if absent, according to D44.
+// present according to D38. Falls back to the embedded hybrid default
+// (DefaultCompactMDHybrid) if absent (Colin, 2026-10-24: every agent gets the
+// pass-mode-conditional template by default now, not just agents that opt in
+// by creating their own COMPACT.md). The plain append-only example
+// (DefaultCompactMD) stays embedded and available - it's just not what an
+// agent with no COMPACT.md gets anymore; copy examples/compaction/COMPACT-append.md
+// in as a real COMPACT.md to get the old behavior back.
 func LoadCompactConfig(agentDir string) (*CompactConfig, error) {
 	if agentDir != "" {
 		compactPath := filepath.Join(agentDir, "COMPACT.md")
@@ -168,7 +179,7 @@ func LoadCompactConfig(agentDir string) (*CompactConfig, error) {
 			return nil, fmt.Errorf("failed to read COMPACT.md at %s: %w", compactPath, err)
 		}
 	}
-	return ParseCompactConfig(DefaultCompactMD)
+	return ParseCompactConfig(DefaultCompactMDHybrid)
 }
 
 // ReadMemoryFile reads the contents of <agent_dir>/MEMORY.md.
