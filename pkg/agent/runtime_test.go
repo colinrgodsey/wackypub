@@ -81,8 +81,10 @@ func TestLoadRuntimeConfig_DefaultFallback_WithAPIKey(t *testing.T) {
 		t.Fatalf("expected LoadRuntimeConfig fallback to succeed, got: %v", err)
 	}
 
-	if cfg.Endpoint != "https://openrouter.ai/api/v1" {
-		t.Errorf("expected endpoint https://openrouter.ai/api/v1, got %s", cfg.Endpoint)
+	// TestMain repoints the bundled default endpoint at loopback so no test path
+	// can dial the real OpenRouter endpoint (2026-10-24 live-dial incident).
+	if cfg.Endpoint != "http://127.0.0.1:9" {
+		t.Errorf("expected loopback endpoint http://127.0.0.1:9, got %s", cfg.Endpoint)
 	}
 	if cfg.Model != "auto" {
 		t.Errorf("expected model auto, got %s", cfg.Model)
