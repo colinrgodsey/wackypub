@@ -167,11 +167,11 @@ Why an agent needs it: fire-and-forget servers, multi-minute builds and test run
 
 ### Bridging External Runtimes (`wackyacp` + `wackyagy`)
 
-`wackyacp` is the Agent Client Protocol (ACP) bridge layer: it lets runtimes that speak ACP - claude-agent-acp, codex-acp, gemini via `wackyagy` - act as full wackypub agents with real session management, workspace, tools, skills, and (since D112) the complete scratchpad protocol (create/read/list/search/diff/delete). Bridged agents are first-class participants in the scratchpad and A2A workflows, not second-class citizens behind RPC `Unimplemented` errors.
+`wackyacp` is the Agent Client Protocol (ACP) bridge layer: it lets runtimes that speak ACP - claude-agent-acp, codex-acp, the antigravity cli via `wackyagy` - act as full wackypub agents with real session management, workspace, tools, skills, and (since D112) the complete scratchpad protocol (create/read/list/search/diff/delete). Bridged agents are first-class participants in the scratchpad and A2A workflows, not second-class citizens behind RPC `Unimplemented` errors.
 
 Two binaries ship in the wackyacp repo:
 - `wackyacp` - the bridge. `wackyacp [flags]` runs bridge dispatch mode; `wackyacp serve` exposes an agent as an in-process ACP server (stdio by default, `--host/--port` for TCP, or `--remote <host:port> --agent-id <id>` to dial a remote wackypub tcp-serve); `wackyacp model get|set` manages a per-agent model.
-- `wackyagy` - the Gemini harness `wackyacp` drives for gemini-backed agents.
+- `wackyagy` - bridge for the antigravity cli (`agy`), driven via `--harness-cmd` exactly like the npm harnesses.
 
 **Routing**: wackypub consults the workspace `REMOTE_MANIFEST` file to decide native vs. bridged per agent id. Each line maps an agent id to its bridge command, e.g.:
 
