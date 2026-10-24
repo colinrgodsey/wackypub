@@ -25,6 +25,16 @@ var bundledScratchpadSkill string
 //go:embed examples/compaction/COMPACT-append.md
 var bundledDefaultCompactMD string
 
+// bundledDefaultCompactMDHybrid is examples/compaction/COMPACT-hybrid.md, the hybrid
+// minor/major compaction directive shipped in the binary alongside the plain append-only
+// default above - embedded the same way, but not itself the fallback LoadCompactConfig
+// reaches for when an agent has no COMPACT.md (that stays bundledDefaultCompactMD, so
+// existing agents with no major-compact-* config keep running exactly as before). An agent
+// opts into hybrid mode by copying this file in as its own COMPACT.md.
+//
+//go:embed examples/compaction/COMPACT-hybrid.md
+var bundledDefaultCompactMDHybrid string
+
 // bundledDefaultRuntimeJSON is examples/runtimes/openrouter-auto.json, the default
 // runtime configuration shipped in the binary (D74). Assigned directly into pkg/agent's
 // DefaultRuntimeJSON var so LoadRuntimeConfig falls back to it when runtime.json is absent.
@@ -37,6 +47,7 @@ func main() {
 	cmd.BundledWSSkill = bundledWSSkill
 	cmd.BundledScratchpadSkill = bundledScratchpadSkill
 	adkAgent.DefaultCompactMD = bundledDefaultCompactMD
+	adkAgent.DefaultCompactMDHybrid = bundledDefaultCompactMDHybrid
 	adkAgent.DefaultRuntimeJSON = bundledDefaultRuntimeJSON
 	cmd.Execute()
 }

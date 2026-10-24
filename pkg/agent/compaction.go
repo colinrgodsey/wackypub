@@ -41,6 +41,15 @@ const DefaultMajorCompactOverheadPct = 40.0
 // relying on main.go ever running.
 var DefaultCompactMD string
 
+// DefaultCompactMDHybrid holds examples/compaction/COMPACT-hybrid.md's content: the hybrid
+// minor/major compaction directive, embedded and set the same way as DefaultCompactMD above
+// (main.go, D45 pattern). It is NOT LoadCompactConfig's fallback - that stays DefaultCompactMD,
+// so an agent with no COMPACT.md at all keeps its existing append-only-only behavior
+// unchanged. This var exists so the hybrid default is guaranteed to ship in the binary and
+// stay in sync with examples/compaction/COMPACT-hybrid.md, available for an agent (or future
+// tooling) to adopt explicitly rather than drifting out of date as a docs-only example.
+var DefaultCompactMDHybrid string
+
 type CompactFrontmatter struct {
 	AppendOnly              *bool    `yaml:"append-only"`
 	CompactPct              *float64 `yaml:"compact-pct"`
@@ -711,13 +720,16 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 	if runtimeCfg != nil {
 		chain = runtimeCfg.FallbackChain()
 	}
-	directiveText := compactCfg.Prompt
-	if isMajor || compactCfg.AppendOnly {
-		var dErr error
-		directiveText, dErr = renderCompactionDirective(directiveText, isMajor)
-		if dErr != nil {
-			return fail("render-directive", dErr)
-		}
+	// Every COMPACT.md body is rendered as a Go template with .IsAppend/.IsMajor, not just
+	// hybrid-configured ones: the pass-mode directive (what used to be a hardcoded Go
+	// template appended to the base prompt) now lives entirely inside COMPACT.md itself,
+	// fully user-configurable. A body with no {{ }} syntax (every COMPACT.md shipped before
+	// this change, and any agent's own plain custom one) renders back byte-identical -
+	// text/template passes plain text straight through - so this is a no-op for everyone who
+	// hasn't opted into the hybrid template shape.
+	directiveText, dErr := renderCompactionDirective(compactCfg.Prompt, isMajor)
+	if dErr != nil {
+		return fail("render-directive", dErr)
 	}
 	directive := genai.NewContentFromText(directiveText, "user")
 

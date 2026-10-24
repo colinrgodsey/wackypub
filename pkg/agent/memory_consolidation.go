@@ -243,48 +243,25 @@ func applyMajorRewrite(output string, nextCycle int) string {
 	return renderMemoryContent(mapping, body)
 }
 
-// compactionModeTemplate is appended to the base compaction directive
-// (COMPACT.md's body) and rendered with the .IsAppend/.IsMajor conditionals.
-// The base prompt's strict guidelines apply to both branches; this block
-// only fixes the pass mode and the output shape.
-const compactionModeTemplate = `
-
-{{if .IsMajor}}
-### PASS MODE: MAJOR - FULL CONSOLIDATION REWRITE
-This pass REPLACES <PERSISTENT_MEMORY> entirely. Read the ENTIRE existing <PERSISTENT_MEMORY> (structured sections plus any accumulated Ledger Addendum bullets) together with the archived turns, and produce a single deduplicated replacement document.
-
-- NOTHING carries over automatically: anything worth keeping from the old document must appear in your output, or it is gone.
-- Each fact appears ONCE, in its FINAL state. Fold the addenda and invalidate: if they show an item completed, abandoned, or superseded, write only the final state - do not carry forward stale in-progress notes.
-- Use exactly these section headings, in this order:
-  # Task Overview
-  ## Current State
-  ## Key Decisions & Discoveries
-  ## Next Steps
-  ## Context to Preserve
-- If the input has a ## Claims section, carry its claim lines VERBATIM into a ## Claims section of the output, dropping only claims the archived turns explicitly close.
-- Terminate the document with an empty ## Ledger Addendum heading (nothing after it).
-- Output ONLY the replacement document: no YAML frontmatter (the system manages it), no code fences around it, no introductory or concluding text.
-{{else}}
-### PASS MODE: MINOR - APPEND
-This pass appends to the existing <PERSISTENT_MEMORY>. The system places your output under the document's ## Ledger Addendum section. Emit ONLY the raw markdown bullet points (each line starting with *): no section headers, no code fences, no introductory or concluding text.
-{{end}}
-`
-
-// renderCompactionDirective renders the mode block and appends it to the
-// base directive. The base text is never parsed as a template: it is
-// agent-authored COMPACT.md content, and only this managed block carries the
-// {{if}} conditionals.
+// renderCompactionDirective renders base - COMPACT.md's own body, agent-authored or one of
+// the embedded defaults (DefaultCompactMD / DefaultCompactMDHybrid) - as a Go text/template
+// with .IsAppend/.IsMajor available, so the pass-mode directive (what minor vs. major
+// actually instructs the model to do) is fully configurable inside COMPACT.md itself rather
+// than a block hardcoded in Go. A base with no {{ }} syntax - every COMPACT.md shipped before
+// the hybrid template shape existed, and any plain custom one - parses to a template with no
+// actions and renders back out byte-identical; this is a deliberate no-op for everyone who
+// hasn't opted into pass-mode conditionals, not a special case this function has to detect.
 func renderCompactionDirective(base string, isMajor bool) (string, error) {
-	tmpl, err := template.New("compaction-mode").Parse(compactionModeTemplate)
+	tmpl, err := template.New("compaction-directive").Parse(base)
 	if err != nil {
-		return "", fmt.Errorf("failed to parse compaction mode template: %w", err)
+		return "", fmt.Errorf("failed to parse compaction directive template: %w", err)
 	}
 	var buf strings.Builder
 	if err := tmpl.Execute(&buf, struct {
 		IsAppend bool
 		IsMajor  bool
 	}{!isMajor, isMajor}); err != nil {
-		return "", fmt.Errorf("failed to render compaction mode template: %w", err)
+		return "", fmt.Errorf("failed to render compaction directive template: %w", err)
 	}
-	return base + buf.String(), nil
+	return buf.String(), nil
 }

@@ -195,8 +195,44 @@ func TestParseCompactConfig_MajorKnobs(t *testing.T) {
 
 // --- directive rendering ---
 
-func TestRenderCompactionDirective(t *testing.T) {
-	minor, err := renderCompactionDirective("Base prompt.", false)
+// testHybridModeBlock is a {{if .IsMajor}}/{{else}}/{{end}} block matching the shape an
+// agent's own COMPACT.md needs to opt into pass-mode-specific instructions (see
+// examples/compaction/COMPACT-hybrid.md) - kept here as a minimal, self-contained fixture
+// distinct from the real shipped file's wording, so tests using it exercise the general
+// template mechanism rather than happening to match the shipped content by coincidence.
+const testHybridModeBlock = "{{if .IsMajor}}PASS MODE: MAJOR - FULL CONSOLIDATION REWRITE{{else}}PASS MODE: MINOR - APPEND{{end}}"
+
+// TestRenderCompactionDirective_PlainBaseUnchanged pins the regression-safety contract this
+// whole refactor depends on: a COMPACT.md body with no {{ }} syntax at all - every COMPACT.md
+// shipped before the hybrid template shape existed, and any agent's own plain custom one -
+// must render back byte-identical for both pass modes. The pass-mode directive used to be a
+// Go-hardcoded block ALWAYS appended regardless of COMPACT.md content; now it only appears if
+// the COMPACT.md body itself asks for it.
+func TestRenderCompactionDirective_PlainBaseUnchanged(t *testing.T) {
+	const base = "Base prompt. No template syntax here at all."
+	minor, err := renderCompactionDirective(base, false)
+	if err != nil {
+		t.Fatalf("render minor failed: %v", err)
+	}
+	if minor != base {
+		t.Errorf("plain base must render byte-identical, got:\n%s", minor)
+	}
+	major, err := renderCompactionDirective(base, true)
+	if err != nil {
+		t.Fatalf("render major failed: %v", err)
+	}
+	if major != base {
+		t.Errorf("plain base must render byte-identical, got:\n%s", major)
+	}
+}
+
+// TestRenderCompactionDirective_UserTemplateHonored proves the actual ask: the pass-mode
+// directive is now whatever the COMPACT.md body itself says, via ordinary
+// {{if .IsMajor}}/{{else}}/{{end}} syntax - not a block Go appends regardless of content.
+func TestRenderCompactionDirective_UserTemplateHonored(t *testing.T) {
+	base := "Base prompt.\n" + testHybridModeBlock
+
+	minor, err := renderCompactionDirective(base, false)
 	if err != nil {
 		t.Fatalf("render minor failed: %v", err)
 	}
@@ -206,7 +242,11 @@ func TestRenderCompactionDirective(t *testing.T) {
 	if !strings.Contains(minor, "PASS MODE: MINOR - APPEND") {
 		t.Errorf("minor marker missing, got:\n%s", minor)
 	}
-	major, err := renderCompactionDirective("Base prompt.", true)
+	if strings.Contains(minor, "PASS MODE: MAJOR") {
+		t.Errorf("minor directive must not carry the major mode, got:\n%s", minor)
+	}
+
+	major, err := renderCompactionDirective(base, true)
 	if err != nil {
 		t.Fatalf("render major failed: %v", err)
 	}
@@ -215,6 +255,53 @@ func TestRenderCompactionDirective(t *testing.T) {
 	}
 	if strings.Contains(major, "PASS MODE: MINOR") {
 		t.Errorf("major directive must not carry the minor mode, got:\n%s", major)
+	}
+}
+
+// TestRenderCompactionDirective_MalformedTemplateErrors confirms a broken user template
+// (unbalanced {{ }}) surfaces as an error rather than silently mangling the directive sent to
+// the model - a new risk surface now that an arbitrary agent-authored COMPACT.md body is
+// always parsed as a template, not just the Go-owned block that used to be the only template.
+func TestRenderCompactionDirective_MalformedTemplateErrors(t *testing.T) {
+	if _, err := renderCompactionDirective("Base prompt. {{if .IsMajor}} unterminated", false); err == nil {
+		t.Error("expected an error for an unterminated template action, got nil")
+	}
+}
+
+// TestRenderCompactionDirective_ShippedHybridDefault exercises the actual embedded default
+// (examples/compaction/COMPACT-hybrid.md, via DefaultCompactMDHybrid - seeded in TestMain from
+// the real file) end to end, not a synthetic fixture: both pass modes must render distinctly,
+// and the shared strict guidelines (common to both modes) must survive in both.
+func TestRenderCompactionDirective_ShippedHybridDefault(t *testing.T) {
+	if DefaultCompactMDHybrid == "" {
+		t.Fatal("DefaultCompactMDHybrid is empty - TestMain should have seeded it from examples/compaction/COMPACT-hybrid.md")
+	}
+	cfg, err := ParseCompactConfig(DefaultCompactMDHybrid)
+	if err != nil {
+		t.Fatalf("ParseCompactConfig(DefaultCompactMDHybrid) failed: %v", err)
+	}
+	if cfg.MajorCompactEvery == 0 && cfg.MajorCompactMemoryPct == 0 {
+		t.Fatal("shipped hybrid default has neither major-compact-every nor major-compact-memory-pct set")
+	}
+
+	minor, err := renderCompactionDirective(cfg.Prompt, false)
+	if err != nil {
+		t.Fatalf("render minor failed: %v", err)
+	}
+	major, err := renderCompactionDirective(cfg.Prompt, true)
+	if err != nil {
+		t.Fatalf("render major failed: %v", err)
+	}
+	for _, shared := range []string{"STRICT GUIDELINES", "PROVENANCE", "SKILL LOADS"} {
+		if !strings.Contains(minor, shared) || !strings.Contains(major, shared) {
+			t.Errorf("shared guideline %q must survive in both modes - minor has it: %v, major has it: %v", shared, strings.Contains(minor, shared), strings.Contains(major, shared))
+		}
+	}
+	if !strings.Contains(minor, "PASS MODE: MINOR") || strings.Contains(minor, "PASS MODE: MAJOR") {
+		t.Errorf("minor render should carry only the minor mode block, got:\n%s", minor)
+	}
+	if !strings.Contains(major, "PASS MODE: MAJOR") || strings.Contains(major, "PASS MODE: MINOR") {
+		t.Errorf("major render should carry only the major mode block, got:\n%s", major)
 	}
 }
 
@@ -312,7 +399,7 @@ func headCommitMessages(t *testing.T, agentDir string, n int) []string {
 }
 
 func TestCompactionHybrid_MinorAppendCycle(t *testing.T) {
-	compactMD := "---\nappend-only: true\nmajor-compact-every: 5\nmajor-compact-memory-pct: 90\n---\nBase directive text."
+	compactMD := "---\nappend-only: true\nmajor-compact-every: 5\nmajor-compact-memory-pct: 90\n---\nBase directive text.\n" + testHybridModeBlock
 	existing := "# Task Overview\n\nSome narrative."
 	agentDir, req := runHybridCompaction(t, compactMD, existing, "* did a thing\n* learned a fact")
 
@@ -343,7 +430,7 @@ func TestCompactionHybrid_MinorAppendCycle(t *testing.T) {
 }
 
 func TestCompactionHybrid_MajorRewriteCycle(t *testing.T) {
-	compactMD := "---\nappend-only: true\nmajor-compact-every: 3\n---\nBase directive text."
+	compactMD := "---\nappend-only: true\nmajor-compact-every: 3\n---\nBase directive text.\n" + testHybridModeBlock
 	existing := "---\ncompact-cycle: 2\n---\n# Task Overview\n\nOld narrative to be dropped."
 	summary := "# Task Overview\n\nFinal state.\n\n## Current State\n\n- done\n\n## Key Decisions & Discoveries\n\n- none\n\n## Next Steps\n\n- none\n\n## Context to Preserve\n\n- none\n"
 	agentDir, req := runHybridCompaction(t, compactMD, existing, summary)
@@ -381,7 +468,7 @@ func TestCompactionHybrid_MajorRewriteCycle(t *testing.T) {
 func TestCompactionHybrid_BootstrapAlwaysMinor(t *testing.T) {
 	// every:1 would major-rewrite every cycle if the bootstrap rule did not
 	// hold: the first compaction on a nonexistent MEMORY.md is always minor.
-	compactMD := "---\nappend-only: true\nmajor-compact-every: 1\n---\nBase directive text."
+	compactMD := "---\nappend-only: true\nmajor-compact-every: 1\n---\nBase directive text.\n" + testHybridModeBlock
 	agentDir, req := runHybridCompaction(t, compactMD, "", "* boot bullet")
 
 	if !strings.Contains(req, "PASS MODE: MINOR - APPEND") {

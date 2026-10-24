@@ -38,6 +38,12 @@ func TestMain(m *testing.M) {
 	}
 	DefaultCompactMD = string(data)
 
+	hybridData, err := os.ReadFile("../../examples/compaction/COMPACT-hybrid.md")
+	if err != nil {
+		panic("failed to read examples/compaction/COMPACT-hybrid.md for tests: " + err.Error())
+	}
+	DefaultCompactMDHybrid = string(hybridData)
+
 	rtData, err := os.ReadFile("../../examples/runtimes/openrouter-auto.json")
 	if err != nil {
 		panic("failed to read examples/runtimes/openrouter-auto.json for tests: " + err.Error())
