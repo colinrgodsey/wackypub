@@ -47,7 +47,11 @@ func (h lockWaitHolder) describe() string {
 		out += ", " + h.cmd
 	}
 	if h.age > 0 {
-		out += ", " + formatHolderAge(h.age)
+		// Labeled explicitly as process uptime, not lock-hold duration - the two are
+		// different numbers (a long-lived server process reports a long "age" even while
+		// idle and holding nothing), and conflating them read as a 19h lock hold in the
+		// original incident when it was actually process uptime.
+		out += ", process up " + formatHolderAge(h.age)
 	}
 	return out
 }
