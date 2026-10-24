@@ -38,6 +38,12 @@ func TestMain(m *testing.M) {
 	}
 	DefaultCompactMD = string(data)
 
+	hybridData, err := os.ReadFile("../../examples/compaction/COMPACT-hybrid.md")
+	if err != nil {
+		panic("failed to read examples/compaction/COMPACT-hybrid.md for tests: " + err.Error())
+	}
+	DefaultCompactMDHybrid = string(hybridData)
+
 	rtData, err := os.ReadFile("../../examples/runtimes/openrouter-auto.json")
 	if err != nil {
 		panic("failed to read examples/runtimes/openrouter-auto.json for tests: " + err.Error())
@@ -188,6 +194,37 @@ func TestCompactionEndsOnModelTurn(t *testing.T) {
 	}
 }
 
+// TestCompactionNotice_FixedWordingNotCustomizable pins Colin's 2026-10-24 decision: the
+// post-compaction notice is one fixed string, not something a COMPACT.md can customize per
+// compaction type. An absent key and an explicit non-empty custom value must both resolve to
+// the exact same fixed defaultCompactionNotice text - only an explicit empty string ("") is
+// still honored, as the one remaining escape hatch (full opt-out, not reworded opt-in).
+func TestCompactionNotice_FixedWordingNotCustomizable(t *testing.T) {
+	absent, err := ParseCompactConfig("---\ncompact-pct: 50\n---\nBody.")
+	if err != nil {
+		t.Fatalf("ParseCompactConfig (absent key) failed: %v", err)
+	}
+	if absent.CompactionNotice != defaultCompactionNotice {
+		t.Errorf("absent compaction-notice key: got %q, want the fixed default", absent.CompactionNotice)
+	}
+
+	custom, err := ParseCompactConfig("---\ncompaction-notice: \"A totally different custom notice.\"\n---\nBody.")
+	if err != nil {
+		t.Fatalf("ParseCompactConfig (custom value) failed: %v", err)
+	}
+	if custom.CompactionNotice != defaultCompactionNotice {
+		t.Errorf("custom compaction-notice value must be ignored in favor of the fixed default, got %q", custom.CompactionNotice)
+	}
+
+	optOut, err := ParseCompactConfig("---\ncompaction-notice: \"\"\n---\nBody.")
+	if err != nil {
+		t.Fatalf("ParseCompactConfig (opt-out) failed: %v", err)
+	}
+	if optOut.CompactionNotice != "" {
+		t.Errorf("explicit compaction-notice: \"\" must still fully opt out, got %q", optOut.CompactionNotice)
+	}
+}
+
 // TestCompactionNoticeOptOut verifies an explicit compaction-notice: "" in
 // COMPACT.md suppresses the D46 notice turn entirely, rather than falling
 // back to the built-in default the way an absent key does.
@@ -244,6 +281,11 @@ func TestCompactionNoticeOptOut(t *testing.T) {
 	}
 }
 
+// TestLoadCompactConfig_Defaults pins the no-COMPACT.md fallback as the embedded hybrid
+// default (Colin, 2026-10-24) - every agent gets the pass-mode-conditional template now, not
+// just agents that opt in by creating their own COMPACT.md. The plain append-only default
+// (DefaultCompactMD) stays embedded but is no longer what an agent with no file gets; see
+// TestLoadCompactConfig_PlainAppendOnlyStillAvailable for that one's continued availability.
 func TestLoadCompactConfig_Defaults(t *testing.T) {
 	tempDir := t.TempDir()
 
@@ -258,18 +300,45 @@ func TestLoadCompactConfig_Defaults(t *testing.T) {
 	if cfg.CompactPct != 50.0 {
 		t.Errorf("expected default CompactPct to be 50.0, got %f", cfg.CompactPct)
 	}
-	wantCfg, err := ParseCompactConfig(DefaultCompactMD)
+	if cfg.MajorCompactEvery == 0 && cfg.MajorCompactMemoryPct == 0 {
+		t.Errorf("expected the hybrid default's major-compact-* triggers to be set, got neither")
+	}
+	wantCfg, err := ParseCompactConfig(DefaultCompactMDHybrid)
 	if err != nil {
-		t.Fatalf("ParseCompactConfig(DefaultCompactMD) failed: %v", err)
+		t.Fatalf("ParseCompactConfig(DefaultCompactMDHybrid) failed: %v", err)
 	}
 	if cfg.Prompt != wantCfg.Prompt {
-		t.Errorf("expected default Prompt to equal the embedded DefaultCompactMD's body, got a mismatch")
+		t.Errorf("expected default Prompt to equal the embedded DefaultCompactMDHybrid's body, got a mismatch")
 	}
 	if !strings.Contains(cfg.Prompt, "state compaction engine") {
 		t.Errorf("expected default Prompt to contain the compaction directive text, got: %s", cfg.Prompt)
 	}
 	if !strings.Contains(cfg.Prompt, "SKILL LOADS") {
 		t.Errorf("expected default Prompt to contain the D44 skill-loads guideline, got: %s", cfg.Prompt)
+	}
+}
+
+// TestLoadCompactConfig_PlainAppendOnlyStillAvailable confirms the plain append-only example
+// is still embedded and usable even though it's no longer the no-COMPACT.md fallback: an
+// agent that copies examples/compaction/COMPACT-append.md in as its own COMPACT.md gets the
+// old (pre-hybrid-default) behavior back, with no major-compact-* triggers at all.
+func TestLoadCompactConfig_PlainAppendOnlyStillAvailable(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "COMPACT.md"), []byte(DefaultCompactMD), 0644); err != nil {
+		t.Fatalf("failed to write COMPACT.md: %v", err)
+	}
+	cfg, err := LoadCompactConfig(tempDir)
+	if err != nil {
+		t.Fatalf("LoadCompactConfig failed: %v", err)
+	}
+	if !cfg.AppendOnly {
+		t.Errorf("expected AppendOnly to be true")
+	}
+	if cfg.MajorCompactEvery != 0 || cfg.MajorCompactMemoryPct != 0 {
+		t.Errorf("expected no major-compact-* triggers from the plain append-only example, got every=%d pct=%v", cfg.MajorCompactEvery, cfg.MajorCompactMemoryPct)
+	}
+	if strings.Contains(cfg.Prompt, "{{") {
+		t.Errorf("plain append-only example must have no template syntax, got:\n%s", cfg.Prompt)
 	}
 }
 
@@ -980,8 +1049,9 @@ func TestCompactionGitTwoCommitsD73(t *testing.T) {
 		t.Errorf("expected session.jsonl in HEAD commit to contain COMPACTION_NOTICE, got:\n%s", string(b0))
 	}
 
-	// 2. Check parent commit ("compact (memory)")
-	if !strings.HasPrefix(commitObjs[1].Message, "compact (memory)\n") {
+	// 2. Check parent commit ("compact (memory) ..." - the hybrid writer
+	// appends the pass label, e.g. [minor cycle 1])
+	if !strings.HasPrefix(commitObjs[1].Message, "compact (memory)") {
 		t.Errorf("expected parent commit to be 'compact (memory)', got message: %q", commitObjs[1].Message)
 	}
 	tree1, err := commitObjs[1].Tree()
@@ -1320,8 +1390,11 @@ func TestCheckAndCompactSession_ConfigOverride(t *testing.T) {
 		t.Fatalf("expected compaction to occur")
 	}
 
-	if capturedPrompt != "Disk prompt directive" {
-		t.Errorf("expected prompt %q, got %q", "Disk prompt directive", capturedPrompt)
+	// The append-only disk config gets the managed PASS MODE block appended
+	// to the base directive; the override test above asserts the exact text
+	// because a non-append-only pass carries no mode block.
+	if !strings.HasPrefix(capturedPrompt, "Disk prompt directive") {
+		t.Errorf("expected prompt to start with %q, got %q", "Disk prompt directive", capturedPrompt)
 	}
 
 	mem2, err := ReadMemoryFile(tempDir)
@@ -1400,7 +1473,9 @@ func TestCompactSessionWithConfig_Passthrough(t *testing.T) {
 	if !resp.GetCompacted() {
 		t.Fatal("expected compaction to succeed")
 	}
-	if capturedPrompt != "SDK override prompt" {
+	// The SDK override here is append-only, so the managed PASS MODE block is
+	// appended to the base directive.
+	if !strings.HasPrefix(capturedPrompt, "SDK override prompt") {
 		t.Errorf("expected prompt %q, got %q", "SDK override prompt", capturedPrompt)
 	}
 }

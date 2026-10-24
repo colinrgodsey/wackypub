@@ -128,6 +128,28 @@ func (s *FileSessionService) Get(ctx context.Context, req *session.GetRequest) (
 	if err != nil {
 		return nil, err
 	}
+	// Reconcile before injecting: a waking agent should never be handed a claim
+	// this pass can already prove false. Deterministic and zero-token; on any
+	// failure the file is served as-is.
+	if memContent != "" {
+		reconciled, rep, rerr := ReconcileMemoryClaims(memContent, s.wsDir, time.Now())
+		if rerr == nil && reconciled != memContent {
+			if werr := WriteMemoryFile(agentDir, reconciled); werr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: claims reconcile write failed for agent %s: %v\n", agentID, werr)
+			} else {
+				memContent = reconciled
+				// D35: the reconciled file is a state mutation - commit it here
+				// instead of leaving the workspace tree dirty until the next
+				// turn's commit. Silent no-op when the workspace is not git
+				// tracked.
+				eventType := fmt.Sprintf("reconcile (memory) claims: %d stale", rep.Stale)
+				warnWorkspaceEventCommit(agentID, eventType, CommitWorkspaceEvent(s.wsDir, agentID, eventType))
+			}
+		}
+		if rep.Stale > 0 {
+			fmt.Fprintf(os.Stderr, "Warning: %d stale claim(s) reconciled in MEMORY.md for agent %s: %v\n", rep.Stale, agentID, rep.StaleEvidence)
+		}
+	}
 	memTurnText := FormatPersistentMemoryTurn(memContent)
 	memContentTurn := genai.NewContentFromText(memTurnText, "user")
 
