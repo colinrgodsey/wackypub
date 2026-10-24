@@ -38,6 +38,12 @@ func TestMain(m *testing.M) {
 	}
 	DefaultCompactMD = string(data)
 
+	hybridData, err := os.ReadFile("../../examples/compaction/COMPACT-hybrid.md")
+	if err != nil {
+		panic("failed to read examples/compaction/COMPACT-hybrid.md for tests: " + err.Error())
+	}
+	DefaultCompactMDHybrid = string(hybridData)
+
 	rtData, err := os.ReadFile("../../examples/runtimes/openrouter-auto.json")
 	if err != nil {
 		panic("failed to read examples/runtimes/openrouter-auto.json for tests: " + err.Error())
@@ -980,8 +986,9 @@ func TestCompactionGitTwoCommitsD73(t *testing.T) {
 		t.Errorf("expected session.jsonl in HEAD commit to contain COMPACTION_NOTICE, got:\n%s", string(b0))
 	}
 
-	// 2. Check parent commit ("compact (memory)")
-	if !strings.HasPrefix(commitObjs[1].Message, "compact (memory)\n") {
+	// 2. Check parent commit ("compact (memory) ..." - the hybrid writer
+	// appends the pass label, e.g. [minor cycle 1])
+	if !strings.HasPrefix(commitObjs[1].Message, "compact (memory)") {
 		t.Errorf("expected parent commit to be 'compact (memory)', got message: %q", commitObjs[1].Message)
 	}
 	tree1, err := commitObjs[1].Tree()
@@ -1320,8 +1327,11 @@ func TestCheckAndCompactSession_ConfigOverride(t *testing.T) {
 		t.Fatalf("expected compaction to occur")
 	}
 
-	if capturedPrompt != "Disk prompt directive" {
-		t.Errorf("expected prompt %q, got %q", "Disk prompt directive", capturedPrompt)
+	// The append-only disk config gets the managed PASS MODE block appended
+	// to the base directive; the override test above asserts the exact text
+	// because a non-append-only pass carries no mode block.
+	if !strings.HasPrefix(capturedPrompt, "Disk prompt directive") {
+		t.Errorf("expected prompt to start with %q, got %q", "Disk prompt directive", capturedPrompt)
 	}
 
 	mem2, err := ReadMemoryFile(tempDir)
@@ -1400,7 +1410,9 @@ func TestCompactSessionWithConfig_Passthrough(t *testing.T) {
 	if !resp.GetCompacted() {
 		t.Fatal("expected compaction to succeed")
 	}
-	if capturedPrompt != "SDK override prompt" {
+	// The SDK override here is append-only, so the managed PASS MODE block is
+	// appended to the base directive.
+	if !strings.HasPrefix(capturedPrompt, "SDK override prompt") {
 		t.Errorf("expected prompt %q, got %q", "SDK override prompt", capturedPrompt)
 	}
 }
