@@ -57,11 +57,38 @@ func TestRecipesValidateFrontmatter(t *testing.T) {
 				t.Errorf("%s: unknown skill %q (not bundled in skills/ nor external files-rw/wackyproc)", e.Name(), s)
 			}
 		}
+		// Skills symlinked in the body must be declared in frontmatter (agy F2):
+		for _, line := range strings.Split(bodyStr, "\n") {
+			tl := strings.TrimSpace(line)
+			idx := strings.Index(tl, "/skills/")
+			if idx < 0 {
+				continue
+			}
+			rest := tl[idx+len("/skills/"):]
+			name := strings.Split(rest, " ")[0]
+			name = strings.Trim(name, "\"")
+			declared := false
+			for _, f := range splitList(fm["skills"]) {
+				if f == name {
+					declared = true
+					break
+				}
+			}
+			if !declared {
+				t.Errorf("%s: skill %q symlinked in body is missing from frontmatter skills", e.Name(), name)
+			}
+		}
 		// Tools: every listed name must be in the standard catalog.
 		for _, tool := range splitList(fm["tools"]) {
 			if !knownTools[tool] {
 				t.Errorf("%s: unknown tool %q (catalog: bash, files-rw, wackyproc, wackypub)", e.Name(), tool)
 			}
+		}
+		// Bash line continuations must be a single trailing backslash; a doubled
+		// backslash becomes a literal backslash argument in bash and breaks
+		// the smoke-test fenced blocks (agy F1).
+		if strings.Contains(bodyStr, "\\\\") {
+			t.Errorf("%s: doubled backslash in body (bash line continuation)", e.Name())
 		}
 		// FILES_RW_ACCESS heredocs must use real files-rw syntax (filesrw/access.go):
 		// lines are r: <path> or w: <path> with literal relative paths - no globs, no **,

@@ -31,7 +31,7 @@ is where the bundled skills already are, and `toolsets/` holds the tool symlinks
 | [single-agent-chat](single-agent-chat.md) | One agent, minimal toolset | safe-unconfined | wackypub-ws |
 | [coding-agent](coding-agent.md) | Full-service coding agent with bash + file + process access | container-recommended | wackypub-ws, files-rw, wackyproc, scratchpad-efficiency |
 | [research-reader](research-reader.md) | Read-only research agent over a local document corpus | safe-unconfined | wackypub-ws, files-rw, scratchpad-efficiency |
-| [discord-community-agent](discord-community-agent.md) | Long-lived Discord community agent | container-required | wackypub-ws, wackypub-a2a, wackyproc, scratchpad-efficiency |
+| [discord-community-agent](discord-community-agent.md) | Long-lived Discord community agent | container-required | wackypub-ws, wackypub-a2a, wackyproc, scratchpad-efficiency, files-rw |
 
 ## Recipe format
 

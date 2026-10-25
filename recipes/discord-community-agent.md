@@ -2,7 +2,7 @@
 name: discord-community-agent
 title: Long-Lived Discord Community Agent
 confinement: container-required
-skills: [wackypub-ws, wackypub-a2a, wackyproc, scratchpad-efficiency]
+skills: [wackypub-ws, wackypub-a2a, wackyproc, scratchpad-efficiency, files-rw]
 tools: [wackypub, wackyproc, bash, files-rw]
 ---
 
@@ -131,7 +131,7 @@ printed by workspace inspection.)
 Smoke-test the A2A path:
 
 ```bash
-cd "$WS" && wackypub agent community prompt \\
+cd "$WS" && wackypub agent community prompt \
   "Ask the worker agent to report its model and tool list, using the wackypub-a2a skill."
 ```
 
@@ -139,10 +139,7 @@ cd "$WS" && wackypub agent community prompt \\
 
 With the Discord bridge configured for the workspace (per the bridge's own docs, or a
 follow-up recipe), bind the community agent to the channel and start the bridge. The
-agent then answers in-channel; long jobs it farms out to `worker` via async dispatch
-(`wackyproc run wackypub agent worker prompt --async`), inbox-style, so the channel
-stays responsive.
-
+agent then answers in-channel; long jobs it farms out to `worker` via async dispatch (`wackyproc run wackypub agent prompt --async worker "<task>\n\nYour response is not needed. Respond with only NO_RESPONSE."`), inbox-style, so the channel stays responsive.
 ## What you have
 
 - A long-lived community agent on Discord, persona-bound, with a fast model.

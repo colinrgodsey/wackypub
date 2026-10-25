@@ -21,7 +21,7 @@ tools. If you later add any scripting capability, reclassify the recipe as
 
 ## 1. Create the workspace, agent, and corpus
 
-Run this from your files-rw checkout (or anywhere you want the workspace to live).
+Run this from your wackypub checkout (or anywhere you want the workspace to live).
 It defines the absolute paths every later block uses, so each block works no matter
 which directory you are in:
 
@@ -102,7 +102,7 @@ exercised by the smoke test below, not by workspace inspection. `AGENTS.md` /
 Then smoke-test that the read path and the write DENY both work:
 
 ```bash
-cd "$WS" && wackypub agent researcher prompt \\
+cd "$WS" && wackypub agent researcher prompt \
   "Read everything under $WS/docs and summarize what kinds of documents the corpus holds. Also try writing a file inside $WS/docs and report what happens."
 ```
 

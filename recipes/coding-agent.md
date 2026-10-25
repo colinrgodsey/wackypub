@@ -113,7 +113,7 @@ this point.
 Then smoke-test the capabilities:
 
 ```bash
-cd "$WS" && wackypub agent coder prompt \\
+cd "$WS" && wackypub agent coder prompt \
   "Run a quick sanity check: create $WS/coder-smoke.txt with files-rw, list it back, and tell me what you did."
 ```
 
