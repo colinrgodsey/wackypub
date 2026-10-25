@@ -21,6 +21,58 @@ import (
 const DefaultCompactionPct = 50.0
 const DefaultCompactionOverheadPct = 20.0
 
+// maxCompactionOutputRetries bounds how many times a single backend/level is retried after
+// producing degenerate output (empty, too short, or refusal-shaped) before the pass falls
+// back to the next chain level or gives up and preserves the pre-existing MEMORY.md. Each
+// retry is a fully independent generation attempt against a freshly re-seeded disposable
+// session (see seedCompactionSession in CheckAndCompactSessionWithFallback) - never a
+// continuation of the attempt that just produced the bad reply.
+const maxCompactionOutputRetries = 2
+
+// minMajorOutputChars is the length floor a major (full-rewrite) pass's output must clear to
+// be considered usable. A major pass replaces MEMORY.md entirely, so a short reply here is
+// not "a terse but valid summary" the way it would be for a minor append bullet - it is
+// almost certainly a blown generation (truncation, a one-line non-answer) about to silently
+// destroy everything the old MEMORY.md held. Deliberately not tied to the archived input's
+// size: a genuinely quiet session can legitimately produce a short-ish but real consolidated
+// document, and a size-relative check would either be too strict for that case or too loose
+// to catch the actual failure mode this guards against.
+const minMajorOutputChars = 50
+
+// compactionRefusalPrefixes catches the other shape of degenerate major-pass output besides
+// "too short": a model declining to perform the consolidation at all. Checked case-insensitively
+// against the start of the trimmed output only, so legitimate content that happens to discuss
+// a refusal mid-document is never misclassified.
+var compactionRefusalPrefixes = []string{
+	"i cannot", "i can't", "i am unable", "i'm unable", "i'm sorry", "i am sorry", "as an ai",
+}
+
+// validateCompactionOutput reports whether addendum is usable output for this pass, or an
+// error describing why it is degenerate. A minor (append) pass's output is validated lightly -
+// a short bullet like "* nothing new" is completely legitimate output, not a bug. A major
+// (full-rewrite) pass's output must look like a real consolidated document: it replaces
+// MEMORY.md wholesale, so a short or refusal-shaped reply there is exactly the
+// major-compaction-pass-accepts-degenerate-output bug, not a terse-but-valid summary.
+func validateCompactionOutput(addendum string, isMajor bool) error {
+	trimmed := strings.TrimSpace(addendum)
+	if trimmed == "" {
+		return fmt.Errorf("empty output")
+	}
+	if !isMajor {
+		return nil
+	}
+	if len(trimmed) < minMajorOutputChars {
+		return fmt.Errorf("major-pass output is only %d character(s) (minimum %d) - too short to be a real consolidated document", len(trimmed), minMajorOutputChars)
+	}
+	lower := strings.ToLower(trimmed)
+	for _, prefix := range compactionRefusalPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return fmt.Errorf("major-pass output looks like a refusal (starts with %q)", prefix)
+		}
+	}
+	return nil
+}
+
 // DefaultMajorCompactOverheadPct is major-compact-overhead-pct's fallback:
 // deliberately larger than DefaultCompactionOverheadPct, because a major pass
 // reads and rewrites the whole document in one generation rather than
@@ -684,26 +736,36 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 		seedContents = capSeedTokensForCompaction(seedContents, maxSeedTokens, preserveThinking)
 	}
 
+	// seedCompactionSession creates a fresh disposable session under sessionID and seeds it
+	// with the exact same turn shape every time. Called once per generation attempt (not once
+	// up front) so a retry after degenerate output (see maxCompactionOutputRetries below)
+	// starts from a genuinely clean slate - reusing one session across retries would leave
+	// the previous attempt's own bad reply sitting in context, biasing the retry toward
+	// repeating or extending the same degenerate pattern instead of giving the model an
+	// independent try.
 	sessionSvc := session.InMemoryService()
-	createResp, err := sessionSvc.Create(ctx, &session.CreateRequest{
-		AppName:   "wackypub",
-		UserID:    "user",
-		SessionID: compactSessionID,
-	})
-	if err != nil {
-		return fail("create-session", fmt.Errorf("failed to create in-memory compaction session: %w", err))
-	}
-	for i, c := range seedContents {
-		evt := session.NewEvent(ctx, fmt.Sprintf("compact_seed_%d", i))
-		evt.Content = c
-		if c.Role == "model" {
-			evt.Author = agentID
-		} else {
-			evt.Author = "user"
+	seedCompactionSession := func(sessionID string) error {
+		createResp, err := sessionSvc.Create(ctx, &session.CreateRequest{
+			AppName:   "wackypub",
+			UserID:    "user",
+			SessionID: sessionID,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create in-memory compaction session: %w", err)
 		}
-		if err := sessionSvc.AppendEvent(ctx, createResp.Session, evt); err != nil {
-			return fail("seed-session", fmt.Errorf("failed to seed compaction session: %w", err))
+		for i, c := range seedContents {
+			evt := session.NewEvent(ctx, fmt.Sprintf("compact_seed_%d", i))
+			evt.Content = c
+			if c.Role == "model" {
+				evt.Author = agentID
+			} else {
+				evt.Author = "user"
+			}
+			if err := sessionSvc.AppendEvent(ctx, createResp.Session, evt); err != nil {
+				return fmt.Errorf("failed to seed compaction session: %w", err)
+			}
 		}
+		return nil
 	}
 
 	// Walk the runtime fallback chain EXACTLY like a normal turn: attempt the primary
@@ -779,30 +841,70 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 		}
 
 		var levelAddendum string
-		for event, err := range r.Run(ctx, "user", compactSessionID, directive, agent.RunConfig{}) {
-			if err != nil {
-				lastErr = err
-				if resetAt, ok := ParseQuotaResetHint(err); ok {
-					markBackendFailedUntil(levelCfg, resetAt)
-				}
-				if levelAddendum == "" && IsQualifyingFallbackError(err) && level+1 < len(chain) {
-					// Nothing emitted at this level: re-run the summary from scratch on the
-					// next backend is clean - no frankenstein memory risk.
+		var degenerateErr error
+		var qualifyingFallback bool
+	attempts:
+		for attempt := 0; attempt <= maxCompactionOutputRetries; attempt++ {
+			attemptSessionID := fmt.Sprintf("%s-l%d-a%d", compactSessionID, level, attempt)
+			if err := seedCompactionSession(attemptSessionID); err != nil {
+				return fail("seed-session", err)
+			}
 
-					fmt.Fprintf(os.Stderr, "Warning: compaction backend %s failed: %v; falling back to %s\n", backendName(levelCfg), err, backendName(chain[level+1]))
-					break
+			var attemptAddendum string
+			var attemptErr error
+			for event, err := range r.Run(ctx, "user", attemptSessionID, directive, agent.RunConfig{}) {
+				if err != nil {
+					attemptErr = err
+					lastErr = err
+					if resetAt, ok := ParseQuotaResetHint(err); ok {
+						markBackendFailedUntil(levelCfg, resetAt)
+					}
+					if attemptAddendum == "" && IsQualifyingFallbackError(err) && level+1 < len(chain) {
+						// Nothing emitted this attempt: re-run the summary from scratch on the
+						// next backend is clean - no frankenstein memory risk. A transport
+						// error is not a degenerate-output case to retry at this level; move
+						// straight to the next backend instead of burning retries on it.
+						fmt.Fprintf(os.Stderr, "Warning: compaction backend %s failed: %v; falling back to %s\n", backendName(levelCfg), err, backendName(chain[level+1]))
+						qualifyingFallback = true
+						break
+					}
+					// Text already produced (or non-qualifying, or chain exhausted): fatal.
+					return fail("generation", fmt.Errorf("LLM compaction generation failed on %s: %w", backendName(levelCfg), err))
 				}
-				// Text already produced (or non-qualifying, or chain exhausted): fatal.
-				return fail("generation", fmt.Errorf("LLM compaction generation failed on %s: %w", backendName(levelCfg), err))
-			}
-			if event != nil {
-				if text := ExtractTextFromEvent(event); text != "" {
-					levelAddendum = text
+				if event != nil {
+					if text := ExtractTextFromEvent(event); text != "" {
+						attemptAddendum = text
+					}
 				}
 			}
-		}
-		if ctx.Err() != nil {
-			return fail("generation", ctx.Err())
+			if ctx.Err() != nil {
+				return fail("generation", ctx.Err())
+			}
+			if qualifyingFallback {
+				break attempts
+			}
+			if attemptErr != nil {
+				// Unreachable in practice (every non-fallback error path above already
+				// returns), kept only so a future error path added above fails loud instead
+				// of silently retrying a transport error as if it were degenerate output.
+				return fail("generation", fmt.Errorf("LLM compaction generation failed on %s: %w", backendName(levelCfg), attemptErr))
+			}
+
+			// A clean completion (no transport error) that is still degenerate - empty,
+			// too short, or refusal-shaped - is exactly the bug this guard exists for: a
+			// blown summarization that would otherwise silently destroy MEMORY.md. Retry
+			// the SAME backend/level with a fresh, independently-seeded session (never the
+			// one that just produced the bad reply - see seedCompactionSession) before
+			// giving up on this level.
+			if valErr := validateCompactionOutput(attemptAddendum, isMajor); valErr != nil {
+				degenerateErr = valErr
+				fmt.Fprintf(os.Stderr, "Warning: compaction backend %s produced degenerate output on attempt %d/%d: %v\n", backendName(levelCfg), attempt+1, maxCompactionOutputRetries+1, valErr)
+				continue
+			}
+
+			levelAddendum = attemptAddendum
+			degenerateErr = nil
+			break
 		}
 		if levelAddendum != "" {
 			// This level succeeded; it is the one whose model we report.
@@ -813,11 +915,21 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 			servedDenials = denials
 			break
 		}
-		// levelAddendum == "" without an error: the level produced nothing (empty response).
-		// Treat as a qualifying failure ONLY if a fallback exists; otherwise fall through.
-		if level+1 == len(chain) {
-			return fail("generation", fmt.Errorf("compaction backend %s returned an empty summary", backendName(levelCfg)))
+		if degenerateErr != nil {
+			// Every attempt at this level was degenerate. Never persist it (the caller never
+			// sees a degenerate addendum - WriteMemoryFile is not reached), surface the exact
+			// cause, and either fall back to the next backend or fail the whole pass -
+			// preserving the pre-existing MEMORY.md in both cases, since neither path reaches
+			// the write below.
+			if level+1 == len(chain) {
+				return fail("degenerate-output", fmt.Errorf("compaction backend %s produced only degenerate output after %d attempt(s): %w", backendName(levelCfg), maxCompactionOutputRetries+1, degenerateErr))
+			}
+			fmt.Fprintf(os.Stderr, "Warning: compaction backend %s exhausted retries with degenerate output; falling back to %s\n", backendName(levelCfg), backendName(chain[level+1]))
+			continue
 		}
+		// levelAddendum == "" with neither a qualifying fallback nor a degenerate-output
+		// cause recorded: the qualifying-fallback branch above already set qualifyingFallback
+		// and fell through to the next level via the outer loop's natural continuation.
 	}
 	if addendum == "" && lastErr != nil {
 		return fail("generation", fmt.Errorf("LLM compaction generation failed: %w", lastErr))
