@@ -35,6 +35,12 @@ const (
 	// to delay, and an async dispatch risks losing the diagnostic if the process exits first.
 	EventCompactFailed = "compact-failed"
 
+	// EventPreRunCommand fires in executeTool before a discovered command binary executes.
+	// A hook may short-circuit execution by returning HookOutput.Action with
+	// Type == HookActionShortCircuit, substituting Action.Output (and optional Action.Stderr)
+	// as the successful tool response without executing the real binary.
+	EventPreRunCommand = "pre-run-command"
+
 	// HookActionShortCircuit is the HookAction.Type value that instructs a pre-execution
 	// hook point (such as EventPreRunCommand) to skip running the real target and return
 	// HookAction.Output (and optional HookAction.Stderr) as a successful result.
@@ -482,4 +488,73 @@ func runPostCompactHookAsync(agentDir string, payload PostCompactPayload) {
 			fn(agentDir)
 		}
 	}()
+}
+
+// PreRunCommandPayload is delivered as JSON text on stdin to every pre-run-command hook
+// script before a dispatched command binary executes.
+type PreRunCommandPayload struct {
+	AgentID     string            `json:"agent_id"`
+	Command     string            `json:"command"`
+	CommandPath string            `json:"command_path"`
+	Args        []string          `json:"args"`
+	Cwd         string            `json:"cwd"`
+	Env         map[string]string `json:"env"`
+}
+
+func envSliceToMap(env []string) map[string]string {
+	m := make(map[string]string, len(env))
+	for _, kv := range env {
+		if idx := strings.IndexByte(kv, '='); idx > 0 {
+			m[kv[:idx]] = kv[idx+1:]
+		}
+	}
+	return m
+}
+
+// runPreRunCommandHooks executes the pre-run-command hook chain for agentDir when one or
+// more executable hook scripts exist under <agentDir>/hooks/pre-run-command/. When no
+// hooks are registered (or hooks are disabled via WACKYPUB_HOOKS=0), it returns nil
+// immediately without marshaling the payload or allocating subprocess state.
+func runPreRunCommandHooks(ctx context.Context, agentDir, commandName, commandPath string, args, cmdEnv []string) *HookChainResult {
+	if os.Getenv(EnvHooks) == "0" {
+		return nil
+	}
+	hookPaths, err := DiscoverHooks(agentDir, EventPreRunCommand)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: pre-run-command hook: error discovering hooks in %s: %v\n", agentDir, err)
+		return nil
+	}
+	if len(hookPaths) == 0 {
+		return nil
+	}
+
+	argsSlice := args
+	if argsSlice == nil {
+		argsSlice = []string{}
+	}
+	envMap := envSliceToMap(cmdEnv)
+
+	payload := PreRunCommandPayload{
+		AgentID:     filepath.Base(agentDir),
+		Command:     commandName,
+		CommandPath: commandPath,
+		Args:        argsSlice,
+		Cwd:         agentDir,
+		Env:         envMap,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: pre-run-command hook: failed to marshal payload: %v\n", err)
+		return nil
+	}
+
+	res, err := RunHookChain(ctx, agentDir, EventPreRunCommand, string(data), HookOptions{InitialEnv: envMap})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: pre-run-command hook: %v\n", err)
+		return nil
+	}
+	for _, w := range res.Warnings {
+		fmt.Fprintf(os.Stderr, "Warning: pre-run-command hook: %s\n", w)
+	}
+	return res
 }

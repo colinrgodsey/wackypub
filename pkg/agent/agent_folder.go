@@ -312,6 +312,19 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	traceLabel := fmt.Sprintf("%s (%s)", traceEventToolCall, toolName)
 	warnWorkspaceEventCommit(agentID, traceLabel, CommitWorkspaceEvent(wsDir, agentID, traceLabel))
 
+	if hookRes := runPreRunCommandHooks(execCtx, agentDir, toolName, absToolPath, cmdArgs, cmd.Env); hookRes != nil {
+		if hookRes.Action != nil && hookRes.Action.Type == HookActionShortCircuit {
+			output, buildErr := buildOutputBlocks(agentDir, []byte(hookRes.Action.Output), []byte(hookRes.Action.Stderr))
+			if buildErr != nil {
+				return "", warnings, buildErr
+			}
+			return output, warnings, nil
+		}
+		if len(hookRes.MutatedEnv) > 0 {
+			cmd.Env = childEnv(baseEnv, harnessEnv, dotEnv, args.Env, hookRes.MutatedEnv)
+		}
+	}
+
 	err = cmd.Run()
 	stdoutBytes := stdout.Bytes()
 	stderrBytes := stderr.Bytes()

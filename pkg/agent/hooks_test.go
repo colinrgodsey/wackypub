@@ -869,3 +869,200 @@ printf '{"action":{"type":"bogus_directive","output":"ignored"}}\n'
 		}
 	})
 }
+
+func writeEventHookScript(t *testing.T, agentDir, event, filename, content string) string {
+	t.Helper()
+	dir := filepath.Join(agentDir, "hooks", event)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("failed to create hooks dir: %v", err)
+	}
+	hookPath := filepath.Join(dir, filename)
+	if err := os.WriteFile(hookPath, []byte(content), 0755); err != nil {
+		t.Fatalf("failed to write hook script %s: %v", filename, err)
+	}
+	return hookPath
+}
+
+// 15. Test pre-run-command hook event: zero-hooks parity, payload delivery, short-circuit, decline, multi-hook precedence, and failure degradation.
+func TestPreRunCommandHook(t *testing.T) {
+	setupAgentWithTool := func(t *testing.T, toolName, toolBody string) (string, map[string]string) {
+		t.Helper()
+		wsDir := t.TempDir()
+		agentDir := filepath.Join(wsDir, "cmd_agent")
+		toolsDir := filepath.Join(agentDir, "tools")
+		if err := os.MkdirAll(toolsDir, 0755); err != nil {
+			t.Fatalf("mkdir tools: %v", err)
+		}
+		toolPath := filepath.Join(toolsDir, toolName)
+		if err := os.WriteFile(toolPath, []byte(toolBody), 0755); err != nil {
+			t.Fatalf("write tool: %v", err)
+		}
+		discovered, _, _, err := DiscoverAgentToolsMap(agentDir)
+		if err != nil {
+			t.Fatalf("DiscoverAgentToolsMap: %v", err)
+		}
+		return agentDir, discovered
+	}
+
+	t.Run("zero hooks registered behaves byte-for-byte identically", func(t *testing.T) {
+		agentDir, discovered := setupAgentWithTool(t, "echo_tool", "#!/bin/sh\nprintf 'hello %s' \"$1\"\necho 'err-line' >&2\n")
+		res, err := executeRunCommand(context.Background(), agentDir, discovered, nil, 5, RunCommandArgs{
+			Command: "echo_tool",
+			Args:    []string{"world"},
+		})
+		if err != nil {
+			t.Fatalf("executeRunCommand failed: %v", err)
+		}
+		want := "<STDOUT>\nhello world\n</STDOUT><STDERR>\nerr-line\n\n</STDERR>"
+		if res.Output != want {
+			t.Errorf("got output %q, want %q", res.Output, want)
+		}
+		if res.Warning != "" || len(res.Warnings) != 0 {
+			t.Errorf("expected no warnings, got %v", res.Warnings)
+		}
+	})
+
+	t.Run("short-circuit prevents real command from running and returns substituted tool output", func(t *testing.T) {
+		// Real tool writes a marker file and exits 1 if it ever runs.
+		agentDir, discovered := setupAgentWithTool(t, "long_task", "#!/bin/sh\necho 'executed' > real_cmd_ran.marker\nexit 1\n")
+		if err := os.WriteFile(filepath.Join(agentDir, ".env"), []byte("DOT_VAR=from_dotenv\n"), 0644); err != nil {
+			t.Fatalf("write .env: %v", err)
+		}
+
+		writeEventHookScript(t, agentDir, EventPreRunCommand, "00-defer", `#!/bin/sh
+cat > captured_payload.json
+printf '{"action":{"type":"short_circuit","output":"started background job 9f8e7d6c","stderr":"note: backgrounded","reason":"auto-defer"}}\n'
+`)
+
+		res, err := executeRunCommand(context.Background(), agentDir, discovered, nil, 5, RunCommandArgs{
+			Command: "long_task",
+			Args:    []string{"--target", "alpha"},
+			Env:     map[string]string{"CALL_VAR": "from_call"},
+		})
+		if err != nil {
+			t.Fatalf("expected short-circuited run_command to succeed without error, got: %v", err)
+		}
+
+		// Real binary must never have executed.
+		if _, statErr := os.Stat(filepath.Join(agentDir, "real_cmd_ran.marker")); !os.IsNotExist(statErr) {
+			t.Fatalf("real command executed despite hook short-circuit")
+		}
+
+		wantOut := "<STDOUT>\nstarted background job 9f8e7d6c\n</STDOUT><STDERR>\nnote: backgrounded\n</STDERR>"
+		if res.Output != wantOut {
+			t.Errorf("short-circuit output = %q, want %q", res.Output, wantOut)
+		}
+
+		// Verify captured payload fields.
+		rawPayload, err := os.ReadFile(filepath.Join(agentDir, "captured_payload.json"))
+		if err != nil {
+			t.Fatalf("read captured_payload.json: %v", err)
+		}
+		var payload PreRunCommandPayload
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			t.Fatalf("unmarshal PreRunCommandPayload: %v (raw: %s)", err, string(rawPayload))
+		}
+		if payload.AgentID != "cmd_agent" {
+			t.Errorf("payload.AgentID = %q, want 'cmd_agent'", payload.AgentID)
+		}
+		if payload.Command != "long_task" {
+			t.Errorf("payload.Command = %q, want 'long_task'", payload.Command)
+		}
+		if !strings.HasSuffix(payload.CommandPath, filepath.Join("tools", "long_task")) {
+			t.Errorf("payload.CommandPath = %q, expected tools/long_task suffix", payload.CommandPath)
+		}
+		if len(payload.Args) != 2 || payload.Args[0] != "--target" || payload.Args[1] != "alpha" {
+			t.Errorf("payload.Args = %v, want [--target alpha]", payload.Args)
+		}
+		if payload.Cwd != agentDir {
+			t.Errorf("payload.Cwd = %q, want %q", payload.Cwd, agentDir)
+		}
+		if payload.Env["DOT_VAR"] != "from_dotenv" {
+			t.Errorf("payload.Env[DOT_VAR] = %q, want 'from_dotenv'", payload.Env["DOT_VAR"])
+		}
+		if payload.Env["CALL_VAR"] != "from_call" {
+			t.Errorf("payload.Env[CALL_VAR] = %q, want 'from_call'", payload.Env["CALL_VAR"])
+		}
+	})
+
+	t.Run("hook declining short-circuit lets real command run with optional env mutation", func(t *testing.T) {
+		agentDir, discovered := setupAgentWithTool(t, "check_env", "#!/bin/sh\nprintf '%s:%s' \"$1\" \"$HOOK_INJECTED\"\n")
+		writeEventHookScript(t, agentDir, EventPreRunCommand, "00-pass", `#!/bin/sh
+cat > /dev/null
+printf '{"env":{"HOOK_INJECTED":"from-pre-hook"}}\n'
+`)
+
+		res, err := executeRunCommand(context.Background(), agentDir, discovered, nil, 5, RunCommandArgs{
+			Command: "check_env",
+			Args:    []string{"ok"},
+		})
+		if err != nil {
+			t.Fatalf("executeRunCommand failed: %v", err)
+		}
+		want := "<STDOUT>\nok:from-pre-hook\n</STDOUT>"
+		if res.Output != want {
+			t.Errorf("output = %q, want %q", res.Output, want)
+		}
+	})
+
+	t.Run("multiple hooks: first to short-circuit wins and prevents later hooks and command from running", func(t *testing.T) {
+		agentDir, discovered := setupAgentWithTool(t, "work", "#!/bin/sh\necho 'real' > real.marker\n")
+		writeEventHookScript(t, agentDir, EventPreRunCommand, "00-decline", `#!/bin/sh
+cat > /dev/null
+printf '{}\n'
+`)
+		writeEventHookScript(t, agentDir, EventPreRunCommand, "01-claim", `#!/bin/sh
+cat > /dev/null
+printf '{"action":{"type":"short-circuit","output":"claimed-by-01"}}\n'
+`)
+		writeEventHookScript(t, agentDir, EventPreRunCommand, "02-late", `#!/bin/sh
+echo 'late' > late_hook.marker
+printf '{"action":{"type":"short_circuit","output":"claimed-by-02"}}\n'
+`)
+
+		res, err := executeRunCommand(context.Background(), agentDir, discovered, nil, 5, RunCommandArgs{
+			Command: "work",
+			Args:    []string{},
+		})
+		if err != nil {
+			t.Fatalf("executeRunCommand failed: %v", err)
+		}
+		if res.Output != "<STDOUT>\nclaimed-by-01\n</STDOUT>" {
+			t.Errorf("output = %q, want '<STDOUT>\\nclaimed-by-01\\n</STDOUT>'", res.Output)
+		}
+		if _, err := os.Stat(filepath.Join(agentDir, "late_hook.marker")); !os.IsNotExist(err) {
+			t.Errorf("02-late hook ran after 01-claim already short-circuited")
+		}
+		if _, err := os.Stat(filepath.Join(agentDir, "real.marker")); !os.IsNotExist(err) {
+			t.Errorf("real command ran after 01-claim short-circuited")
+		}
+	})
+
+	t.Run("broken hook degrades to normal command execution (P5)", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			script string
+		}{
+			{"non-zero exit", "#!/bin/sh\nexit 2\n"},
+			{"malformed json", "#!/bin/sh\necho 'not-json'\n"},
+			{"empty stdout", "#!/bin/sh\nexit 0\n"},
+			{"unknown action type", "#!/bin/sh\nprintf '{\"action\":{\"type\":\"invalid\"}}'\n"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				agentDir, discovered := setupAgentWithTool(t, "normal_cmd", "#!/bin/sh\nprintf 'ran-normally'\n")
+				writeEventHookScript(t, agentDir, EventPreRunCommand, "00-broken", tc.script)
+
+				res, err := executeRunCommand(context.Background(), agentDir, discovered, nil, 5, RunCommandArgs{
+					Command: "normal_cmd",
+					Args:    []string{},
+				})
+				if err != nil {
+					t.Fatalf("expected broken hook to degrade to normal execution, got error: %v", err)
+				}
+				if res.Output != "<STDOUT>\nran-normally\n</STDOUT>" {
+					t.Errorf("output = %q, want '<STDOUT>\\nran-normally\\n</STDOUT>'", res.Output)
+				}
+			})
+		}
+	})
+}
