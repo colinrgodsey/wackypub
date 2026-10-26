@@ -41,6 +41,20 @@ const (
 	// as the successful tool response without executing the real binary.
 	EventPreRunCommand = "pre-run-command"
 
+	// EventEndOfTurn fires when a turn reaches its end in GenerateTurnStream. A hook may
+	// request an automatic continuation turn by returning HookOutput.Action with
+	// Type == HookActionContinue, consuming from D88's general MaxAutoContinuations budget.
+	// All registered end-of-turn hooks execute in ascending numeric order; if any hook
+	// requests continuation, a continuation turn fires (subject to D88 budget).
+	EventEndOfTurn = "end-of-turn"
+
+	// TurnStopReason values delivered in EndOfTurnPayload.StopReason.
+	TurnStopCompleted      = "completed"
+	TurnStopMaxToolTurns   = "max_tool_turns"
+	TurnStopFailureBreaker = "failure_breaker"
+	TurnStopCompactedBail  = "compacted_bail"
+	TurnStopDeferredImage  = "deferred_image"
+
 	// HookActionShortCircuit is the HookAction.Type value that instructs a pre-execution
 	// hook point (such as EventPreRunCommand) to skip running the real target and return
 	// HookAction.Output (and optional HookAction.Stderr) as a successful result.
@@ -557,4 +571,66 @@ func runPreRunCommandHooks(ctx context.Context, agentDir, commandName, commandPa
 		fmt.Fprintf(os.Stderr, "Warning: pre-run-command hook: %s\n", w)
 	}
 	return res
+}
+
+// EndOfTurnPayload is delivered as JSON text on stdin to every end-of-turn hook script
+// once a turn reaches its end.
+type EndOfTurnPayload struct {
+	AgentID           string `json:"agent_id"`
+	SessionPath       string `json:"session_path"`
+	StopReason        string `json:"stop_reason"`
+	DurationMs        int64  `json:"duration_ms"`
+	ContinuationCount int    `json:"continuation_count"`
+	MaxContinuations  int    `json:"max_continuations"`
+	CanContinue       bool   `json:"can_continue"`
+}
+
+// runEndOfTurnHooks executes the end-of-turn hook chain for agentDir when one or more
+// executable hook scripts exist under <agentDir>/hooks/end-of-turn/. When no hooks are
+// registered (or hooks are disabled via WACKYPUB_HOOKS=0), it returns nil immediately
+// with zero overhead.
+func runEndOfTurnHooks(ctx context.Context, agentDir string, payload EndOfTurnPayload) *HookChainResult {
+	if agentDir == "" || os.Getenv(EnvHooks) == "0" {
+		return nil
+	}
+	hookPaths, err := DiscoverHooks(agentDir, EventEndOfTurn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: end-of-turn hook: error discovering hooks in %s: %v\n", agentDir, err)
+		return nil
+	}
+	if len(hookPaths) == 0 {
+		return nil
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: end-of-turn hook: failed to marshal payload: %v\n", err)
+		return nil
+	}
+
+	res, err := RunHookChain(ctx, agentDir, EventEndOfTurn, string(data))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: end-of-turn hook: %v\n", err)
+		return nil
+	}
+	for _, w := range res.Warnings {
+		fmt.Fprintf(os.Stderr, "Warning: end-of-turn hook: %s\n", w)
+	}
+	return res
+}
+
+// buildEndOfTurnContinuationSentinel formats the user sentinel turn persisted to
+// session.jsonl when an end-of-turn hook requests a continuation turn.
+func buildEndOfTurnContinuationSentinel(action *HookAction) string {
+	reason := "end-of-turn-hook"
+	if action != nil && strings.TrimSpace(action.Reason) != "" {
+		reason = strings.TrimSpace(action.Reason)
+	}
+	body := "Continuation requested by end-of-turn hook."
+	if action != nil && strings.TrimSpace(action.Output) != "" {
+		body = strings.TrimSpace(action.Output)
+	} else if action != nil && strings.TrimSpace(action.Reason) != "" {
+		body = fmt.Sprintf("Continuation requested by end-of-turn hook (%s).", reason)
+	}
+	return fmt.Sprintf("<CONTINUATION reason=%q>%s</CONTINUATION>", reason, body)
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
@@ -324,6 +325,8 @@ type TurnUsageTracker struct {
 	LastUsageMetadata         *genai.GenerateContentResponseUsageMetadata
 	StoppedEarlyForCompaction bool
 	DisableAutoContinuation   bool
+	MaxToolTurnsHit           bool
+	TurnStartedAt             time.Time
 
 	// Consecutive-identical-failure circuit breaker state (D101 P1.4), reset per turn.
 	ConsecutiveFailureSignature string
@@ -355,6 +358,8 @@ func (t *TurnUsageTracker) Reset() {
 	t.LastTotalTokens = 0
 	t.LastUsageMetadata = nil
 	t.StoppedEarlyForCompaction = false
+	t.MaxToolTurnsHit = false
+	t.TurnStartedAt = time.Now()
 	t.ConsecutiveFailureSignature = ""
 	t.ConsecutiveFailureCount = 0
 	t.FailureBreakerTripped = false
@@ -571,6 +576,9 @@ func buildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 						}, nil
 					}
 					tracker.ModelCalls++
+					if tracker.TurnStartedAt.IsZero() {
+						tracker.TurnStartedAt = time.Now()
+					}
 					calls = tracker.ModelCalls
 					lastPrompt = tracker.LastPromptTokens
 					disableAuto = tracker.DisableAutoContinuation
@@ -644,6 +652,11 @@ func buildADKAgentWithConfigAndTracker(agentID string, renderedPrompt string, ma
 				// clear, successful turn back with a hint to send another message to continue,
 				// instead of losing whatever the tool loop already accomplished.
 				if calls > maxToolTurns+1 {
+					if tracker != nil {
+						tracker.mu.Lock()
+						tracker.MaxToolTurnsHit = true
+						tracker.mu.Unlock()
+					}
 					fmt.Fprintf(os.Stderr, "Warning: agent %q reached the maximum tool-call turn limit (%d) for this generation - stopping early. Send another message (e.g. \"continue\") to let it keep going.\n", agentID, maxToolTurns)
 					return &model.LLMResponse{
 						Content: &genai.Content{

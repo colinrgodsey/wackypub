@@ -1066,3 +1066,283 @@ printf '{"action":{"type":"short_circuit","output":"claimed-by-02"}}\n'
 		}
 	})
 }
+
+// 16. Test end-of-turn hook event: zero-hooks parity, payload delivery, continuation trigger, D88 budget cap, multi-hook composition, and failure degradation.
+func TestEndOfTurnHook(t *testing.T) {
+	setupTurnAgent := func(t *testing.T, agentID string, maxAutoCont *int, handler http.HandlerFunc) (string, string, *httptest.Server) {
+		t.Helper()
+		wsDir := t.TempDir()
+		agentDir := filepath.Join(wsDir, agentID)
+		if err := os.MkdirAll(agentDir, 0755); err != nil {
+			t.Fatalf("mkdir agentDir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("System prompt."), 0644); err != nil {
+			t.Fatalf("write AGENTS.md: %v", err)
+		}
+		if err := AppendSessionTurn(agentDir, "user", "Initial user task"); err != nil {
+			t.Fatalf("AppendSessionTurn: %v", err)
+		}
+		srv := httptest.NewServer(handler)
+		t.Cleanup(srv.Close)
+
+		rt := RuntimeConfig{
+			Provider:             "openai",
+			Model:                "test-model",
+			Endpoint:             srv.URL,
+			APIKey:               "test-key",
+			MaxAutoContinuations: maxAutoCont,
+		}
+		rtBytes, err := json.Marshal(rt)
+		if err != nil {
+			t.Fatalf("marshal runtime.json: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), rtBytes, 0644); err != nil {
+			t.Fatalf("write runtime.json: %v", err)
+		}
+		return wsDir, agentDir, srv
+	}
+
+	makeSimpleHandler := func(callCount *int, responses ...string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			*callCount++
+			idx := *callCount - 1
+			reply := fmt.Sprintf("reply-%d", *callCount)
+			if idx < len(responses) {
+				reply = responses[idx]
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{
+				"id": "chatcmpl-%d",
+				"object": "chat.completion",
+				"choices": [{"index": 0, "message": {"role": "assistant", "content": %q}, "finish_reason": "stop"}],
+				"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+			}`, *callCount, reply)
+		}
+	}
+
+	t.Run("zero hooks registered behaves byte-for-byte identically (P3)", func(t *testing.T) {
+		calls := 0
+		wsDir, agentDir, _ := setupTurnAgent(t, "eot_zero", nil, makeSimpleHandler(&calls, "single turn response"))
+
+		fa, err := LoadFolderAgent(wsDir, "eot_zero", DefaultMaxToolTurns)
+		if err != nil {
+			t.Fatalf("LoadFolderAgent: %v", err)
+		}
+		resp, err := fa.GenerateTurn(context.Background())
+		if err != nil {
+			t.Fatalf("GenerateTurn: %v", err)
+		}
+		if resp != "single turn response" {
+			t.Errorf("resp = %q, want 'single turn response'", resp)
+		}
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1", calls)
+		}
+		turns, err := ReadSessionTurns(agentDir)
+		if err != nil {
+			t.Fatalf("ReadSessionTurns: %v", err)
+		}
+		if len(turns) != 2 {
+			t.Errorf("len(turns) = %d, want 2 (user + model)", len(turns))
+		}
+	})
+
+	t.Run("hook requesting continuation triggers next turn and delivers payload context", func(t *testing.T) {
+		calls := 0
+		wsDir, agentDir, _ := setupTurnAgent(t, "eot_cont", nil, makeSimpleHandler(&calls, "first turn reply", "second turn after hook continuation"))
+
+		// Hook requests continuation on first invocation, then declines on second.
+		writeEventHookScript(t, agentDir, EventEndOfTurn, "00-check", `#!/bin/sh
+if [ ! -f turn1_payload.json ]; then
+	cat > turn1_payload.json
+	printf '{"action":{"type":"continue","reason":"job-42-done","output":"Background job 42 finished (exit 0)."}}\n'
+else
+	cat > turn2_payload.json
+	printf '{}\n'
+fi
+`)
+
+		fa, err := LoadFolderAgent(wsDir, "eot_cont", DefaultMaxToolTurns)
+		if err != nil {
+			t.Fatalf("LoadFolderAgent: %v", err)
+		}
+		resp, err := fa.GenerateTurn(context.Background())
+		if err != nil {
+			t.Fatalf("GenerateTurn: %v", err)
+		}
+		if calls != 2 {
+			t.Fatalf("expected 2 model calls (initial + 1 hook continuation), got %d", calls)
+		}
+		wantResp := "first turn reply\n\nsecond turn after hook continuation"
+		if resp != wantResp {
+			t.Errorf("resp = %q, want %q", resp, wantResp)
+		}
+
+		// Verify payload 1 and payload 2 captured by hook.
+		raw1, err := os.ReadFile(filepath.Join(agentDir, "turn1_payload.json"))
+		if err != nil {
+			t.Fatalf("read turn1_payload.json: %v", err)
+		}
+		var p1 EndOfTurnPayload
+		if err := json.Unmarshal(raw1, &p1); err != nil {
+			t.Fatalf("unmarshal p1: %v", err)
+		}
+		if p1.AgentID != "eot_cont" || p1.StopReason != TurnStopCompleted || p1.DurationMs < 0 || p1.ContinuationCount != 0 || p1.MaxContinuations != DefaultMaxAutoContinuations || !p1.CanContinue {
+			t.Errorf("unexpected p1: %+v", p1)
+		}
+
+		raw2, err := os.ReadFile(filepath.Join(agentDir, "turn2_payload.json"))
+		if err != nil {
+			t.Fatalf("read turn2_payload.json: %v", err)
+		}
+		var p2 EndOfTurnPayload
+		if err := json.Unmarshal(raw2, &p2); err != nil {
+			t.Fatalf("unmarshal p2: %v", err)
+		}
+		if p2.ContinuationCount != 1 {
+			t.Errorf("p2.ContinuationCount = %d, want 1", p2.ContinuationCount)
+		}
+
+		// Verify session.jsonl persisted the <CONTINUATION> sentinel turn.
+		turns, err := ReadSessionTurns(agentDir)
+		if err != nil {
+			t.Fatalf("ReadSessionTurns: %v", err)
+		}
+		if len(turns) != 4 {
+			t.Fatalf("expected 4 turns in session.jsonl, got %d", len(turns))
+		}
+		wantSentinel := `<CONTINUATION reason="job-42-done">Background job 42 finished (exit 0).</CONTINUATION>`
+		if turns[2].Role != "user" || ContentText(turns[2]) != wantSentinel {
+			t.Errorf("turns[2] = (%s, %q), want (user, %q)", turns[2].Role, ContentText(turns[2]), wantSentinel)
+		}
+	})
+
+	t.Run("hook declining continuation leaves turn ending normally", func(t *testing.T) {
+		calls := 0
+		wsDir, agentDir, _ := setupTurnAgent(t, "eot_decline", nil, makeSimpleHandler(&calls, "only turn"))
+		writeEventHookScript(t, agentDir, EventEndOfTurn, "00-noop", "#!/bin/sh\ncat > /dev/null\nprintf '{}\\n'\n")
+
+		fa, err := LoadFolderAgent(wsDir, "eot_decline", DefaultMaxToolTurns)
+		if err != nil {
+			t.Fatalf("LoadFolderAgent: %v", err)
+		}
+		resp, err := fa.GenerateTurn(context.Background())
+		if err != nil {
+			t.Fatalf("GenerateTurn: %v", err)
+		}
+		if calls != 1 || resp != "only turn" {
+			t.Errorf("calls=%d resp=%q, want 1 and 'only turn'", calls, resp)
+		}
+	})
+
+	t.Run("hook always requesting continuation is bounded by D88 MaxAutoContinuations (P4)", func(t *testing.T) {
+		calls := 0
+		capVal := 2
+		wsDir, agentDir, _ := setupTurnAgent(t, "eot_bounded", &capVal, makeSimpleHandler(&calls, "t0", "t1", "t2", "t3"))
+
+		// Hook unconditionally requests continuation on every single turn.
+		writeEventHookScript(t, agentDir, EventEndOfTurn, "00-forever", `#!/bin/sh
+cat > /dev/null
+printf '{"action":{"type":"continue","reason":"endless-hook"}}\n'
+`)
+
+		fa, err := LoadFolderAgent(wsDir, "eot_bounded", DefaultMaxToolTurns)
+		if err != nil {
+			t.Fatalf("LoadFolderAgent: %v", err)
+		}
+		resp, err := fa.GenerateTurn(context.Background())
+		if err != nil {
+			t.Fatalf("GenerateTurn: %v", err)
+		}
+		// 1 initial turn + 2 continuations = 3 model calls total.
+		if calls != 3 {
+			t.Fatalf("expected exactly 3 model calls (1 initial + 2 maxAutoContinuations), got %d", calls)
+		}
+		for _, want := range []string{"t0", "t1", "t2", "Auto-continuation budget exhausted: 2 of 2 used", "maxAutoContinuations"} {
+			if !strings.Contains(resp, want) {
+				t.Errorf("response missing %q; got:\n%s", want, resp)
+			}
+		}
+	})
+
+	t.Run("multiple end-of-turn hooks all run and compose when any requests continuation", func(t *testing.T) {
+		calls := 0
+		wsDir, agentDir, _ := setupTurnAgent(t, "eot_multi", nil, makeSimpleHandler(&calls, "turn-1", "turn-2"))
+
+		writeEventHookScript(t, agentDir, EventEndOfTurn, "00-first", `#!/bin/sh
+cat > /dev/null
+if [ ! -f hook00.done ]; then
+	touch hook00.done
+	printf '{"action":{"type":"continue","reason":"r1","output":"out1"}}\n'
+else
+	printf '{}\n'
+fi
+`)
+		writeEventHookScript(t, agentDir, EventEndOfTurn, "01-middle-decline", `#!/bin/sh
+cat > /dev/null
+touch hook01.ran
+printf '{}\n'
+`)
+		writeEventHookScript(t, agentDir, EventEndOfTurn, "02-third", `#!/bin/sh
+cat > /dev/null
+if [ ! -f hook02.done ]; then
+	touch hook02.done
+	printf '{"action":{"type":"continue","reason":"r2","output":"out2"}}\n'
+else
+	printf '{}\n'
+fi
+`)
+
+		fa, err := LoadFolderAgent(wsDir, "eot_multi", DefaultMaxToolTurns)
+		if err != nil {
+			t.Fatalf("LoadFolderAgent: %v", err)
+		}
+		if _, err := fa.GenerateTurn(context.Background()); err != nil {
+			t.Fatalf("GenerateTurn: %v", err)
+		}
+		if calls != 2 {
+			t.Fatalf("calls = %d, want 2", calls)
+		}
+		if _, err := os.Stat(filepath.Join(agentDir, "hook01.ran")); err != nil {
+			t.Errorf("expected 01-middle-decline to run: %v", err)
+		}
+		turns, err := ReadSessionTurns(agentDir)
+		if err != nil {
+			t.Fatalf("ReadSessionTurns: %v", err)
+		}
+		wantSentinel := "<CONTINUATION reason=\"r1; r2\">out1\nout2</CONTINUATION>"
+		if len(turns) < 3 || ContentText(turns[2]) != wantSentinel {
+			t.Errorf("sentinel = %q, want %q", ContentText(turns[2]), wantSentinel)
+		}
+	})
+
+	t.Run("broken end-of-turn hook degrades to normal turn completion (P5)", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			script string
+		}{
+			{"non-zero exit", "#!/bin/sh\nexit 1\n"},
+			{"malformed json", "#!/bin/sh\necho 'corrupt'\n"},
+			{"empty stdout", "#!/bin/sh\nexit 0\n"},
+			{"unknown action type", "#!/bin/sh\nprintf '{\"action\":{\"type\":\"bogus\"}}'\n"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				calls := 0
+				wsDir, agentDir, _ := setupTurnAgent(t, "eot_broken", nil, makeSimpleHandler(&calls, "clean completion"))
+				writeEventHookScript(t, agentDir, EventEndOfTurn, "00-broken", tc.script)
+
+				fa, err := LoadFolderAgent(wsDir, "eot_broken", DefaultMaxToolTurns)
+				if err != nil {
+					t.Fatalf("LoadFolderAgent: %v", err)
+				}
+				resp, err := fa.GenerateTurn(context.Background())
+				if err != nil {
+					t.Fatalf("expected broken hook to degrade cleanly, got error: %v", err)
+				}
+				if calls != 1 || resp != "clean completion" {
+					t.Errorf("calls=%d resp=%q, want 1 and 'clean completion'", calls, resp)
+				}
+			})
+		}
+	})
+}

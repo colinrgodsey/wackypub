@@ -396,6 +396,7 @@ const (
 	ContinuationNone          ContinuationReason = ""
 	ContinuationDeferredImage ContinuationReason = "deferred_image"
 	ContinuationCompactedBail ContinuationReason = "compacted_bail"
+	ContinuationEndOfTurnHook ContinuationReason = "end_of_turn_hook"
 
 	// DefaultMaxAutoContinuations is the budget guard cap (4) for standard sessions (D88).
 	DefaultMaxAutoContinuations = 4
@@ -970,8 +971,67 @@ func (fa *FolderAgent) autoContinuationBudgets() (int, int) {
 	return generalCap, imageCap
 }
 
-// handleContinuationOrCompaction determines whether to continue generation (due to mid-turn compaction bail
-// or deferred images) or finish and run post-turn compaction. Returns true if another turn iteration should run.
+// turnStopReason classifies how the turn iteration that just finished reached its end.
+func (fa *FolderAgent) turnStopReason(hasCompactedBail, hasDeferredImages bool) string {
+	if fa.UsageTracker != nil {
+		fa.UsageTracker.mu.Lock()
+		breakerTripped := fa.UsageTracker.FailureBreakerTripped
+		maxToolsHit := fa.UsageTracker.MaxToolTurnsHit
+		fa.UsageTracker.mu.Unlock()
+		if breakerTripped {
+			return TurnStopFailureBreaker
+		}
+		if maxToolsHit {
+			return TurnStopMaxToolTurns
+		}
+	}
+	if hasCompactedBail {
+		return TurnStopCompactedBail
+	}
+	if hasDeferredImages {
+		return TurnStopDeferredImage
+	}
+	return TurnStopCompleted
+}
+
+// turnDurationMs returns the elapsed wall-clock milliseconds of the turn iteration that
+// just ended, or 0 if no start timestamp was recorded.
+func (fa *FolderAgent) turnDurationMs() int64 {
+	if fa.UsageTracker == nil {
+		return 0
+	}
+	fa.UsageTracker.mu.Lock()
+	started := fa.UsageTracker.TurnStartedAt
+	fa.UsageTracker.mu.Unlock()
+	if started.IsZero() {
+		return 0
+	}
+	d := time.Since(started).Milliseconds()
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+// fireEndOfTurnHooks builds EndOfTurnPayload and runs the end-of-turn hook chain for fa.
+func (fa *FolderAgent) fireEndOfTurnHooks(ctx context.Context, stopReason string, durationMs int64, continuationCount, maxContinuations int, canContinue bool) *HookChainResult {
+	if fa.AgentDir == "" {
+		return nil
+	}
+	return runEndOfTurnHooks(ctx, fa.AgentDir, EndOfTurnPayload{
+		AgentID:           fa.AgentID,
+		SessionPath:       filepath.Join(fa.AgentDir, SessionFileName),
+		StopReason:        stopReason,
+		DurationMs:        durationMs,
+		ContinuationCount: continuationCount,
+		MaxContinuations:  maxContinuations,
+		CanContinue:       canContinue,
+	})
+}
+
+// handleContinuationOrCompaction determines whether to continue generation (due to mid-turn compaction bail,
+// deferred images, or an end-of-turn hook continuation request) or finish and run post-turn compaction.
+// Returns true if another turn iteration should run.
 func (fa *FolderAgent) handleContinuationOrCompaction(
 	ctx context.Context,
 	wsDir string,
@@ -985,17 +1045,21 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 ) bool {
 	hasDeferredImages := fa.RuntimeConfig != nil && fa.RuntimeConfig.MaxImageDimension > 0 && len(deferredScratchpadIDs) > 0
 	hasCompactedBail := fa.UsageTracker != nil && fa.UsageTracker.StoppedEarlyForCompaction
+	stopReason := fa.turnStopReason(hasCompactedBail, hasDeferredImages)
+	durationMs := fa.turnDurationMs()
 
 	// Image Re-inflation Edge Case:
 	// If an image blob re-inflates context past budget on the continuation turn,
 	// the continuation bails and reports an explicit incomplete status rather than looping.
 	if hasCompactedBail && *lastContinuationReason == ContinuationDeferredImage {
 		yield("\n\n[Auto-continuation aborted: image re-inflated context past budget - incomplete status.]", nil)
+		fa.fireEndOfTurnHooks(ctx, stopReason, durationMs, *continuationCount, maxContinuations, false)
 		return false
 	}
 
 	if fa.DisableAutoContinuation {
 		fa.checkPostTurnCompaction(ctx, wsDir)
+		fa.fireEndOfTurnHooks(ctx, stopReason, durationMs, *continuationCount, maxContinuations, false)
 		return false
 	}
 
@@ -1007,11 +1071,13 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 			if *continuationCount >= maxContinuations {
 				fa.checkPostTurnCompaction(ctx, wsDir)
 				yield(fmt.Sprintf("\n\n[Auto-continuation budget exhausted: %d of %d used - stopping with incomplete status. Raise maxAutoContinuations in runtime.json to allow more.]", *continuationCount, maxContinuations), nil)
+				fa.fireEndOfTurnHooks(ctx, stopReason, durationMs, *continuationCount, maxContinuations, false)
 				return false
 			}
 		} else if *imageContinuationCount >= maxImageContinuations {
 			fa.checkPostTurnCompaction(ctx, wsDir)
 			yield(fmt.Sprintf("\n\n[Auto-continuation budget exhausted (images): %d of %d used - stopping with incomplete status. Raise maxAutoContinuationsImages in runtime.json to allow more.]", *imageContinuationCount, maxImageContinuations), nil)
+			fa.fireEndOfTurnHooks(ctx, stopReason, durationMs, *continuationCount, maxContinuations, false)
 			return false
 		}
 	}
@@ -1024,11 +1090,13 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 	//    allowing the image turn to drive the resumption with maximum context headroom (no redundant compaction marker).
 	if hasCompactedBail && hasDeferredImages {
 		if !fa.compactForContinuation(ctx, yield) {
+			fa.fireEndOfTurnHooks(ctx, stopReason, durationMs, *continuationCount, maxContinuations, false)
 			return false
 		}
 
 		validImages := fa.appendDeferredImages(wsDir, deferredScratchpadIDs)
 		if validImages == 0 {
+			fa.fireEndOfTurnHooks(ctx, stopReason, durationMs, *continuationCount, maxContinuations, false)
 			return false
 		}
 
@@ -1043,6 +1111,7 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 	// using the real LastPromptTokens that triggered the bail (superseding D77's skip).
 	if hasCompactedBail {
 		if !fa.compactForContinuation(ctx, yield) {
+			fa.fireEndOfTurnHooks(ctx, stopReason, durationMs, *continuationCount, maxContinuations, false)
 			return false
 		}
 
@@ -1051,6 +1120,7 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 		if err := persistTurnLoud(fa.AgentDir, wsDir, fa.AgentID, sentinelTurn, "user"); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to record continuation sentinel for agent %s: %v\n", fa.AgentID, err)
 			yield("\n\n[Auto-continuation aborted: failed to record post-compaction sentinel - incomplete status.]", nil)
+			fa.fireEndOfTurnHooks(ctx, stopReason, durationMs, *continuationCount, maxContinuations, false)
 			return false
 		}
 
@@ -1065,6 +1135,7 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 		fa.checkPostTurnCompaction(ctx, wsDir)
 		validImages := fa.appendDeferredImages(wsDir, deferredScratchpadIDs)
 		if validImages == 0 {
+			fa.fireEndOfTurnHooks(ctx, stopReason, durationMs, *continuationCount, maxContinuations, false)
 			return false
 		}
 
@@ -1076,6 +1147,28 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 	// Normal turn completion:
 	// When a turn completes normally and real tokens >= threshold, compact post-turn.
 	fa.checkPostTurnCompaction(ctx, wsDir)
+
+	canContinue := !fa.DisableAutoContinuation && *continuationCount < maxContinuations
+	hookRes := fa.fireEndOfTurnHooks(ctx, stopReason, durationMs, *continuationCount, maxContinuations, canContinue)
+	if hookRes != nil && hookRes.Action != nil && hookRes.Action.Type == HookActionContinue {
+		if *continuationCount >= maxContinuations {
+			yield(fmt.Sprintf("\n\n[Auto-continuation budget exhausted: %d of %d used - stopping with incomplete status. Raise maxAutoContinuations in runtime.json to allow more.]", *continuationCount, maxContinuations), nil)
+			return false
+		}
+
+		sentinelText := buildEndOfTurnContinuationSentinel(hookRes.Action)
+		sentinelTurn := genai.NewContentFromText(sentinelText, "user")
+		if err := persistTurnLoud(fa.AgentDir, wsDir, fa.AgentID, sentinelTurn, "user (end-of-turn continuation)"); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to record end-of-turn continuation sentinel for agent %s: %v\n", fa.AgentID, err)
+			yield("\n\n[Auto-continuation aborted: failed to record end-of-turn continuation sentinel - incomplete status.]", nil)
+			return false
+		}
+
+		*lastContinuationReason = ContinuationEndOfTurnHook
+		*continuationCount++
+		return true
+	}
+
 	return false
 }
 
