@@ -34,25 +34,78 @@ const (
 	// read at least the session turns for the agent. Run synchronously: there is nothing left
 	// to delay, and an async dispatch risks losing the diagnostic if the process exits first.
 	EventCompactFailed = "compact-failed"
+
+	// HookActionShortCircuit is the HookAction.Type value that instructs a pre-execution
+	// hook point (such as EventPreRunCommand) to skip running the real target and return
+	// HookAction.Output (and optional HookAction.Stderr) as a successful result.
+	HookActionShortCircuit = "short_circuit"
+	// HookActionContinue is the HookAction.Type value that instructs an end-of-turn hook
+	// point (EventEndOfTurn) to schedule a follow-up continuation turn bounded by D88's
+	// MaxAutoContinuations budget.
+	HookActionContinue = "continue"
 )
+
+// HookAction is the unified control-flow extension on HookOutput shared by active hook
+// events (EventPreRunCommand and EventEndOfTurn). Passive hooks omit Action; active hooks
+// set Action.Type to direct the harness either to short-circuit a pending command
+// execution (HookActionShortCircuit) or to request a D88-bounded continuation turn
+// (HookActionContinue).
+type HookAction struct {
+	// Type selects the control-flow directive: HookActionShortCircuit ("short_circuit",
+	// or alias "short-circuit" / "replace") or HookActionContinue ("continue").
+	Type string `json:"type"`
+	// Output carries the replacement stdout text when Type == HookActionShortCircuit,
+	// or optional message content for the continuation sentinel turn when Type == HookActionContinue.
+	Output string `json:"output,omitempty"`
+	// Stderr carries optional replacement stderr text when Type == HookActionShortCircuit.
+	Stderr string `json:"stderr,omitempty"`
+	// Reason carries an optional diagnostic/audit reason for the action (recorded in the
+	// continuation sentinel turn when Type == HookActionContinue).
+	Reason string `json:"reason,omitempty"`
+}
+
+// normalizeHookActionType canonicalizes supported HookAction.Type values and reports
+// whether raw is a recognized control-flow directive.
+func normalizeHookActionType(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case HookActionShortCircuit, "short-circuit", "replace":
+		return HookActionShortCircuit, true
+	case HookActionContinue:
+		return HookActionContinue, true
+	default:
+		return "", false
+	}
+}
 
 // HookOutput defines the JSON schema emitted on stdout by a hook script.
 type HookOutput struct {
-	Env  map[string]any `json:"env,omitempty"`
-	Text *string        `json:"text,omitempty"`
+	Env    map[string]any `json:"env,omitempty"`
+	Text   *string        `json:"text,omitempty"`
+	Action *HookAction    `json:"action,omitempty"`
 }
 
 // HookOptions specifies optional configuration for hook execution.
 type HookOptions struct {
 	Timeout     time.Duration
 	WriteStderr bool
+	// InitialEnv, when non-nil, is merged into the starting process environment of the
+	// hook chain (after os.Environ()) before the first hook script runs.
+	InitialEnv map[string]string
 }
 
-// HookChainResult contains the final altered text, mutated environment variables, and any warnings.
+// HookChainResult contains the final altered text, mutated environment variables,
+// any control-flow action directives, and any warnings.
 type HookChainResult struct {
 	Text       string
 	MutatedEnv map[string]string
 	Warnings   []string
+	// Action holds the effective control-flow directive from the chain: for
+	// HookActionShortCircuit, the first hook that short-circuited (which also terminates
+	// the chain); for HookActionContinue, the combined continuation directive across all
+	// hooks in the chain that requested continuation.
+	Action *HookAction
+	// Actions holds all valid HookAction directives emitted by hooks in execution order.
+	Actions []HookAction
 }
 
 func extractLeadingNumber(name string) (int64, bool) {
@@ -182,9 +235,14 @@ func RunHookChain(ctx context.Context, agentDir string, event string, initialTex
 			currentEnvMap[kv[:idx]] = kv[idx+1:]
 		}
 	}
+	for k, v := range opt.InitialEnv {
+		currentEnvMap[k] = v
+	}
 
 	mutatedVars := make(map[string]string)
 	currentText := initialText
+	var winningAction *HookAction
+	var actions []HookAction
 
 	for _, hookPath := range hookPaths {
 		cmdCtx, cancel := context.WithTimeout(ctx, hookTimeout)
@@ -260,6 +318,45 @@ func RunHookChain(ctx context.Context, agentDir string, event string, initialTex
 				}
 			}
 		}
+
+		if out.Action != nil {
+			rawType := strings.TrimSpace(out.Action.Type)
+			if rawType == "" && out.Action.Output == "" && out.Action.Stderr == "" && out.Action.Reason == "" {
+				continue
+			}
+			normType, ok := normalizeHookActionType(rawType)
+			if !ok {
+				emitWarning(fmt.Sprintf("Warning: hook %s produced unsupported action type %q", hookPath, out.Action.Type))
+				continue
+			}
+			act := *out.Action
+			act.Type = normType
+			actions = append(actions, act)
+			if winningAction == nil {
+				actCopy := act
+				winningAction = &actCopy
+			} else if winningAction.Type == HookActionContinue && act.Type == HookActionContinue {
+				if act.Reason != "" {
+					if winningAction.Reason != "" {
+						winningAction.Reason += "; " + act.Reason
+					} else {
+						winningAction.Reason = act.Reason
+					}
+				}
+				if act.Output != "" {
+					if winningAction.Output != "" {
+						winningAction.Output += "\n" + act.Output
+					} else {
+						winningAction.Output = act.Output
+					}
+				}
+			}
+			// Short-circuiting is an exclusive claim: the first hook to short-circuit
+			// wins and terminates the chain so subsequent hooks cannot double-dispatch.
+			if normType == HookActionShortCircuit {
+				break
+			}
+		}
 	}
 
 	var resMutated map[string]string
@@ -271,6 +368,8 @@ func RunHookChain(ctx context.Context, agentDir string, event string, initialTex
 		Text:       currentText,
 		MutatedEnv: resMutated,
 		Warnings:   warnings,
+		Action:     winningAction,
+		Actions:    actions,
 	}, nil
 }
 

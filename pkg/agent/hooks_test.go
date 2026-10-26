@@ -790,3 +790,82 @@ echo "corrupt json output"
 		t.Errorf("expected clean model response 'agent reply', got %q", res.Text)
 	}
 }
+
+// 14. Test unified HookAction extension semantics in RunHookChain
+func TestHookActionExtensionSemantics(t *testing.T) {
+	t.Run("short_circuit first-wins and stops chain", func(t *testing.T) {
+		agentDir := t.TempDir()
+		writeHookScript(t, agentDir, "00-first", `#!/bin/sh
+printf '{"action":{"type":"short_circuit","output":"claimed-by-00","stderr":"warn-00","reason":"deferred"}}\n'
+`)
+		writeHookScript(t, agentDir, "01-second", `#!/bin/sh
+echo "ran" > second_ran.marker
+printf '{"action":{"type":"short_circuit","output":"claimed-by-01"}}\n'
+`)
+
+		res, err := RunHookChain(context.Background(), agentDir, EventOnUserMessage, "payload")
+		if err != nil {
+			t.Fatalf("RunHookChain failed: %v", err)
+		}
+		if res.Action == nil {
+			t.Fatalf("expected non-nil Action")
+		}
+		if res.Action.Type != HookActionShortCircuit {
+			t.Errorf("expected Type=%q, got %q", HookActionShortCircuit, res.Action.Type)
+		}
+		if res.Action.Output != "claimed-by-00" || res.Action.Stderr != "warn-00" || res.Action.Reason != "deferred" {
+			t.Errorf("unexpected Action fields: %+v", res.Action)
+		}
+		if _, err := os.Stat(filepath.Join(agentDir, "second_ran.marker")); !os.IsNotExist(err) {
+			t.Errorf("expected 01-second NOT to run after 00-first short-circuited")
+		}
+	})
+
+	t.Run("continue runs all hooks and composes reasons and outputs", func(t *testing.T) {
+		agentDir := t.TempDir()
+		writeHookScript(t, agentDir, "00-first", `#!/bin/sh
+printf '{"action":{"type":"continue","reason":"reason-1","output":"msg-1"}}\n'
+`)
+		writeHookScript(t, agentDir, "01-decline", `#!/bin/sh
+printf '{}\n'
+`)
+		writeHookScript(t, agentDir, "02-third", `#!/bin/sh
+printf '{"action":{"type":"continue","reason":"reason-2","output":"msg-2"}}\n'
+`)
+
+		res, err := RunHookChain(context.Background(), agentDir, EventOnUserMessage, "payload")
+		if err != nil {
+			t.Fatalf("RunHookChain failed: %v", err)
+		}
+		if res.Action == nil || res.Action.Type != HookActionContinue {
+			t.Fatalf("expected Action.Type=%q, got %+v", HookActionContinue, res.Action)
+		}
+		if len(res.Actions) != 2 {
+			t.Fatalf("expected 2 Actions, got %d", len(res.Actions))
+		}
+		if res.Action.Reason != "reason-1; reason-2" {
+			t.Errorf("expected composed reason 'reason-1; reason-2', got %q", res.Action.Reason)
+		}
+		if res.Action.Output != "msg-1\nmsg-2" {
+			t.Errorf("expected composed output 'msg-1\\nmsg-2', got %q", res.Action.Output)
+		}
+	})
+
+	t.Run("unknown action type emits warning and degrades to nil Action", func(t *testing.T) {
+		agentDir := t.TempDir()
+		writeHookScript(t, agentDir, "00-unknown", `#!/bin/sh
+printf '{"action":{"type":"bogus_directive","output":"ignored"}}\n'
+`)
+
+		res, err := RunHookChain(context.Background(), agentDir, EventOnUserMessage, "payload")
+		if err != nil {
+			t.Fatalf("RunHookChain failed: %v", err)
+		}
+		if res.Action != nil {
+			t.Errorf("expected nil Action for unsupported action type, got %+v", res.Action)
+		}
+		if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "unsupported action type") {
+			t.Errorf("expected unsupported action type warning, got %v", res.Warnings)
+		}
+	})
+}
