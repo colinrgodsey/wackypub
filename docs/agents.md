@@ -385,12 +385,12 @@ Active lifecycle hooks (`pre-run-command` and `end-of-turn`) share a single cont
 
 | Event | Fire Point | Stdin Payload | Honored `HookOutput` Fields | Chain & Precedence Rule |
 |---|---|---|---|---|
-| `on-user-message` | `AddUserTurn` / `AddAndGenerateTurn`, before persisting the user turn | Raw user message text | `text` (rewrites user message), `env` (persisted to `session.env`) | Sequential pipeline; each script receives prior `text` and `env`. Honored `action` set: none |
+| `on-user-message` | `AddUserTurn` / `AddAndGenerateTurn`, before persisting the user turn | Raw user message text | `text` (rewrites user message), `env` (stored in-memory via `setLastHookEnv` / `getLastHookEnv` as a one-shot hand-off on the `AgentSDK` instance for the next generation turn) | Sequential pipeline; each script receives prior `text` and `env`. Honored `action` set: none |
 | `pre-compact` | `CheckAndCompactSession`, after committing to compact, before compaction LLM runs | `PreCompactPayload` JSON (`agent_id`, `session_path`, `turn_count`, `token_estimate`, `trigger`: `"auto"` \| `"forced"`) | Observe-only (none applied) | Synchronously runs all scripts in order. Honored `action` set: none |
 | `post-compact` | Async goroutine after compaction completes | `PostCompactPayload` JSON (`agent_id`, `session_path`, `turns_archived`, `tokens_before`, `tokens_after`, `compaction_model`, `tool_denials`) | Observe-only (none applied) | Best-effort async goroutine; runs all scripts in order. Honored `action` set: none |
 | `compact-failed` | Synchronously when `CheckAndCompactSession` errors after reading session turns | `CompactFailedPayload` JSON (`agent_id`, `session_path`, `stage`, `error`) | Observe-only (none applied) | Synchronously runs all scripts in order. Honored `action` set: none |
 | `pre-run-command` | `executeTool`, after the pre-dispatch workspace commit and before `cmd.Run()` | `PreRunCommandPayload` JSON (`agent_id`, `command`, `command_path`, `args`, `cwd`, `env`) | `env` (merged into tool's `childEnv`), `action` (`type: "short_circuit"`) | **First honored `short_circuit` wins and terminates the chain** |
-| `end-of-turn` | `GenerateTurnStream` / `GenerateTurn` / `runTurnOnce` when a turn ends | `EndOfTurnPayload` JSON (`agent_id`, `session_path`, `stop_reason`, `duration_ms`, `continuation_count`, `max_continuations`, `can_continue`) | `action` (`type: "continue"`, honored only when `can_continue: true`) | **All scripts run; any-wins** (multiple `continue` actions merge `reason` and `output`) |
+| `end-of-turn` | `GenerateTurnStream` (and `GenerateTurn`, which drains it) when a turn iteration ends in `handleContinuationOrCompaction` | `EndOfTurnPayload` JSON (`agent_id`, `session_path`, `stop_reason`, `duration_ms`, `continuation_count`, `max_continuations`, `can_continue`) | `action` (`type: "continue"`, honored only when `can_continue: true`) | **All scripts run; any-wins** (multiple `continue` actions merge `reason` and `output`) |
 
 ### `pre-run-command`
 
@@ -432,7 +432,7 @@ The hook chain's starting process environment (`HookOptions.InitialEnv`) is seed
 
 ### `end-of-turn`
 
-Fires when a turn reaches its end in `GenerateTurnStream` (both normal turn completion after `checkPostTurnCompaction` and early-exit paths) as well as single-turn `GenerateTurn` / `runTurnOnce`.
+Fires when a turn iteration reaches its end inside `handleContinuationOrCompaction` in `GenerateTurnStream` (which non-streaming `GenerateTurn` also drains).
 
 #### Stdin Payload (`EndOfTurnPayload`)
 ```json
@@ -442,7 +442,7 @@ Fires when a turn reaches its end in `GenerateTurnStream` (both normal turn comp
   "stop_reason": "completed",
   "duration_ms": 1420,
   "continuation_count": 0,
-  "max_continuations": 50,
+  "max_continuations": 4,
   "can_continue": true
 }
 ```
@@ -451,10 +451,10 @@ Fires when a turn reaches its end in `GenerateTurnStream` (both normal turn comp
 |---|---|---|
 | `agent_id` | `string` | ID of the agent whose turn just ended. |
 | `session_path` | `string` | Absolute path to `<agent_id>/session.jsonl`. |
-| `stop_reason` | `string` | How the turn ended: `"completed"` (`TurnStopCompleted`), `"max_tool_turns"` (`TurnStopMaxToolTurns`), `"failure_breaker"` (`TurnStopFailureBreaker`), `"compacted_bail"` (`TurnStopCompactedBail`), `"deferred_image"` (`TurnStopDeferredImage`), or early-exit reasons (`"aborted"`, `"context_error"`, `"max_iterations"`, `"empty_response"`). |
+| `stop_reason` | `string` | One of the five `TurnStopReason` constants (`pkg/agent/hooks.go`): `"completed"` (`TurnStopCompleted`), `"max_tool_turns"` (`TurnStopMaxToolTurns`), `"failure_breaker"` (`TurnStopFailureBreaker`), `"compacted_bail"` (`TurnStopCompactedBail`), or `"deferred_image"` (`TurnStopDeferredImage`). |
 | `duration_ms` | `int64` | Elapsed wall-clock duration of the turn iteration in milliseconds. |
 | `continuation_count` | `int` | Number of general D88 auto-continuations already consumed in this stream call. |
-| `max_continuations` | `int` | Effective D88 general `MaxAutoContinuations` ceiling for this turn (`50` default, `5` when `AGENT2AGENT` is set, `0` when auto-continuation is disabled, or `runtime.json`'s `maxAutoContinuations`). |
+| `max_continuations` | `int` | Effective D88 general `MaxAutoContinuations` ceiling for this turn (`DefaultMaxAutoContinuations = 4` default, `DefaultMaxAutoContinuationsA2A = 2` when `A2AMeta` / `AGENT2AGENT` is set, `0` when auto-continuation is disabled, or `runtime.json`'s `maxAutoContinuations`). |
 | `can_continue` | `bool` | Whether `wackypub` will honor a `continue` action returned from this invocation. |
 
 #### The `can_continue` Contract (Notify-Only vs. Continuation-Capable Paths)

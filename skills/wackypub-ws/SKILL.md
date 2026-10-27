@@ -243,23 +243,23 @@ Agents can register executable hook scripts under `<ws_dir>/<agent_id>/hooks/<ev
   - **First-wins precedence**: The first hook in numeric order to emit an honored `short_circuit` action claims the call and terminates the chain immediately so later hooks cannot double-dispatch.
 
 ### `end-of-turn`
-- **Fire point**: When a turn reaches its end in `GenerateTurnStream`, `GenerateTurn`, or `runTurnOnce`.
+- **Fire point**: When a turn iteration reaches its end inside `handleContinuationOrCompaction` in `GenerateTurnStream` (which non-streaming `GenerateTurn` also drains).
 - **Stdin payload (`EndOfTurnPayload`)**:
   ```json
   {
     "agent_id": "...",
     "session_path": "...",
-    "stop_reason": "completed | max_tool_turns | failure_breaker | compacted_bail | deferred_image | ...",
+    "stop_reason": "completed | max_tool_turns | failure_breaker | compacted_bail | deferred_image",
     "duration_ms": 1420,
     "continuation_count": 0,
-    "max_continuations": 50,
+    "max_continuations": 4,
     "can_continue": true
   }
   ```
 - **The `can_continue` contract**: Only the normal turn-completion path in `GenerateTurnStream` (when auto-continuation is enabled and `continuation_count < max_continuations`) sets `"can_continue": true`. All other `end-of-turn` fire sites set `"can_continue": false` and discard any `continue` action as notify-only. Stateful hooks **must** check `can_continue == true` before committing one-time side effects.
 - **Requesting a continuation (`type: "continue"`) & D88 bound**:
   - **Any-wins aggregation**: All `end-of-turn` hooks run in numeric order. If one or more emit `type: "continue"`, their `reason` strings are joined with `"; "` and `output` strings with `"\n"`, persisted to `session.jsonl` as `<CONTINUATION reason="..."><output></CONTINUATION>` (workspace commit `user (end-of-turn continuation)`).
-  - **D88 `MaxAutoContinuations` bound**: Hook-requested continuations consume from D88's existing general `maxAutoContinuations` budget (`50` default, `5` on A2A turns, configurable via `maxAutoContinuations` in `runtime.json`). Even a hook that unconditionally returns `continue` on every turn is hard-stopped once `continuation_count >= max_continuations`.
+  - **D88 `MaxAutoContinuations` bound**: Hook-requested continuations consume from D88's existing general `maxAutoContinuations` budget (`DefaultMaxAutoContinuations = 4` default, `DefaultMaxAutoContinuationsA2A = 2` on A2A turns, `0` when auto-continuation is disabled, or configurable via `maxAutoContinuations` in `runtime.json`). Even a hook that unconditionally returns `continue` on every turn is hard-stopped once `continuation_count >= max_continuations`.
 
 For the full specification, see `docs/agents.md#hooks`.
 
