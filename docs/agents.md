@@ -18,13 +18,16 @@ This document details the architecture, directory specs, lifecycle, compaction m
    - [WACKYPUB_ALLOWED_AGENTS](#wackypub_allowed_agents)
    - [tools/ Directory](#tools-directory)
    - [scratchpad/ Directory](#scratchpad-directory)
+   - [skills/ Directory](#skills-directory)
+   - [hooks/ Directory](#hooks-directory)
 4. [Google ADK Integration Layer](#4-google-adk-integration-layer)
 5. [Execution Lifecycle](#5-execution-lifecycle)
-6. [Session Compaction Mechanics](#6-session-compaction-mechanics)
-7. [Reasoning / Thinking Support](#7-reasoning--thinking-support)
-8. [CLI Command Pipeline](#8-cli-command-pipeline)
-9. [Session Locking](#9-session-locking)
-10. [Programmatic Go SDK API](#10-programmatic-go-sdk-api-pkgagent)
+6. [Hooks](#6-hooks)
+7. [Session Compaction Mechanics](#7-session-compaction-mechanics)
+8. [Reasoning / Thinking Support](#8-reasoning--thinking-support)
+9. [CLI Command Pipeline](#9-cli-command-pipeline)
+10. [Session Locking](#10-session-locking)
+11. [Programmatic Go SDK API](#11-programmatic-go-sdk-api-pkgagent)
 
 ---
 
@@ -45,7 +48,8 @@ WackyPub manages agents using a file-system-first architecture. Each agent opera
     ├── WACKYPUB_ALLOWED_AGENTS # Opt-in allowlist of target agents for cross-agent calls
     ├── scratchpad/        # Persistent session scratchpad entries (1 file per entry, D30)
     ├── tools/             # Discovered executable tool binaries / scripts
-    └── skills/            # Discovered skill folders containing SKILL.md
+    ├── skills/            # Discovered skill folders containing SKILL.md
+    └── hooks/             # Optional per-event lifecycle hook scripts (<event>/NN-name)
 ```
 
 By decoupling runtime configuration, system prompts, memory, turn logs, tools, and cross-agent authorization into discrete files, agent state is human-readable, source-controllable, and easily inspectable.
@@ -234,6 +238,12 @@ You are Ignis, an ancient wizard.
 
 ---
 
+### `hooks/` Directory
+
+`<agent_id>/hooks/<event>/` contains optional executable lifecycle hook scripts (`NN-name`) discovered and executed in ascending numeric order for each lifecycle event (`on-user-message`, `pre-compact`, `post-compact`, `compact-failed`, `pre-run-command`, `end-of-turn`). For the complete event catalog, payload schemas, `HookOutput` / `HookAction` contract, and precedence rules, see [§6 Hooks](#6-hooks).
+
+---
+
 ## 4. Google ADK Integration Layer
 
 WackyPub integrates with **Google Agent Development Kit v2** (`google.golang.org/adk/v2`) for core types (`model.LLM`, `model.LLMRequest`/`LLMResponse`, `agent.Agent`, `session.Event`, `tool.Tool`), and executes generation turns directly via ADK's `runner.Runner` powered by a custom file-backed `session.Service` (`FileSessionService` in `pkg/agent/file_session_service.go`).
@@ -325,7 +335,154 @@ sequenceDiagram
 
 ---
 
-## 6. Session Compaction Mechanics
+<a id="hooks"></a>
+
+## 6. Hooks
+
+WackyPub supports per-agent, filesystem-discovered lifecycle hooks under `<ws_dir>/<agent_id>/hooks/<event>/`.
+
+> **Strictly additive by design**: When an agent has no hooks registered for an event (or `WACKYPUB_HOOKS=0` is set in the environment), `wackypub` returns immediately before marshaling payloads or allocating subprocess state — runtime behavior is byte-for-byte unchanged. Any hook failure (missing directory, non-zero exit status, timeout, empty stdout, or malformed JSON) logs a warning to `stderr` and degrades to normal execution without wedging the turn or losing a command.
+
+### Conventions & Execution Chain (`DiscoverHooks` / `RunHookChain`)
+
+- **Directory layout**: `<ws_dir>/<agent_id>/hooks/<event>/<NN-name>` (inspectable read-only across the workspace via `wackypub agent hooks <agent_id>`).
+- **Discovery**: `DiscoverHooks` selects only regular executable files (`mode & 0111 != 0`) directly inside `<agent_id>/hooks/<event>/`. Subdirectories and non-executable files are ignored.
+- **Numeric ordering**: Scripts sort in ascending numeric order by leading digits (`00-first` before `10-second` before `100-third`), with lexicographical tie-breaking on the filename. Scripts with leading digits sort before scripts without leading digits.
+- **Process isolation & timeout**: Each script executes with `CWD = <ws_dir>/<agent_id>` in its own process group (`Setpgid: true`). If a script exceeds the per-hook timeout (`DefaultHookTimeoutSeconds = 5`, configurable via `WACKYPUB_HOOK_TIMEOUT_SECONDS`), its entire process group (`-pid`) receives `SIGKILL`, a warning is recorded, and the chain continues.
+- **Stdin / Stdout JSON wire contract**:
+  - Each script receives the current text or JSON-encoded event payload on `stdin`.
+  - Each script must print a single JSON object (`HookOutput`) on `stdout` (use `{}` for a no-op decline):
+    ```json
+    {
+      "text": "optional replacement stdin text for the next hook in the chain",
+      "env": {
+        "SET_VAR": "value",
+        "UNSET_VAR": null
+      },
+      "action": {
+        "type": "short_circuit | continue",
+        "output": "optional replacement stdout or continuation message",
+        "stderr": "optional replacement stderr (short_circuit only)",
+        "reason": "optional audit/diagnostic reason"
+      }
+    }
+    ```
+  - **Environment chaining**: Non-null entries in `env` set or override variables in the environment passed to subsequent hooks in the chain (and in `HookChainResult.MutatedEnv`); `null` values delete the variable from both.
+
+### Unified `HookAction` Contract & Honored Action Sets
+
+Active lifecycle hooks (`pre-run-command` and `end-of-turn`) share a single control-flow extension on `HookOutput`: the `action` field (`HookAction`).
+
+- **Recognized `action.type` values**:
+  - `"short_circuit"` (aliases `"short-circuit"` and `"replace"` normalize to `"short_circuit"`): skip executing the target command and substitute `action.output` (and optional `action.stderr`) as a normal successful tool response.
+  - `"continue"`: request an automatic continuation turn at the end of the current turn, bounded by D88's `MaxAutoContinuations` budget.
+- **Per-event honored action sets**: `RunHookChain` enforces each event's honored action set (`defaultAllowedActionsForEvent(event)`, overridable programmatically via `HookOptions.AllowedActions`):
+  - Any unrecognized `action.type` emits a warning and is ignored.
+  - Any recognized `action.type` that is **not** in the event's honored set (for example, `"short_circuit"` emitted by an `end-of-turn` or `on-user-message` hook, or `"continue"` emitted by a `pre-run-command` hook) emits a warning (`action type "<type>" which is not honored by event "<event>"`), is ignored, and **never** claims `HookChainResult.Action` or truncates the chain.
+  - An empty action object (`{"action": {}}`) is ignored without warning.
+
+### Event Catalog
+
+| Event | Fire Point | Stdin Payload | Honored `HookOutput` Fields | Chain & Precedence Rule |
+|---|---|---|---|---|
+| `on-user-message` | `AddUserTurn` / `AddAndGenerateTurn`, before persisting the user turn | Raw user message text | `text` (rewrites user message), `env` (persisted to `session.env`) | Sequential pipeline; each script receives prior `text` and `env`. Honored `action` set: none |
+| `pre-compact` | `CheckAndCompactSession`, after committing to compact, before compaction LLM runs | `PreCompactPayload` JSON (`agent_id`, `session_path`, `turn_count`, `token_estimate`, `trigger`: `"auto"` \| `"forced"`) | Observe-only (none applied) | Synchronously runs all scripts in order. Honored `action` set: none |
+| `post-compact` | Async goroutine after compaction completes | `PostCompactPayload` JSON (`agent_id`, `session_path`, `turns_archived`, `tokens_before`, `tokens_after`, `compaction_model`, `tool_denials`) | Observe-only (none applied) | Best-effort async goroutine; runs all scripts in order. Honored `action` set: none |
+| `compact-failed` | Synchronously when `CheckAndCompactSession` errors after reading session turns | `CompactFailedPayload` JSON (`agent_id`, `session_path`, `stage`, `error`) | Observe-only (none applied) | Synchronously runs all scripts in order. Honored `action` set: none |
+| `pre-run-command` | `executeTool`, after the pre-dispatch workspace commit and before `cmd.Run()` | `PreRunCommandPayload` JSON (`agent_id`, `command`, `command_path`, `args`, `cwd`, `env`) | `env` (merged into tool's `childEnv`), `action` (`type: "short_circuit"`) | **First honored `short_circuit` wins and terminates the chain** |
+| `end-of-turn` | `GenerateTurnStream` / `GenerateTurn` / `runTurnOnce` when a turn ends | `EndOfTurnPayload` JSON (`agent_id`, `session_path`, `stop_reason`, `duration_ms`, `continuation_count`, `max_continuations`, `can_continue`) | `action` (`type: "continue"`, honored only when `can_continue: true`) | **All scripts run; any-wins** (multiple `continue` actions merge `reason` and `output`) |
+
+### `pre-run-command`
+
+Fires synchronously inside `executeTool` (`pkg/agent/agent_folder.go`) immediately before spawning an executable discovered under `<agent_id>/tools/`. Built-in in-process tools (`load_skill`, `create_scratchpad`, `get_scratchpad`, `list_scratchpads`, `search_scratchpad`, `diff_scratchpad`) do not spawn subprocesses and do not fire `pre-run-command`.
+
+#### Stdin Payload (`PreRunCommandPayload`)
+```json
+{
+  "agent_id": "coordinator",
+  "command": "my-tool",
+  "command_path": "/ws/coordinator/tools/my-tool",
+  "args": ["--flag", "value"],
+  "cwd": "/ws/coordinator",
+  "env": {
+    "PATH": "/usr/bin:/bin"
+  }
+}
+```
+The hook chain's starting process environment (`HookOptions.InitialEnv`) is seeded with the tool's resolved `cmd.Env` (base environment + `.env` + model-supplied `args.Env` + harness-owned variables).
+
+#### Output Semantics & Precedence
+- **Decline (run inline unchanged)**: Print `{}` on stdout and exit `0`.
+- **Environment mutation**: Return `{"env": {"EXTRA_FLAG": "1"}}` without an `action`. `MutatedEnv` is merged into the tool subprocess environment via `childEnv` (harness-owned variables such as `AGENT2AGENT` still take precedence and cannot be spoofed).
+- **Short-circuit replacement**: Return an honored `short_circuit` action:
+  ```json
+  {
+    "action": {
+      "type": "short_circuit",
+      "reason": "custom-intercept",
+      "output": "Replacement stdout shown to the model",
+      "stderr": "Optional replacement stderr"
+    }
+  }
+  ```
+  - The target binary is **not** executed.
+  - When `action.reason` is non-empty, a best-effort workspace git commit `tool call (<command>: short-circuited: <reason>)` is recorded for causal auditability.
+  - `action.output` and `action.stderr` are formatted through `buildOutputBlocks` (`<STDOUT>` / `<STDERR>` tags, with automatic scratchpad redirection above 4,000 bytes or on binary data) and returned to the model as a **normal successful tool response (`err == nil`)**, so the model continues its turn with the substituted output rather than retrying a failed command.
+  - **First-wins chain termination**: Short-circuiting is an exclusive claim. The first hook in numeric order to emit an honored `short_circuit` action claims the call and breaks the chain immediately so subsequent hooks cannot double-dispatch the same command.
+
+### `end-of-turn`
+
+Fires when a turn reaches its end in `GenerateTurnStream` (both normal turn completion after `checkPostTurnCompaction` and early-exit paths) as well as single-turn `GenerateTurn` / `runTurnOnce`.
+
+#### Stdin Payload (`EndOfTurnPayload`)
+```json
+{
+  "agent_id": "coordinator",
+  "session_path": "/ws/coordinator/session.jsonl",
+  "stop_reason": "completed",
+  "duration_ms": 1420,
+  "continuation_count": 0,
+  "max_continuations": 50,
+  "can_continue": true
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `agent_id` | `string` | ID of the agent whose turn just ended. |
+| `session_path` | `string` | Absolute path to `<agent_id>/session.jsonl`. |
+| `stop_reason` | `string` | How the turn ended: `"completed"` (`TurnStopCompleted`), `"max_tool_turns"` (`TurnStopMaxToolTurns`), `"failure_breaker"` (`TurnStopFailureBreaker`), `"compacted_bail"` (`TurnStopCompactedBail`), `"deferred_image"` (`TurnStopDeferredImage`), or early-exit reasons (`"aborted"`, `"context_error"`, `"max_iterations"`, `"empty_response"`). |
+| `duration_ms` | `int64` | Elapsed wall-clock duration of the turn iteration in milliseconds. |
+| `continuation_count` | `int` | Number of general D88 auto-continuations already consumed in this stream call. |
+| `max_continuations` | `int` | Effective D88 general `MaxAutoContinuations` ceiling for this turn (`50` default, `5` when `AGENT2AGENT` is set, `0` when auto-continuation is disabled, or `runtime.json`'s `maxAutoContinuations`). |
+| `can_continue` | `bool` | Whether `wackypub` will honor a `continue` action returned from this invocation. |
+
+#### The `can_continue` Contract (Notify-Only vs. Continuation-Capable Paths)
+`end-of-turn` fires on **all** terminal turn paths, but only the normal turn-completion path in `GenerateTurnStream` (when auto-continuation is enabled, `continuation_count < max_continuations`, and neither mid-turn compaction bail nor deferred-image injection has already claimed the continuation slot) sets `"can_continue": true`. All other fire sites set `"can_continue": false` and discard any `continue` action as notify-only.
+
+> **Important for stateful hooks**: A hook that performs a one-time side effect in exchange for a continuation turn (such as marking an external event or background job as delivered) **must** check `can_continue == true` before committing that state change. Otherwise the side effect will be consumed on a notify-only path whose continuation request is dropped.
+
+#### Requesting a Continuation & D88 Budget Bound
+- **Decline (let turn end)**: Print `{}` on stdout and exit `0`.
+- **Request continuation**: When `can_continue` is `true`, return:
+  ```json
+  {
+    "action": {
+      "type": "continue",
+      "reason": "pending-work",
+      "output": "Context explaining why the turn is continuing."
+    }
+  }
+  ```
+- **Multi-hook any-wins aggregation**: All `end-of-turn` hooks run in ascending numeric order (`continue` does not truncate the chain). If one or more hooks emit `type: "continue"`, a continuation turn is requested:
+  - Non-empty `reason` fields are joined in execution order with `"; "` (defaulting to `"end-of-turn-hook"` when all are empty).
+  - Non-empty `output` fields are joined in execution order with `"\n"` (defaulting to `"Continuation requested by end-of-turn hook (<reason>)."` when `reason` was provided, or `"Continuation requested by end-of-turn hook."`).
+- **Sentinel persistence**: The harness appends a user turn `<CONTINUATION reason="<reason>"><output></CONTINUATION>` to `session.jsonl` with workspace git commit label `user (end-of-turn continuation)` and starts the next turn iteration under the same session lock.
+- **Hard D88 `MaxAutoContinuations` bound**: Hook-requested continuations draw from D88's existing general `maxAutoContinuations` budget alongside compaction-bail continuations (never a separate or unbounded loop). Even if a broken hook ignores `can_continue: false` and emits `"continue"` on every invocation, `handleContinuationOrCompaction` enforces `continuationCount < maxContinuations` and terminates the stream once the budget is reached.
+
+---
+
+## 7. Session Compaction Mechanics
 
 Compaction prevents conversation history from exceeding LLM context boundaries while preserving prefix caching.
 
@@ -354,7 +511,9 @@ WackyPub tracks real provider usage stats (`PromptTokenCount`) across generation
 
 ---
 
-## 7. Reasoning / Thinking Support
+<a id="7-reasoning--thinking-support"></a>
+
+## 8. Reasoning / Thinking Support
 
 Backends vary widely in how they expose and expect back a model's reasoning/chain-of-thought, and getting this wrong ranges from "wastes tokens" to "hard 400 error." This is handled by the OpenAI adapter (`pkg/agent/openai_model.go`, backed by the `colinrgodsey/adk-utils-go` fork — see [§4](#4-google-adk-integration-layer)) plus a few `runtime.json` knobs.
 
@@ -385,11 +544,13 @@ Some models (e.g. Claude via OpenRouter) don't emit reasoning by default — it 
 
 ### Manually stripping stale reasoning/thought signatures
 
-If an agent's `session.jsonl` already contains `reasoning_details` block metadata from a prior backend (e.g. it was run against `"model": "auto"` on OpenRouter and picked up an encrypted block), or a Gemini `ThoughtSignature` from before the agent was switched to a different provider, that stale signature is a landmine — see [`wackypub agent <agent_id> strip-signatures`](#8-cli-command-pipeline) below. It removes only the signature/block metadata; readable `Thought` text is left in place.
+If an agent's `session.jsonl` already contains `reasoning_details` block metadata from a prior backend (e.g. it was run against `"model": "auto"` on OpenRouter and picked up an encrypted block), or a Gemini `ThoughtSignature` from before the agent was switched to a different provider, that stale signature is a landmine — see [`wackypub agent <agent_id> strip-signatures`](#9-cli-command-pipeline) below. It removes only the signature/block metadata; readable `Thought` text is left in place.
 
 ---
 
-## 8. CLI Command Pipeline
+<a id="8-cli-command-pipeline"></a>
+
+## 9. CLI Command Pipeline
 
 ### Global Flags
 - `--ws <path>`: Specifies workspace directory. Unspecified walks up from CWD looking for `WACKYPUB_ROOT`.
@@ -527,7 +688,7 @@ wackypub trace <trace_id> [-n <steps>] [-v <0..4>]
 
 ---
 
-## 9. Session Locking
+## 10. Session Locking
 
 All SDK operations acquire an exclusive POSIX file lock (`flock`) on `<agent_id>/session.lock` before reading or writing session state.
 
@@ -539,7 +700,7 @@ All SDK operations acquire an exclusive POSIX file lock (`flock`) on `<agent_id>
 
 ---
 
-## 10. Programmatic Go SDK API (`pkg/agent`)
+## 11. Programmatic Go SDK API (`pkg/agent`)
 
 All agent functionality is exposed as a Go SDK (`agent.AgentSDK`) in `pkg/agent` for programmatic orchestration.
 

@@ -149,7 +149,7 @@ go build -o wackypub .
 
 ## Agent Folder Structure (`<ws_dir>/<agent_id>/`)
 
-Workspace and agent folder layout, setup steps, and git versioning are all covered in [`skills/wackypub-ws/SKILL.md`](skills/wackypub-ws/SKILL.md) - it's written to be agent-readable, but it's plain Markdown and just as readable by you.
+Workspace and agent folder layout, setup steps, and git versioning are all covered in [`skills/wackypub-ws/SKILL.md`](skills/wackypub-ws/SKILL.md) - it's written to be agent-readable, but it's plain Markdown and just as readable by you. Per-event lifecycle hook scripts live under `<ws_dir>/<agent_id>/hooks/<event>/<NN-name>` (see [`docs/agents.md#hooks`](docs/agents.md#hooks)).
 
 For a working `runtime.json` to copy, see [`examples/runtimes/`](examples/runtimes); for the full field list (including reasoning/thinking-related settings), see [`docs/agents.md`](docs/agents.md).
 
