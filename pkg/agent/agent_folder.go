@@ -313,12 +313,17 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	warnWorkspaceEventCommit(agentID, traceLabel, CommitWorkspaceEvent(wsDir, agentID, traceLabel))
 
 	if hookRes := runPreRunCommandHooks(execCtx, agentDir, toolName, absToolPath, cmdArgs, cmd.Env); hookRes != nil {
-		if hookRes.Action != nil && hookRes.Action.Type == HookActionShortCircuit {
-			output, buildErr := buildOutputBlocks(agentDir, []byte(hookRes.Action.Output), []byte(hookRes.Action.Stderr))
-			if buildErr != nil {
-				return "", warnings, buildErr
+		for _, act := range hookRes.Actions {
+			if act.Type == HookActionShortCircuit {
+				if reason := strings.TrimSpace(act.Reason); reason != "" {
+					commitEventBestEffort(wsDir, agentID, fmt.Sprintf("%s (%s: short-circuited: %s)", traceEventToolCall, toolName, reason))
+				}
+				output, buildErr := buildOutputBlocks(agentDir, []byte(act.Output), []byte(act.Stderr))
+				if buildErr != nil {
+					return "", warnings, buildErr
+				}
+				return output, warnings, nil
 			}
-			return output, warnings, nil
 		}
 		if len(hookRes.MutatedEnv) > 0 {
 			cmd.Env = childEnv(baseEnv, harnessEnv, dotEnv, args.Env, hookRes.MutatedEnv)
@@ -1150,23 +1155,28 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 
 	canContinue := !fa.DisableAutoContinuation && *continuationCount < maxContinuations
 	hookRes := fa.fireEndOfTurnHooks(ctx, stopReason, durationMs, *continuationCount, maxContinuations, canContinue)
-	if hookRes != nil && hookRes.Action != nil && hookRes.Action.Type == HookActionContinue {
-		if *continuationCount >= maxContinuations {
-			yield(fmt.Sprintf("\n\n[Auto-continuation budget exhausted: %d of %d used - stopping with incomplete status. Raise maxAutoContinuations in runtime.json to allow more.]", *continuationCount, maxContinuations), nil)
-			return false
-		}
+	if hookRes != nil {
+		if sentinelText, ok := buildEndOfTurnContinuationSentinel(hookRes.Actions); ok {
+			// Single-sited D88 budget enforcement for hook-requested continuations:
+			// EndOfTurnPayload.CanContinue is advisory for hooks, whereas this check is
+			// the hard guarantee that a hook returning HookActionContinue on every turn
+			// cannot loop past MaxAutoContinuations.
+			if *continuationCount >= maxContinuations {
+				yield(fmt.Sprintf("\n\n[Auto-continuation budget exhausted: %d of %d used - stopping with incomplete status. Raise maxAutoContinuations in runtime.json to allow more.]", *continuationCount, maxContinuations), nil)
+				return false
+			}
 
-		sentinelText := buildEndOfTurnContinuationSentinel(hookRes.Action)
-		sentinelTurn := genai.NewContentFromText(sentinelText, "user")
-		if err := persistTurnLoud(fa.AgentDir, wsDir, fa.AgentID, sentinelTurn, "user (end-of-turn continuation)"); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to record end-of-turn continuation sentinel for agent %s: %v\n", fa.AgentID, err)
-			yield("\n\n[Auto-continuation aborted: failed to record end-of-turn continuation sentinel - incomplete status.]", nil)
-			return false
-		}
+			sentinelTurn := genai.NewContentFromText(sentinelText, "user")
+			if err := persistTurnLoud(fa.AgentDir, wsDir, fa.AgentID, sentinelTurn, "user (end-of-turn continuation)"); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to record end-of-turn continuation sentinel for agent %s: %v\n", fa.AgentID, err)
+				yield("\n\n[Auto-continuation aborted: failed to record end-of-turn continuation sentinel - incomplete status.]", nil)
+				return false
+			}
 
-		*lastContinuationReason = ContinuationEndOfTurnHook
-		*continuationCount++
-		return true
+			*lastContinuationReason = ContinuationEndOfTurnHook
+			*continuationCount++
+			return true
+		}
 	}
 
 	return false

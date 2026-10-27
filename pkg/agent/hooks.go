@@ -97,6 +97,30 @@ func normalizeHookActionType(raw string) (string, bool) {
 	}
 }
 
+// defaultAllowedActionsForEvent returns the control-flow HookAction.Type directives
+// honored by the given hook event when HookOptions.AllowedActions is not explicitly set.
+// Passive/observe-only events return nil so no control-flow actions can claim or truncate
+// their hook chains.
+func defaultAllowedActionsForEvent(event string) []string {
+	switch event {
+	case EventPreRunCommand:
+		return []string{HookActionShortCircuit}
+	case EventEndOfTurn:
+		return []string{HookActionContinue}
+	default:
+		return nil
+	}
+}
+
+func isHookActionAllowed(normType string, allowed []string) bool {
+	for _, a := range allowed {
+		if n, ok := normalizeHookActionType(a); ok && n == normType {
+			return true
+		}
+	}
+	return false
+}
+
 // HookOutput defines the JSON schema emitted on stdout by a hook script.
 type HookOutput struct {
 	Env    map[string]any `json:"env,omitempty"`
@@ -111,6 +135,10 @@ type HookOptions struct {
 	// InitialEnv, when non-nil, is merged into the starting process environment of the
 	// hook chain (after os.Environ()) before the first hook script runs.
 	InitialEnv map[string]string
+	// AllowedActions, when non-nil, overrides defaultAllowedActionsForEvent(event) for
+	// this chain invocation. Any recognized HookAction.Type not in the honored set is
+	// ignored with a warning and never claims or truncates the chain.
+	AllowedActions []string
 }
 
 // HookChainResult contains the final altered text, mutated environment variables,
@@ -263,6 +291,10 @@ func RunHookChain(ctx context.Context, agentDir string, event string, initialTex
 	currentText := initialText
 	var winningAction *HookAction
 	var actions []HookAction
+	allowedActions := opt.AllowedActions
+	if allowedActions == nil {
+		allowedActions = defaultAllowedActionsForEvent(event)
+	}
 
 	for _, hookPath := range hookPaths {
 		cmdCtx, cancel := context.WithTimeout(ctx, hookTimeout)
@@ -349,6 +381,10 @@ func RunHookChain(ctx context.Context, agentDir string, event string, initialTex
 				emitWarning(fmt.Sprintf("Warning: hook %s produced unsupported action type %q", hookPath, out.Action.Type))
 				continue
 			}
+			if !isHookActionAllowed(normType, allowedActions) {
+				emitWarning(fmt.Sprintf("Warning: hook %s produced action type %q which is not honored by event %q", hookPath, normType, event))
+				continue
+			}
 			act := *out.Action
 			act.Type = normType
 			actions = append(actions, act)
@@ -371,8 +407,9 @@ func RunHookChain(ctx context.Context, agentDir string, event string, initialTex
 					}
 				}
 			}
-			// Short-circuiting is an exclusive claim: the first hook to short-circuit
-			// wins and terminates the chain so subsequent hooks cannot double-dispatch.
+			// Short-circuiting is an exclusive claim: the first hook to emit an honored
+			// short_circuit action wins and terminates the chain so subsequent hooks
+			// cannot double-dispatch.
 			if normType == HookActionShortCircuit {
 				break
 			}
@@ -575,6 +612,16 @@ func runPreRunCommandHooks(ctx context.Context, agentDir, commandName, commandPa
 
 // EndOfTurnPayload is delivered as JSON text on stdin to every end-of-turn hook script
 // once a turn reaches its end.
+//
+// Contract note for continuation consumers: EventEndOfTurn fires on all terminal turn
+// paths, including aborted, disabled-continuation, failure-breaker, deferred-image, and
+// budget-exhausted paths where CanContinue is false. Those paths are notify-only and
+// discard any HookActionContinue emitted by the chain. Only the normal turn completion
+// path honors a continuation action (subject to the hard D88 MaxAutoContinuations gate
+// in handleContinuationOrCompaction). A hook that performs side effects in exchange for
+// a continuation (for example, marking a background completion as notified) MUST check
+// CanContinue == true before committing that state change, or the notification will be
+// consumed for a continuation turn that will be dropped.
 type EndOfTurnPayload struct {
 	AgentID           string `json:"agent_id"`
 	SessionPath       string `json:"session_path"`
@@ -582,7 +629,9 @@ type EndOfTurnPayload struct {
 	DurationMs        int64  `json:"duration_ms"`
 	ContinuationCount int    `json:"continuation_count"`
 	MaxContinuations  int    `json:"max_continuations"`
-	CanContinue       bool   `json:"can_continue"`
+	// CanContinue is advisory for hooks: when false, this end-of-turn invocation is
+	// notify-only and any HookActionContinue returned by the hook will be dropped.
+	CanContinue bool `json:"can_continue"`
 }
 
 // runEndOfTurnHooks executes the end-of-turn hook chain for agentDir when one or more
@@ -620,17 +669,36 @@ func runEndOfTurnHooks(ctx context.Context, agentDir string, payload EndOfTurnPa
 }
 
 // buildEndOfTurnContinuationSentinel formats the user sentinel turn persisted to
-// session.jsonl when an end-of-turn hook requests a continuation turn.
-func buildEndOfTurnContinuationSentinel(action *HookAction) string {
+// session.jsonl from the honored HookActionContinue directives in HookChainResult.Actions,
+// and reports whether any continuation action was present.
+func buildEndOfTurnContinuationSentinel(actions []HookAction) (string, bool) {
+	var reasons []string
+	var outputs []string
+	hasContinue := false
+	for _, a := range actions {
+		if a.Type != HookActionContinue {
+			continue
+		}
+		hasContinue = true
+		if r := strings.TrimSpace(a.Reason); r != "" {
+			reasons = append(reasons, r)
+		}
+		if o := strings.TrimSpace(a.Output); o != "" {
+			outputs = append(outputs, o)
+		}
+	}
+	if !hasContinue {
+		return "", false
+	}
 	reason := "end-of-turn-hook"
-	if action != nil && strings.TrimSpace(action.Reason) != "" {
-		reason = strings.TrimSpace(action.Reason)
+	if len(reasons) > 0 {
+		reason = strings.Join(reasons, "; ")
 	}
 	body := "Continuation requested by end-of-turn hook."
-	if action != nil && strings.TrimSpace(action.Output) != "" {
-		body = strings.TrimSpace(action.Output)
-	} else if action != nil && strings.TrimSpace(action.Reason) != "" {
+	if len(outputs) > 0 {
+		body = strings.Join(outputs, "\n")
+	} else if len(reasons) > 0 {
 		body = fmt.Sprintf("Continuation requested by end-of-turn hook (%s).", reason)
 	}
-	return fmt.Sprintf("<CONTINUATION reason=%q>%s</CONTINUATION>", reason, body)
+	return fmt.Sprintf("<CONTINUATION reason=%q>%s</CONTINUATION>", reason, body), true
 }

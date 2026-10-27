@@ -793,17 +793,17 @@ echo "corrupt json output"
 
 // 14. Test unified HookAction extension semantics in RunHookChain
 func TestHookActionExtensionSemantics(t *testing.T) {
-	t.Run("short_circuit first-wins and stops chain", func(t *testing.T) {
+	t.Run("short_circuit first-wins and stops chain on pre-run-command", func(t *testing.T) {
 		agentDir := t.TempDir()
-		writeHookScript(t, agentDir, "00-first", `#!/bin/sh
+		writeEventHookScript(t, agentDir, EventPreRunCommand, "00-first", `#!/bin/sh
 printf '{"action":{"type":"short_circuit","output":"claimed-by-00","stderr":"warn-00","reason":"deferred"}}\n'
 `)
-		writeHookScript(t, agentDir, "01-second", `#!/bin/sh
+		writeEventHookScript(t, agentDir, EventPreRunCommand, "01-second", `#!/bin/sh
 echo "ran" > second_ran.marker
 printf '{"action":{"type":"short_circuit","output":"claimed-by-01"}}\n'
 `)
 
-		res, err := RunHookChain(context.Background(), agentDir, EventOnUserMessage, "payload")
+		res, err := RunHookChain(context.Background(), agentDir, EventPreRunCommand, "payload")
 		if err != nil {
 			t.Fatalf("RunHookChain failed: %v", err)
 		}
@@ -821,19 +821,19 @@ printf '{"action":{"type":"short_circuit","output":"claimed-by-01"}}\n'
 		}
 	})
 
-	t.Run("continue runs all hooks and composes reasons and outputs", func(t *testing.T) {
+	t.Run("continue runs all hooks and composes reasons and outputs on end-of-turn", func(t *testing.T) {
 		agentDir := t.TempDir()
-		writeHookScript(t, agentDir, "00-first", `#!/bin/sh
+		writeEventHookScript(t, agentDir, EventEndOfTurn, "00-first", `#!/bin/sh
 printf '{"action":{"type":"continue","reason":"reason-1","output":"msg-1"}}\n'
 `)
-		writeHookScript(t, agentDir, "01-decline", `#!/bin/sh
+		writeEventHookScript(t, agentDir, EventEndOfTurn, "01-decline", `#!/bin/sh
 printf '{}\n'
 `)
-		writeHookScript(t, agentDir, "02-third", `#!/bin/sh
+		writeEventHookScript(t, agentDir, EventEndOfTurn, "02-third", `#!/bin/sh
 printf '{"action":{"type":"continue","reason":"reason-2","output":"msg-2"}}\n'
 `)
 
-		res, err := RunHookChain(context.Background(), agentDir, EventOnUserMessage, "payload")
+		res, err := RunHookChain(context.Background(), agentDir, EventEndOfTurn, "payload")
 		if err != nil {
 			t.Fatalf("RunHookChain failed: %v", err)
 		}
@@ -853,11 +853,11 @@ printf '{"action":{"type":"continue","reason":"reason-2","output":"msg-2"}}\n'
 
 	t.Run("unknown action type emits warning and degrades to nil Action", func(t *testing.T) {
 		agentDir := t.TempDir()
-		writeHookScript(t, agentDir, "00-unknown", `#!/bin/sh
+		writeEventHookScript(t, agentDir, EventPreRunCommand, "00-unknown", `#!/bin/sh
 printf '{"action":{"type":"bogus_directive","output":"ignored"}}\n'
 `)
 
-		res, err := RunHookChain(context.Background(), agentDir, EventOnUserMessage, "payload")
+		res, err := RunHookChain(context.Background(), agentDir, EventPreRunCommand, "payload")
 		if err != nil {
 			t.Fatalf("RunHookChain failed: %v", err)
 		}
@@ -866,6 +866,142 @@ printf '{"action":{"type":"bogus_directive","output":"ignored"}}\n'
 		}
 		if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "unsupported action type") {
 			t.Errorf("expected unsupported action type warning, got %v", res.Warnings)
+		}
+	})
+}
+
+// TestPhoebeProbeActionPrecedence pins P2 event-aware action coherence:
+//   - A valid-but-unhonored action emitted by an earlier hook must emit a warning,
+//     be ignored (never setting Action or appending to Actions), and NEVER break/truncate
+//     the chain.
+//   - Only an action in the event's honored action set may claim or break the chain.
+func TestPhoebeProbeActionPrecedence(t *testing.T) {
+	t.Run("pre-run-command: 00=continue(unhonored) 01=short_circuit(CLAIMED) 02=witness", func(t *testing.T) {
+		wsDir := t.TempDir()
+		agentDir := filepath.Join(wsDir, "probe_pre")
+		toolsDir := filepath.Join(agentDir, "tools")
+		if err := os.MkdirAll(toolsDir, 0755); err != nil {
+			t.Fatalf("mkdir tools: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(toolsDir, "real_cmd"), []byte("#!/bin/sh\necho 'real_ran' > real_ran.marker\n"), 0755); err != nil {
+			t.Fatalf("write tool: %v", err)
+		}
+
+		writeEventHookScript(t, agentDir, EventPreRunCommand, "00-irrelevant-continue", `#!/bin/sh
+cat > /dev/null
+printf '{"action":{"type":"continue","reason":"wrong-event"}}\n'
+`)
+		writeEventHookScript(t, agentDir, EventPreRunCommand, "01-valid-claim", `#!/bin/sh
+cat > /dev/null
+printf '{"action":{"type":"short_circuit","output":"CLAIMED","reason":"auto-deferred"}}\n'
+`)
+		writeEventHookScript(t, agentDir, EventPreRunCommand, "02-witness", `#!/bin/sh
+cat > /dev/null
+touch witness.marker
+printf '{}\n'
+`)
+
+		res, err := RunHookChain(context.Background(), agentDir, EventPreRunCommand, "{}")
+		if err != nil {
+			t.Fatalf("RunHookChain: %v", err)
+		}
+		if res.Action == nil || res.Action.Type != HookActionShortCircuit || res.Action.Output != "CLAIMED" {
+			t.Fatalf("expected winner=short_circuit(CLAIMED), got %+v", res.Action)
+		}
+		if len(res.Actions) != 1 || res.Actions[0].Type != HookActionShortCircuit {
+			t.Fatalf("expected Actions=[short_circuit], got %+v", res.Actions)
+		}
+		if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "not honored by event") {
+			t.Errorf("expected unhonored action warning for 00-irrelevant-continue, got %v", res.Warnings)
+		}
+		// 01 legitimately claimed short_circuit, so 02 must not run.
+		if _, err := os.Stat(filepath.Join(agentDir, "witness.marker")); !os.IsNotExist(err) {
+			t.Errorf("expected 02-witness not to run after honored 01-valid-claim short-circuited")
+		}
+
+		// End-to-end via executeRunCommand: 00's unhonored continue must not prevent 01 from claiming the command.
+		discovered, _, _, err := DiscoverAgentToolsMap(agentDir)
+		if err != nil {
+			t.Fatalf("DiscoverAgentToolsMap: %v", err)
+		}
+		cmdRes, err := executeRunCommand(context.Background(), agentDir, discovered, nil, 5, RunCommandArgs{
+			Command: "real_cmd",
+			Args:    []string{},
+		})
+		if err != nil {
+			t.Fatalf("executeRunCommand: %v", err)
+		}
+		if cmdRes.Output != "<STDOUT>\nCLAIMED\n</STDOUT>" {
+			t.Errorf("cmdRes.Output = %q, want '<STDOUT>\\nCLAIMED\\n</STDOUT>'", cmdRes.Output)
+		}
+		if _, err := os.Stat(filepath.Join(agentDir, "real_ran.marker")); !os.IsNotExist(err) {
+			t.Errorf("real command executed despite 01-valid-claim short-circuiting")
+		}
+	})
+
+	t.Run("end-of-turn: 00=short_circuit(unhonored) 01=continue 02=witness", func(t *testing.T) {
+		agentDir := t.TempDir()
+
+		writeEventHookScript(t, agentDir, EventEndOfTurn, "00-irrelevant-short-circuit", `#!/bin/sh
+cat > /dev/null
+printf '{"action":{"type":"short_circuit","output":"wrong-event"}}\n'
+`)
+		writeEventHookScript(t, agentDir, EventEndOfTurn, "01-valid-continue", `#!/bin/sh
+cat > /dev/null
+printf '{"action":{"type":"continue","reason":"job-complete","output":"Job 7 finished."}}\n'
+`)
+		writeEventHookScript(t, agentDir, EventEndOfTurn, "02-witness", `#!/bin/sh
+cat > /dev/null
+touch witness.marker
+printf '{}\n'
+`)
+
+		res, err := RunHookChain(context.Background(), agentDir, EventEndOfTurn, "{}")
+		if err != nil {
+			t.Fatalf("RunHookChain: %v", err)
+		}
+		if res.Action == nil || res.Action.Type != HookActionContinue {
+			t.Fatalf("expected winner=continue, got %+v", res.Action)
+		}
+		if len(res.Actions) != 1 || res.Actions[0].Type != HookActionContinue {
+			t.Fatalf("expected Actions=[continue], got %+v", res.Actions)
+		}
+		if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "not honored by event") {
+			t.Errorf("expected unhonored action warning for 00-irrelevant-short-circuit, got %v", res.Warnings)
+		}
+		// Unhonored short_circuit in 00 must NOT break the chain: 02-witness must have run!
+		if _, err := os.Stat(filepath.Join(agentDir, "witness.marker")); err != nil {
+			t.Fatalf("expected 02-witness to run (unhonored short_circuit in 00 must not truncate chain): %v", err)
+		}
+	})
+
+	t.Run("passive event (on-user-message) ignores both short_circuit and continue without truncating chain", func(t *testing.T) {
+		agentDir := t.TempDir()
+		writeEventHookScript(t, agentDir, EventOnUserMessage, "00-try-short-circuit", `#!/bin/sh
+cat > /dev/null
+printf '{"text":"step-00","action":{"type":"short_circuit","output":"ignored"}}\n'
+`)
+		writeEventHookScript(t, agentDir, EventOnUserMessage, "01-witness", `#!/bin/sh
+cat > /dev/null
+touch witness_user_msg.marker
+printf '{"text":"step-01","action":{"type":"continue"}}\n'
+`)
+
+		res, err := RunHookChain(context.Background(), agentDir, EventOnUserMessage, "orig")
+		if err != nil {
+			t.Fatalf("RunHookChain: %v", err)
+		}
+		if res.Action != nil || len(res.Actions) != 0 {
+			t.Errorf("expected nil Action and empty Actions on passive event, got Action=%+v Actions=%+v", res.Action, res.Actions)
+		}
+		if res.Text != "step-01" {
+			t.Errorf("expected chain to complete and produce Text='step-01', got %q", res.Text)
+		}
+		if _, err := os.Stat(filepath.Join(agentDir, "witness_user_msg.marker")); err != nil {
+			t.Errorf("expected 01-witness to run on passive event: %v", err)
+		}
+		if len(res.Warnings) != 2 {
+			t.Errorf("expected 2 unhonored-action warnings, got %v", res.Warnings)
 		}
 	})
 }
