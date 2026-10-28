@@ -20,6 +20,7 @@ type rateStub struct {
 	bodies     []string
 	statuses   []int
 	retryAfter string
+	errorBody  string
 	serverURL  string
 }
 
@@ -51,7 +52,11 @@ func (s *rateStub) handler(t *testing.T) http.HandlerFunc {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
-			fmt.Fprint(w, `{"error":{"message":"Rate limit exceeded"}}`)
+			body := s.errorBody
+			if body == "" {
+				body = `{"error":{"message":"Rate limit exceeded"}}`
+			}
+			fmt.Fprint(w, body)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -76,7 +81,12 @@ func (s *rateStub) bodyAt(i int) string {
 
 func newStubServer(t *testing.T, statuses []int, retryAfter string) *rateStub {
 	t.Helper()
-	stub := &rateStub{statuses: statuses, retryAfter: retryAfter}
+	return newStubServerWithBody(t, statuses, retryAfter, "")
+}
+
+func newStubServerWithBody(t *testing.T, statuses []int, retryAfter, errorBody string) *rateStub {
+	t.Helper()
+	stub := &rateStub{statuses: statuses, retryAfter: retryAfter, errorBody: errorBody}
 	srv := httptest.NewServer(stub.handler(t))
 	t.Cleanup(srv.Close)
 	stub.serverURL = srv.URL
@@ -112,6 +122,14 @@ func (r *retryTransportRecorder) snapshot() []string {
 
 func policyWith(maxRetries int, ceiling time.Duration) retryPolicy {
 	return retryPolicy{maxRetries: maxRetries, baseDelay: time.Millisecond, maxRetryDelay: ceiling}
+}
+
+// failoverPolicy adds the magnitude threshold on top, since a hand-built policy leaves
+// it zero, meaning disabled.
+func failoverPolicy(maxRetries int, ceiling, threshold time.Duration) retryPolicy {
+	p := policyWith(maxRetries, ceiling)
+	p.failoverAfter = threshold
+	return p
 }
 
 // TestRetryTransportExhaustionSpendsBudgetAndKeepsTheError asserts the whole point of
@@ -354,5 +372,184 @@ func TestSleepContext(t *testing.T) {
 	cancel()
 	if sleepContext(ctx, time.Second) {
 		t.Error("a cancelled context must abort the wait")
+	}
+}
+
+// TestRetryTransportFailsOverOnHugeRetryAfter is the subscription-usage case: the
+// provider says come back in five hours, so waiting at this endpoint cannot save the
+// turn and the fallback chain must get it. One request, no sleep, an explanation.
+func TestRetryTransportFailsOverOnHugeRetryAfter(t *testing.T) {
+	stub := newStubServer(t, []int{http.StatusTooManyRequests}, "18000")
+	notice := &retryTransportRecorder{}
+	tr := &retryTransport{base: http.DefaultTransport, policy: failoverPolicy(2, 15*time.Second, time.Minute), notice: notice.add}
+
+	start := time.Now()
+	res, err := tr.RoundTrip(transportRequest(t, context.Background(), stub.serverURL, `{"model":"m"}`))
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	defer res.Body.Close()
+
+	if stub.count() != 1 {
+		t.Errorf("a five-hour wait must not be retried at this level, got %d requests", stub.count())
+	}
+	if elapsed > time.Second {
+		t.Errorf("fail-over must be immediate, slept %v", elapsed)
+	}
+	if res.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("the throttled response must still be surfaced, got %s", res.Status)
+	}
+	lines := notice.snapshot()
+	if len(lines) != 1 || !strings.Contains(lines[0], "failing over") {
+		t.Errorf("expected a fail-over notice so the operator knows why the level gave up, got %v", lines)
+	}
+}
+
+// TestRetryTransportComparesTheRequestedWaitNotTheClampedWait pins the subtlety that
+// makes the threshold work: the decision looks at what the provider asked for, never at
+// what this transport would sleep after the ceiling. A five-hour ask clamped to fifteen
+// seconds still fails over, and a thirty-second ask clamped to one millisecond still
+// retries, because thirty seconds is under the threshold.
+func TestRetryTransportComparesTheRequestedWaitNotTheClampedWait(t *testing.T) {
+	clampedButHuge := newStubServer(t, []int{http.StatusTooManyRequests}, "18000")
+	tight := &retryTransport{base: http.DefaultTransport, policy: failoverPolicy(2, 15*time.Millisecond, time.Minute), notice: (&retryTransportRecorder{}).add}
+	res, err := tight.RoundTrip(transportRequest(t, context.Background(), clampedButHuge.serverURL, `{"model":"m"}`))
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	res.Body.Close()
+	if clampedButHuge.count() != 1 {
+		t.Errorf("18000s clamped to a 15ms ceiling must still fail over, got %d requests", clampedButHuge.count())
+	}
+
+	shortButClamped := newStubServer(t, []int{http.StatusTooManyRequests, http.StatusTooManyRequests, http.StatusOK}, "30")
+	loose := &retryTransport{base: http.DefaultTransport, policy: failoverPolicy(2, time.Millisecond, time.Minute), notice: (&retryTransportRecorder{}).add}
+	res2, err := loose.RoundTrip(transportRequest(t, context.Background(), shortButClamped.serverURL, `{"model":"m"}`))
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	res2.Body.Close()
+	if shortButClamped.count() != 3 {
+		t.Errorf("a 30s wait is under the 60s threshold and must retry to success, got %d requests", shortButClamped.count())
+	}
+}
+
+// TestRetryTransportFailoverThresholdBoundary fixes the comparison as strictly greater
+// than, so a provider that asks for exactly the threshold is still given a retry.
+func TestRetryTransportFailoverThresholdBoundary(t *testing.T) {
+	atThreshold := newStubServer(t, []int{http.StatusTooManyRequests, http.StatusOK}, "60")
+	tr := &retryTransport{base: http.DefaultTransport, policy: failoverPolicy(1, time.Millisecond, time.Minute), notice: (&retryTransportRecorder{}).add}
+	res, err := tr.RoundTrip(transportRequest(t, context.Background(), atThreshold.serverURL, `{"model":"m"}`))
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	res.Body.Close()
+	if atThreshold.count() != 2 {
+		t.Errorf("a wait equal to the threshold should retry once, got %d requests", atThreshold.count())
+	}
+
+	justOver := newStubServer(t, []int{http.StatusTooManyRequests}, "61")
+	tr2 := &retryTransport{base: http.DefaultTransport, policy: failoverPolicy(1, time.Millisecond, time.Minute), notice: (&retryTransportRecorder{}).add}
+	res2, err := tr2.RoundTrip(transportRequest(t, context.Background(), justOver.serverURL, `{"model":"m"}`))
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	res2.Body.Close()
+	if justOver.count() != 1 {
+		t.Errorf("a wait one second over the threshold must fail over, got %d requests", justOver.count())
+	}
+}
+
+// TestRetryTransportFailsOverOnQuotaWithoutRetryAfter covers the case magnitude cannot
+// describe: a spent account that gives no wait hint at all. It also proves the body peek
+// restores the response, since the caller has to report the provider's own message.
+func TestRetryTransportFailsOverOnQuotaWithoutRetryAfter(t *testing.T) {
+	quota := `{"error":{"message":"You exceeded your current quota, please check your plan and billing details","type":"insufficient_quota"}}`
+	stub := newStubServerWithBody(t, []int{http.StatusTooManyRequests}, "", quota)
+	notice := &retryTransportRecorder{}
+	tr := &retryTransport{base: http.DefaultTransport, policy: failoverPolicy(3, time.Minute, time.Minute), notice: notice.add}
+
+	res, err := tr.RoundTrip(transportRequest(t, context.Background(), stub.serverURL, `{"model":"m"}`))
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	defer res.Body.Close()
+
+	if stub.count() != 1 {
+		t.Errorf("a spent quota must not be retried at this level, got %d requests", stub.count())
+	}
+	payload, readErr := io.ReadAll(res.Body)
+	if readErr != nil || string(payload) != quota {
+		t.Errorf("peeking the body must leave it exactly as it arrived, got %q err %v", payload, readErr)
+	}
+	lines := notice.snapshot()
+	if len(lines) != 1 || !(strings.Contains(lines[0], "exceeded your current quota") || strings.Contains(lines[0], "insufficient_quota")) {
+		t.Errorf("the notice should name the marker that ended the level, got %v", lines)
+	}
+}
+
+// TestRetryTransportLeavesAnUnexplainedRateLimitToTheBudget states the conservative
+// default out loud: no wait hint and no quota marker means retry, not guess a fail-over
+// from a bare status code.
+func TestRetryTransportLeavesAnUnexplainedRateLimitToTheBudget(t *testing.T) {
+	stub := newStubServer(t, []int{http.StatusTooManyRequests}, "")
+	tr := &retryTransport{base: http.DefaultTransport, policy: failoverPolicy(2, time.Millisecond, time.Minute), notice: (&retryTransportRecorder{}).add}
+
+	res, err := tr.RoundTrip(transportRequest(t, context.Background(), stub.serverURL, `{"model":"m"}`))
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	res.Body.Close()
+	if stub.count() != 3 {
+		t.Errorf("a 429 with no wait and no quota marker should spend the retry budget, got %d requests", stub.count())
+	}
+}
+
+func TestRetryPolicyFromConfigFailoverThreshold(t *testing.T) {
+	if got := retryPolicyFromConfig(nil, nil, nil).failoverAfter; got != DefaultRetryAfterFailover {
+		t.Errorf("unset threshold should keep the default, got %v", got)
+	}
+
+	halfMinute := 30
+	if got := retryPolicyFromConfig(nil, nil, &halfMinute).failoverAfter; got != 30*time.Second {
+		t.Errorf("explicit threshold ignored, got %v", got)
+	}
+
+	off := 0
+	if got := retryPolicyFromConfig(nil, nil, &off).failoverAfter; got != 0 {
+		t.Errorf("0 must disable magnitude fail-over, got %v", got)
+	}
+
+	broken := -1
+	warned := captureStderr(func() {
+		if got := retryPolicyFromConfig(nil, nil, &broken).failoverAfter; got != 0 {
+			t.Errorf("a negative threshold must disable rather than fail over on everything, got %v", got)
+		}
+	})
+	if !strings.Contains(warned, "retryAfterFailoverSeconds -1") {
+		t.Errorf("a nonsense threshold must announce itself, got %q", warned)
+	}
+}
+
+// TestFailOverSurfacesAnErrorTheFallbackChainQualifies bridges the two layers this
+// finding is about: giving up on the level has to produce an error the chain accepts, or
+// a fast fail-over would just be a fast failure.
+func TestFailOverSurfacesAnErrorTheFallbackChainQualifies(t *testing.T) {
+	stub := newStubServer(t, []int{http.StatusTooManyRequests}, "18000")
+	tr := &retryTransport{base: http.DefaultTransport, policy: failoverPolicy(2, 15*time.Second, time.Minute), notice: (&retryTransportRecorder{}).add}
+
+	res, err := tr.RoundTrip(transportRequest(t, context.Background(), stub.serverURL, `{"model":"m"}`))
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	defer res.Body.Close()
+
+	surfaced := fmt.Errorf("POST %q: %s", stub.serverURL+"/chat/completions", res.Status)
+	if !IsQualifyingFallbackError(surfaced) {
+		t.Errorf("a failed-over rate limit must qualify for the next level, got %v", surfaced)
+	}
+	if IsQualifyingFallbackError(fmt.Errorf("POST %q: 401 Unauthorized", stub.serverURL)) {
+		t.Error("an auth failure must not qualify, or a bad key would silently spend the fallback chain too")
 	}
 }
