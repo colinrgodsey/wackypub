@@ -44,12 +44,21 @@ var bundledDefaultCompactMDHybrid string
 //go:embed examples/runtimes/openrouter-auto.json
 var bundledDefaultRuntimeJSON string
 
-func main() {
+// applyBundledDefaults pushes the bytes embedded at compile time from examples/ into the
+// pkg/agent variables that read them as their no-config fallback. The embed lives here
+// because examples/ is outside pkg/agent's embed reach, and the vars live there because
+// LoadCompactConfig and LoadRuntimeConfig need them; this function is the whole wiring,
+// extracted from main so main_test.go can prove it instead of leaving it to be eyeballed.
+func applyBundledDefaults() {
 	cmd.BundledA2ASkill = bundledA2ASkill
 	cmd.BundledWSSkill = bundledWSSkill
 	cmd.BundledScratchpadSkill = bundledScratchpadSkill
 	adkAgent.DefaultCompactMD = bundledDefaultCompactMD
 	adkAgent.DefaultCompactMDHybrid = bundledDefaultCompactMDHybrid
 	adkAgent.DefaultRuntimeJSON = bundledDefaultRuntimeJSON
+}
+
+func main() {
+	applyBundledDefaults()
 	cmd.Execute()
 }
