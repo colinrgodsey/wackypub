@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"google.golang.org/adk/v2/model"
@@ -600,5 +601,101 @@ func TestInspectBobMessages(t *testing.T) {
 				t.Errorf("Msg %d [tool] tool_call_id %q was not in last assistant tool_calls %v", idx, toolCallID, lastAssistantToolCallIDs)
 			}
 		}
+	}
+}
+
+// rateLimitModelStub scripts one status per request so a test can count exactly how
+// many attempts the configured policy is allowed to make through the real model client.
+func rateLimitModelStub(t *testing.T, statuses []int) (*httptest.Server, *int) {
+	t.Helper()
+	var mu sync.Mutex
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		n := requests
+		status := statuses[len(statuses)-1]
+		if n <= len(statuses) {
+			status = statuses[n-1]
+		}
+		mu.Unlock()
+
+		if status != http.StatusOK {
+			w.Header().Set("Retry-After", "0")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			io.WriteString(w, `{"error":{"message":"Rate limit exceeded"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &requests
+}
+
+// TestNewOpenAIModelRateLimitRecovery wires the real model client, so it proves the
+// retry transport is actually installed rather than only correct in isolation.
+func TestNewOpenAIModelRateLimitRecovery(t *testing.T) {
+	srv, requests := rateLimitModelStub(t, []int{
+		http.StatusTooManyRequests,
+		http.StatusTooManyRequests,
+		http.StatusOK,
+	})
+	maxRetries := 2
+	m := NewOpenAIModel(&RuntimeConfig{Model: "test-model", Endpoint: srv.URL, APIKey: "k", ContextWindow: 200000, MaxRetries: &maxRetries})
+	generateOnce(t, m, []*genai.Content{genai.NewContentFromText("hi", "user")})
+
+	if *requests != 3 {
+		t.Errorf("expected two throttled attempts then a success, got %d requests", *requests)
+	}
+}
+
+func TestNewOpenAIModelMaxRetriesZeroSurfacesRateLimit(t *testing.T) {
+	srv, requests := rateLimitModelStub(t, []int{http.StatusTooManyRequests})
+	noRetries := 0
+	m := NewOpenAIModel(&RuntimeConfig{Model: "test-model", Endpoint: srv.URL, APIKey: "k", ContextWindow: 200000, MaxRetries: &noRetries})
+
+	req := &model.LLMRequest{Model: m.Name(), Contents: []*genai.Content{genai.NewContentFromText("hi", "user")}}
+	var seenErr error
+	for _, err := range m.GenerateContent(context.Background(), req, false) {
+		if err != nil {
+			seenErr = err
+		}
+	}
+	if seenErr == nil {
+		t.Fatal("a 429 with retries disabled must surface as an error")
+	}
+	if !strings.Contains(seenErr.Error(), "429") {
+		t.Errorf("the surfaced error must name the status, got %v", seenErr)
+	}
+	if *requests != 1 {
+		t.Errorf("maxRetries=0 must send exactly one request, got %d", *requests)
+	}
+}
+
+// TestNewOpenAIModelEmptyChoicesIsAnError covers the panic the card was opened for:
+// a 200 response carrying no choices used to index Choices[0] and take the process down.
+func TestNewOpenAIModelEmptyChoicesIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"chatcmpl-empty","choices":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	m := NewOpenAIModel(&RuntimeConfig{Model: "test-model", Endpoint: srv.URL, APIKey: "k", ContextWindow: 200000})
+	req := &model.LLMRequest{Model: m.Name(), Contents: []*genai.Content{genai.NewContentFromText("hi", "user")}}
+
+	var seenErr error
+	for _, err := range m.GenerateContent(context.Background(), req, false) {
+		if err != nil {
+			seenErr = err
+		}
+	}
+	if seenErr == nil {
+		t.Fatal("an empty-choices response must be an error, not a silent empty turn")
+	}
+	if !strings.Contains(strings.ToLower(seenErr.Error()), "choice") {
+		t.Errorf("the error should say what was missing, got %v", seenErr)
 	}
 }

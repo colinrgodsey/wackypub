@@ -199,7 +199,14 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // policy ceiling, which is the whole point of the ceiling - a provider asking for ten
 // minutes must not be able to park a turn for ten minutes.
 func (t *retryTransport) delayFor(resp *http.Response, attempt int) time.Duration {
-	delay := time.Duration(float64(t.policy.baseDelay) * float64(int64(1)<<uint(attempt)))
+	// The doubling saturates long before any sane ceiling, so the exponent is capped
+	// rather than shifted raw: a 64-bit shift at 64 or more yields zero, which would turn
+	// a generous maxRetries into a tight hammering loop against a throttling provider.
+	shift := attempt
+	if shift > 20 {
+		shift = 20
+	}
+	delay := time.Duration(float64(t.policy.baseDelay) * float64(int64(1)<<uint(shift)))
 	if raw := resp.Header.Get("Retry-After"); raw != "" {
 		if secs, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && secs >= 0 {
 			delay = time.Duration(secs) * time.Second
