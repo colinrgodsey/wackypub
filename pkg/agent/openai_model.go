@@ -110,7 +110,7 @@ func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
 	// decide how a rate limit is absorbed. See retry_transport.go for the policy.
 	client := &http.Client{
 		Timeout:   time.Duration(timeoutSec) * time.Second,
-		Transport: newRetryTransport(http.DefaultTransport, retryPolicyFromConfig(runtimeCfg.MaxRetries, runtimeCfg.MaxRetryDelaySeconds)),
+		Transport: newRetryTransport(http.DefaultTransport, retryPolicyFromConfig(runtimeCfg.MaxRetries, runtimeCfg.MaxRetryDelaySeconds, runtimeCfg.RetryAfterFailoverSeconds)),
 	}
 
 	return adkopenai.New(adkopenai.Config{

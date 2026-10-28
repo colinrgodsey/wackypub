@@ -51,6 +51,12 @@ type RuntimeConfig struct {
 	// answers 429 with Retry-After: 300 parks a turn for five minutes per retry. Unset
 	// keeps DefaultModelRetryDelayCeiling; 0 retries without sleeping.
 	MaxRetryDelaySeconds *int `json:"maxRetryDelaySeconds,omitempty"`
+	// RetryAfterFailoverSeconds is the server-requested wait above which a level gives
+	// up at once so the fallback chain takes over, rather than retrying an endpoint
+	// whose usage window has run out. Unset keeps DefaultRetryAfterFailover (60s). 0
+	// disables magnitude fail-over and leaves only the bounded retry budget; a negative
+	// value is read as the same intent and warns.
+	RetryAfterFailoverSeconds *int `json:"retryAfterFailoverSeconds,omitempty"`
 
 	// TurnDeadlineSeconds bounds a single fallback level's stream via the turn watchdog:
 	// if the level's stream does not terminate within the bound, the level fails with a

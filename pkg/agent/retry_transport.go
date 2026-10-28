@@ -29,6 +29,18 @@ const (
 
 	defaultRetryBaseDelay = 500 * time.Millisecond
 
+	// DefaultRetryAfterFailover is the magnitude of a server-requested wait above which
+	// retrying the same level stops making sense. Transient load asks for seconds; a
+	// subscription or usage window asks for minutes to hours, and no amount of waiting at
+	// that endpoint will clear it before the turn is over. Above the threshold the level
+	// fails at once so the runtime fallback chain, which is a different endpoint, gets the
+	// turn.
+	DefaultRetryAfterFailover = 60 * time.Second
+
+	// hardStopPeekBytes bounds how much of a 429 body is inspected for a hard-stop
+	// marker. Error payloads here are small; the peek is restored, never consumed.
+	hardStopPeekBytes = 2048
+
 	// shouldRetryHeader is what the dependency reads to override its own retry
 	// decision. The transport stamps it false on whatever it hands back so the SDK
 	// does not add attempts on top of ours: total requests stay at maxRetries+1.
@@ -40,6 +52,10 @@ type retryPolicy struct {
 	maxRetries    int
 	baseDelay     time.Duration
 	maxRetryDelay time.Duration
+	// failoverAfter is the Retry-After magnitude that ends the level immediately.
+	// Zero disables magnitude fail-over, which keeps a hand-built policy retrying as
+	// it did before this knob existed.
+	failoverAfter time.Duration
 }
 
 // defaultRetryPolicy is what an agent gets with no runtime configuration: the
@@ -49,17 +65,18 @@ func defaultRetryPolicy() retryPolicy {
 		maxRetries:    DefaultModelMaxRetries,
 		baseDelay:     defaultRetryBaseDelay,
 		maxRetryDelay: DefaultModelRetryDelayCeiling,
+		failoverAfter: DefaultRetryAfterFailover,
 	}
 }
 
 // retryPolicyFromConfig resolves the two runtime knobs. A nil field keeps today's
 // value; a negative one is clamped to zero with a warning rather than being treated
 // as "retry forever", because the dangerous reading of a typo must be the safe one.
-func retryPolicyFromConfig(maxRetries, maxRetryDelaySeconds *int) retryPolicy {
+func retryPolicyFromConfig(maxRetries, maxRetryDelaySeconds, retryAfterFailoverSeconds *int) retryPolicy {
 	p := defaultRetryPolicy()
 	if maxRetries != nil {
 		if *maxRetries < 0 {
-			fmt.Fprintf(os.Stderr, "Warning: maxRetries %d is negative, using 0 (no retries).\\n", *maxRetries)
+			fmt.Fprintf(os.Stderr, "Warning: maxRetries %d is negative, using 0 (no retries).\n", *maxRetries)
 			p.maxRetries = 0
 		} else {
 			p.maxRetries = *maxRetries
@@ -67,13 +84,37 @@ func retryPolicyFromConfig(maxRetries, maxRetryDelaySeconds *int) retryPolicy {
 	}
 	if maxRetryDelaySeconds != nil {
 		if *maxRetryDelaySeconds < 0 {
-			fmt.Fprintf(os.Stderr, "Warning: maxRetryDelaySeconds %d is negative, using 0 (never sleep between retries).\\n", *maxRetryDelaySeconds)
+			fmt.Fprintf(os.Stderr, "Warning: maxRetryDelaySeconds %d is negative, using 0 (never sleep between retries).\n", *maxRetryDelaySeconds)
 			p.maxRetryDelay = 0
 		} else {
 			p.maxRetryDelay = time.Duration(*maxRetryDelaySeconds) * time.Second
 		}
 	}
+	if retryAfterFailoverSeconds != nil {
+		switch {
+		case *retryAfterFailoverSeconds < 0:
+			// There is no sane threshold below zero, so a negative value means the operator
+			// 'wants magnitude fail-over off', not that every 429 should end the level.
+			fmt.Fprintf(os.Stderr, "Warning: retryAfterFailoverSeconds %d is negative, disabling magnitude-based fail-over (retries stay bounded by maxRetries).\n", *retryAfterFailoverSeconds)
+			p.failoverAfter = 0
+		default:
+			p.failoverAfter = time.Duration(*retryAfterFailoverSeconds) * time.Second
+		}
+	}
 	return p
+}
+
+// hardStopMarkers are provider messages where waiting at the same endpoint cannot
+// help, because the condition is an account state rather than a load spike. The clearest
+// case is the one a Retry-After cannot describe: a quota that is spent until a billing
+// period rolls over. Matched case-insensitively against the head of a 429 body.
+var hardStopMarkers = []string{
+	"insufficient_quota",
+	"insufficient quota",
+	"exceeded your current quota",
+	"quota exceeded",
+	"credit balance",
+	"usage limit reached",
 }
 
 // retryTransport is the rate-limit recovery layer for OpenAI-compatible endpoints.
@@ -157,6 +198,10 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if !isRetryableStatus(resp.StatusCode) {
 			break
 		}
+		if reason, ok := t.failoverSignal(resp); ok {
+			t.notice(fmt.Sprintf("%s %s returned %s: %s.", req.Method, req.URL.Path, resp.Status, reason))
+			break
+		}
 		if attempt >= t.policy.maxRetries {
 			waitedLabel := "no wait"
 			if waited > 0 {
@@ -194,6 +239,71 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
+// retryAfterDelay reports the wait the server asked for, in both the numeric and the
+// HTTP-date form, and whether it asked at all.
+func retryAfterDelay(resp *http.Response) (time.Duration, bool) {
+	raw := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if raw == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(raw); err == nil && secs >= 0 {
+		return time.Duration(secs) * time.Second, true
+	}
+	if when, err := http.ParseTime(raw); err == nil {
+		return time.Until(when), true
+	}
+	return 0, false
+}
+
+// hardStopMarker looks for a provider message that no wait at this level can clear.
+// The body it peeks is restored, because the caller above the transport still has to
+// report the provider's own error text verbatim.
+func hardStopMarker(resp *http.Response) string {
+	if resp == nil || resp.Body == nil {
+		return ""
+	}
+	head := make([]byte, hardStopPeekBytes)
+	n, _ := io.ReadFull(resp.Body, head)
+	peeked := head[:n]
+	resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peeked), resp.Body))
+	lowered := strings.ToLower(string(peeked))
+	for _, marker := range hardStopMarkers {
+		if strings.Contains(lowered, marker) {
+			return marker
+		}
+	}
+	return ""
+}
+
+// failoverSignal decides whether this throttled response should end the level at once
+// rather than being retried in place. Two signals, in order of confidence:
+//
+//  1. The wait the server asked for. The comparison uses the value the provider
+//     requested, NOT the value this transport would sleep after the ceiling, because a
+//     five-hour request clamped to a fifteen-second ceiling would otherwise look small
+//     enough to retry - which is exactly the case that must fail over.
+//  2. A quota-shaped error body, which catches a spent account that sent no
+//     Retry-After at all.
+//
+// A 429 with neither signal is left to the retry budget: with no stated wait there is
+// no evidence the condition is long-lived, and a bounded retry is cheap.
+func (t *retryTransport) failoverSignal(resp *http.Response) (string, bool) {
+	if resp == nil {
+		return "", false
+	}
+	if t.policy.failoverAfter > 0 {
+		if requested, ok := retryAfterDelay(resp); ok && requested > t.policy.failoverAfter {
+			return fmt.Sprintf("the provider asked us to wait %s at this level, which reads as a usage window rather than a load blip - failing over instead of waiting", requested), true
+		}
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if marker := hardStopMarker(resp); marker != "" {
+			return fmt.Sprintf("the provider reports %q, which waiting at this level cannot clear - failing over", marker), true
+		}
+	}
+	return "", false
+}
+
 // delayFor picks the wait: the server's Retry-After when it gave one and it is in the
 // future, otherwise exponential doubling from the base. Both are clamped by the
 // policy ceiling, which is the whole point of the ceiling - a provider asking for ten
@@ -207,14 +317,10 @@ func (t *retryTransport) delayFor(resp *http.Response, attempt int) time.Duratio
 		shift = 20
 	}
 	delay := time.Duration(float64(t.policy.baseDelay) * float64(int64(1)<<uint(shift)))
-	if raw := resp.Header.Get("Retry-After"); raw != "" {
-		if secs, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && secs >= 0 {
-			delay = time.Duration(secs) * time.Second
-		} else if when, err := http.ParseTime(raw); err == nil {
-			if until := time.Until(when); until > delay {
-				delay = until
-			}
-		}
+	if requested, ok := retryAfterDelay(resp); ok {
+		// The server was asked, so the server is obeyed, unjittered, including a date form
+		// that lands sooner than the doubling would.
+		delay = requested
 	}
 	if delay > t.policy.maxRetryDelay {
 		delay = t.policy.maxRetryDelay

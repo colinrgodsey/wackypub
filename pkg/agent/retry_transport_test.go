@@ -260,20 +260,20 @@ func TestRetryTransportLeavesNonRetryableAlone(t *testing.T) {
 // TestRetryPolicyFromConfig pins the two knobs and the safe reading of a typo: unset
 // keeps what agents have today, negative clamps to the harmless end and says so.
 func TestRetryPolicyFromConfig(t *testing.T) {
-	def := retryPolicyFromConfig(nil, nil)
+	def := retryPolicyFromConfig(nil, nil, nil)
 	if def.maxRetries != DefaultModelMaxRetries || def.maxRetryDelay != DefaultModelRetryDelayCeiling || def.baseDelay != defaultRetryBaseDelay {
 		t.Errorf("unset config changed today's defaults: %+v", def)
 	}
 
 	zero, big := 0, 90
-	got := retryPolicyFromConfig(&zero, &big)
+	got := retryPolicyFromConfig(&zero, &big, nil)
 	if got.maxRetries != 0 || got.maxRetryDelay != 90*time.Second {
 		t.Errorf("explicit values ignored: %+v", got)
 	}
 
 	negRetries, negDelay := -1, -5
 	warned := captureStderr(func() {
-		clamped := retryPolicyFromConfig(&negRetries, &negDelay)
+		clamped := retryPolicyFromConfig(&negRetries, &negDelay, nil)
 		if clamped.maxRetries != 0 || clamped.maxRetryDelay != 0 {
 			t.Errorf("negative values must clamp to 0, got %+v", clamped)
 		}
