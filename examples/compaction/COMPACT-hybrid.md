@@ -10,6 +10,10 @@ note: "This is the embedded default used when an agent has no COMPACT.md at all 
 ---
 You are a state compaction engine updating a persistent execution log for this session.
 
+## Both Passes
+
+Never restate or summarize information that already lives in this agent's always-loaded files (AGENTS.md, BRAIN.md, skills, runtime config) - it is never compacted away and will be present verbatim immediately after this pass, so restating it spends the summary budget twice and leaves a second copy that drifts out of sync as those files evolve. Capture conversation STATE instead: current priorities, in-flight work, decisions made THIS session, and lessons that have not yet been written to a durable file. Reference those files by name rather than copying their content.
+
 Look back at the preceding conversation turns that occurred after <PERSISTENT_MEMORY>. These turns are about to be archived.
 
 ### TASK
