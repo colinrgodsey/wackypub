@@ -91,13 +91,13 @@ func newRetryTransport(base http.RoundTripper, policy retryPolicy) *retryTranspo
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	return &retryTransport{base: base, policy: policy, notice: warnOnce}
+	return &retryTransport{base: base, policy: policy, notice: warnRateLimit}
 }
 
-// warnOnce writes a recovery notice in the repo's stderr Warning: format. It sits
-// behind a field so a test can capture what a transport decided instead of
-// intercepting the process's stderr.
-func warnOnce(msg string) {
+// warnRateLimit writes one recovery notice per call in the repo's stderr Warning:
+// format. It sits behind a field so a test can capture what a transport decided
+// instead of intercepting the process's stderr.
+func warnRateLimit(msg string) {
 	fmt.Fprintln(os.Stderr, "Warning: "+msg)
 }
 
