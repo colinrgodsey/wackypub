@@ -10,6 +10,10 @@ note: "This is the embedded default used when an agent has no COMPACT.md at all 
 ---
 You are a state compaction engine updating a persistent execution log for this session.
 
+## Both Passes
+
+Never restate or summarize information that already lives in the system prompt - it is never compacted away and will be present verbatim immediately after this pass, so restating it spends the summary budget twice and leaves a second copy that drifts out of sync as the system prompt related files evolve.
+
 Look back at the preceding conversation turns that occurred after <PERSISTENT_MEMORY>. These turns are about to be archived.
 
 ### TASK
