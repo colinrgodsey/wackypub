@@ -24,6 +24,22 @@ type RunCommandResult struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
+// ListCommandsArgs is intentionally empty: the command set is a property of the agent
+// directory, not of the call.
+type ListCommandsArgs struct{}
+
+type ListCommandsResult struct {
+	Commands []string `json:"commands"`
+}
+
+// listCommandsSnapshot returns the set run_command can execute, so the list and the
+// executor can never disagree.
+func listCommandsSnapshot(discoveredNames []string) ListCommandsResult {
+	commands := make([]string, len(discoveredNames))
+	copy(commands, discoveredNames)
+	return ListCommandsResult{Commands: commands}
+}
+
 // registerCommandTools builds the generic run_command tool covering all discovered executables under <agent_dir>/tools/.
 func registerCommandTools(agentDir string, a2aMeta *A2AMetadata, timeoutSeconds int, addTool func(tool.Tool)) error {
 	discoveredMap, discoveredNames, _, err := DiscoverAgentToolsMap(agentDir)
@@ -31,24 +47,15 @@ func registerCommandTools(agentDir string, a2aMeta *A2AMetadata, timeoutSeconds 
 		return fmt.Errorf("failed to discover agent tools: %w", err)
 	}
 
-	var cmdListStr string
-	if len(discoveredNames) > 0 {
-		cmdListStr = strings.Join(discoveredNames, ", ")
-	} else {
-		cmdListStr = "none"
-	}
-
-	runCmdDesc := fmt.Sprintf(
-		"Execute a command binary from tools/. Available commands: %s.\n\n"+
-			"Usage Guidance:\n"+
-			"- The working directory is always the agent's own directory - there's no way to cd elsewhere, since commands don't chain.\n"+
-			"- args entries are passed as literal argv elements, not shell-parsed - no quoting or escaping needed for spaces/special characters.\n"+
-			"- The agent's scratchpad may already contain the data it needs - check before running a command to regenerate something already available.\n"+
-			"- Large payloads: pass a scratchpad entry reference, not raw content. Stage the data with create_scratchpad, then put <SCRATCHPAD_DATA id=\"X\" /> in args or stdin and the server substitutes the entry bytes at execution time - no need to read or re-emit them.\n"+
-			"- Running a command with no arguments or --help is a legitimate way to learn what it is, how to use it, and what arguments it takes.\n"+
-			"- args entries and the stdin field both support inline <SCRATCHPAD_DATA id=\"X\" skip_lines=\"N\" num_lines=\"M\" json_escape=\"true\" /> macros (skip_lines/num_lines/json_escape optional) - this substitutes the referenced scratchpad entry's content directly, without you ever having to read or repaste it yourself. When json_escape=\"true\" is set, content is substituted as JSON-escaped text (quotes, newlines, and backslashes escaped per RFC 8259) without adding surrounding quotes. Large stdout/stderr from this same tool is automatically captured into a fresh scratchpad entry and returned as <SCRATCHPAD_DATA id=\"X\" size=\"BYTES\" lines=\"LINES\" />, so it can be piped straight into another command's args/stdin this way.",
-		cmdListStr,
-	)
+	runCmdDesc :=
+		"Execute a command binary from tools/. Use list_commands to discover the available commands.\n\n" +
+			"Usage Guidance:\n" +
+			"- The working directory is always the agent's own directory - there's no way to cd elsewhere, since commands don't chain.\n" +
+			"- args entries are passed as literal argv elements, not shell-parsed - no quoting or escaping needed for spaces/special characters.\n" +
+			"- The agent's scratchpad may already contain the data it needs - check before running a command to regenerate something already available.\n" +
+			"- Large payloads: pass a scratchpad entry reference, not raw content. Stage the data with create_scratchpad, then put <SCRATCHPAD_DATA id=\"X\" /> in args or stdin and the server substitutes the entry bytes at execution time - no need to read or re-emit them.\n" +
+			"- Running a command with no arguments or --help is a legitimate way to learn what it is, how to use it, and what arguments it takes.\n" +
+			"- args entries and the stdin field both support inline <SCRATCHPAD_DATA id=\"X\" skip_lines=\"N\" num_lines=\"M\" json_escape=\"true\" /> macros (skip_lines/num_lines/json_escape optional) - this substitutes the referenced scratchpad entry's content directly, without you ever having to read or repaste it yourself. When json_escape=\"true\" is set, content is substituted as JSON-escaped text (quotes, newlines, and backslashes escaped per RFC 8259) without adding surrounding quotes. Large stdout/stderr from this same tool is automatically captured into a fresh scratchpad entry and returned as <SCRATCHPAD_DATA id=\"X\" size=\"BYTES\" lines=\"LINES\" />, so it can be piped straight into another command's args/stdin this way."
 
 	// Explicitly construct InputSchema to enforce required fields and plain array type for 'args' (D56)
 	runCmdInputSchema := &jsonschema.Schema{
@@ -92,13 +99,25 @@ func registerCommandTools(agentDir string, a2aMeta *A2AMetadata, timeoutSeconds 
 		return fmt.Errorf("failed to create run_command tool: %w", err)
 	}
 	addTool(runCmdTool)
+
+	listCmdTool, err := functiontool.New(functiontool.Config{
+		Name:        "list_commands",
+		Description: "List the commands available to run_command: every executable discovered under tools/ for this agent. Takes no arguments. The returned set is authoritative for this agent; call it when unsure which commands exist.",
+		InputSchema: &jsonschema.Schema{Type: "object"},
+	}, func(ctx agent.Context, args ListCommandsArgs) (ListCommandsResult, error) {
+		return listCommandsSnapshot(discoveredNames), nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create list_commands tool: %w", err)
+	}
+	addTool(listCmdTool)
 	return nil
 }
 
 func executeRunCommand(ctx context.Context, agentDir string, discoveredMap map[string]string, a2aMeta *A2AMetadata, timeoutSeconds int, args RunCommandArgs) (RunCommandResult, error) {
 	toolPath, ok := discoveredMap[args.Command]
 	if !ok {
-		return RunCommandResult{}, fmt.Errorf("unknown command %q. See the tool description for the list of available commands", args.Command)
+		return RunCommandResult{}, fmt.Errorf("unknown command %q. Use list_commands to see the available commands", args.Command)
 	}
 
 	execArgs := ExecToolArgs{

@@ -151,12 +151,12 @@ func TestBuildFolderAgentTools(t *testing.T) {
 		t.Fatalf("BuildFolderAgentTools failed: %v", err)
 	}
 
-	// Should contain create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, diff_scratchpad, run_command, load_skill, load_skill_extra, list_skill_extra, run_skill_script (11 tools)
-	if len(toolMap) != 11 {
-		t.Errorf("expected 11 tools, got %d", len(toolMap))
+	// Should contain create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, diff_scratchpad, run_command, list_commands, load_skill, load_skill_extra, list_skill_extra, run_skill_script (12 tools)
+	if len(toolMap) != 12 {
+		t.Errorf("expected 12 tools, got %d", len(toolMap))
 	}
-	if len(decls) != 11 {
-		t.Errorf("expected 11 decls, got %d", len(decls))
+	if len(decls) != 12 {
+		t.Errorf("expected 12 decls, got %d", len(decls))
 	}
 	if _, ok := toolMap["create_scratchpad"]; !ok {
 		t.Errorf("missing create_scratchpad in toolMap")
@@ -177,11 +177,25 @@ func TestBuildFolderAgentTools(t *testing.T) {
 	}
 
 	decl := decler.Declaration()
-	if !strings.Contains(decl.Description, "Available commands: custom.sh.") {
-		t.Errorf("expected description to list custom.sh, got: %s", decl.Description)
+	if strings.Contains(decl.Description, "Available commands:") {
+		t.Errorf("run_command description must not enumerate commands, got: %s", decl.Description)
+	}
+	if !strings.Contains(decl.Description, "list_commands") {
+		t.Errorf("expected description to point at list_commands, got: %s", decl.Description)
 	}
 	if !strings.Contains(decl.Description, "Usage Guidance:") {
 		t.Errorf("expected description to contain Usage Guidance, got: %s", decl.Description)
+	}
+
+	listCmd, ok := toolMap["list_commands"]
+	if !ok {
+		t.Fatalf("missing list_commands in toolMap")
+	}
+	listDecl := listCmd.(interface {
+		Declaration() *genai.FunctionDeclaration
+	}).Declaration()
+	if listDecl.Description == "" {
+		t.Error("list_commands must carry a description")
 	}
 }
 
@@ -320,12 +334,12 @@ func TestRunCommandToolValidationAndExecution(t *testing.T) {
 		t.Fatalf("BuildFolderAgentTools failed: %v", err)
 	}
 
-	// 11 tools in toolMap: create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, diff_scratchpad, run_command, load_skill, load_skill_extra, list_skill_extra, run_skill_script
-	if len(toolMap) != 11 {
-		t.Fatalf("expected 11 tools in toolMap, got %d", len(toolMap))
+	// 12 tools in toolMap: create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad, diff_scratchpad, run_command, list_commands, load_skill, load_skill_extra, list_skill_extra, run_skill_script
+	if len(toolMap) != 12 {
+		t.Fatalf("expected 12 tools in toolMap, got %d", len(toolMap))
 	}
-	if len(decls) != 11 {
-		t.Fatalf("expected 11 decls, got %d", len(decls))
+	if len(decls) != 12 {
+		t.Fatalf("expected 12 decls, got %d", len(decls))
 	}
 
 	runCmdTool, ok := toolMap["run_command"]
@@ -333,13 +347,19 @@ func TestRunCommandToolValidationAndExecution(t *testing.T) {
 		t.Fatalf("missing run_command tool in toolMap")
 	}
 
-	// Verify command list in description is alphabetically sorted: echo.sh, greet.sh
+	// The description must point at list_commands instead of enumerating the set.
 	decler := runCmdTool.(interface {
 		Declaration() *genai.FunctionDeclaration
 	})
 	desc := decler.Declaration().Description
-	if !strings.Contains(desc, "Available commands: echo.sh, greet.sh.") {
-		t.Errorf("expected sorted commands list in description, got: %s", desc)
+	if strings.Contains(desc, "Available commands:") {
+		t.Errorf("run_command description must not enumerate commands, got: %s", desc)
+	}
+	if !strings.Contains(desc, "list_commands") {
+		t.Errorf("expected description to point at list_commands, got: %s", desc)
+	}
+	if _, ok := toolMap["list_commands"]; !ok {
+		t.Fatalf("missing list_commands in toolMap")
 	}
 
 	// Test executing valid command 'echo.sh' via FolderAgent and ADK runner
@@ -349,7 +369,7 @@ func TestRunCommandToolValidationAndExecution(t *testing.T) {
 	}
 	fa.Model = &runCmdTestModel{command: "echo.sh", args: []string{"world"}}
 
-	toolsList := []tool.Tool{toolMap["create_scratchpad"], toolMap["get_scratchpad"], toolMap["list_scratchpads"], runCmdTool}
+	toolsList := []tool.Tool{toolMap["create_scratchpad"], toolMap["get_scratchpad"], toolMap["list_scratchpads"], runCmdTool, toolMap["list_commands"]}
 	fa.ADKAgent, err = BuildADKAgent("bob", fa.SystemPrompt, 1, fa.Model, toolsList...)
 	if err != nil {
 		t.Fatalf("BuildADKAgent failed: %v", err)
@@ -678,6 +698,7 @@ func TestDeterministicToolOrderingD57(t *testing.T) {
 		"delete_scratchpad",
 		"diff_scratchpad",
 		"get_scratchpad",
+		"list_commands",
 		"list_scratchpads",
 		"list_skill_extra",
 		"load_skill",
@@ -1013,5 +1034,16 @@ func TestDiffScratchpadTool(t *testing.T) {
 	// typo for "nothing changed".
 	if _, err := diffScratchpadEntriesInDir(agentDir, filepath.Base(agentDir), "zzzz", changed.ID); err == nil {
 		t.Error("expected an unknown entry ID to be an error")
+	}
+}
+
+func TestListCommandsSnapshot(t *testing.T) {
+	got := listCommandsSnapshot([]string{"bash", "date"})
+	if len(got.Commands) != 2 || got.Commands[0] != "bash" || got.Commands[1] != "date" {
+		t.Fatalf("unexpected snapshot: %+v", got)
+	}
+	empty := listCommandsSnapshot(nil)
+	if empty.Commands == nil || len(empty.Commands) != 0 {
+		t.Errorf("nil input must yield an empty non-nil set: %+v", empty)
 	}
 }
