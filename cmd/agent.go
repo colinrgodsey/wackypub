@@ -1814,7 +1814,13 @@ func renderHumanEvent(ev *agentv1.SessionEvent, showThoughts, showToolCalls bool
 		tcu := e.ToolCallUpdate
 		head := tcu.GetResultHead()
 		if len(head) > 80 {
-			head = head[:77] + "..."
+			// Explicit, unambiguous clip marker (Harness2 ADOPT #3) rather than a bare
+			// "...": a reader must never mistake display truncation for literal content
+			// that happened to end in three dots. The count here is only the bytes this
+			// one display clip cut off GetResultHead() itself - bytes= on the same line
+			// is the separate, already-existing total for the full underlying result.
+			clipped := len(head) - 77
+			head = fmt.Sprintf("%s…(+%d bytes — render truncation)", head[:77], clipped)
 		}
 		fmt.Printf("[Tool #%d %s] %s (bytes=%d) [call_id=%s]\n", ev.GetSeq(), strings.ToUpper(tcu.GetStatus()), head, tcu.GetResultBytes(), tcu.GetCallId())
 

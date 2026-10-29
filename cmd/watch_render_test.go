@@ -121,6 +121,61 @@ func TestRenderHumanEvent_TurnLineFormat(t *testing.T) {
 	}
 }
 
+// TestRenderHumanEvent_ToolCallUpdateClipIsExplicit pins the Harness2 ADOPT #3 clip
+// marker: a long result head must never be shortened to a bare "..." that could be
+// mistaken for literal content, and the marker must name exactly how many bytes this
+// one display clip (not the full underlying result - that's the separate bytes=
+// field) cut off.
+func TestRenderHumanEvent_ToolCallUpdateClipIsExplicit(t *testing.T) {
+	longHead := strings.Repeat("x", 100)
+	tcu := &agentv1.SessionEvent_ToolCallUpdate{ToolCallUpdate: &agentv1.ToolCallUpdate{
+		Status:      "completed",
+		ResultHead:  longHead,
+		ResultBytes: 500,
+		CallId:      "abc123",
+	}}
+	ev := &agentv1.SessionEvent{Seq: 9, Event: tcu}
+
+	out, err := captureStdout(t, func() error {
+		renderHumanEvent(ev, false, false)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("renderHumanEvent: %v", err)
+	}
+	if strings.Contains(out, "xxx...") {
+		t.Errorf("expected no bare \"...\" truncation, got: %q", out)
+	}
+	want := "[Tool #9 COMPLETED] " + longHead[:77] + "…(+23 bytes — render truncation) (bytes=500) [call_id=abc123]\n"
+	if out != want {
+		t.Errorf("renderHumanEvent tool-call-update clip line:\ngot  %q\nwant %q", out, want)
+	}
+}
+
+// TestRenderHumanEvent_ToolCallUpdateShortHead_Unclipped proves the clip marker never
+// appears when the head is already within the 80-char display budget.
+func TestRenderHumanEvent_ToolCallUpdateShortHead_Unclipped(t *testing.T) {
+	shortHead := "all good"
+	tcu := &agentv1.SessionEvent_ToolCallUpdate{ToolCallUpdate: &agentv1.ToolCallUpdate{
+		Status:      "completed",
+		ResultHead:  shortHead,
+		ResultBytes: 8,
+		CallId:      "xyz",
+	}}
+	ev := &agentv1.SessionEvent{Seq: 1, Event: tcu}
+
+	out, err := captureStdout(t, func() error {
+		renderHumanEvent(ev, false, false)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("renderHumanEvent: %v", err)
+	}
+	if strings.Contains(out, "render truncation") {
+		t.Errorf("expected no clip marker for a short head, got: %q", out)
+	}
+}
+
 // TestWatchRender_PersistedThoughtRoundTrip is the end-to-end fidelity chain:
 // production append -> session.jsonl -> disk read event -> content_json -> render.
 // The thought bytes rendered are verified byte-faithful against the on-disk content_json.
