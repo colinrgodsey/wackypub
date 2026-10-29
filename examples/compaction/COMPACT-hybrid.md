@@ -33,6 +33,7 @@ The agent reading your addendum will not have access to the turns you're summari
 9. **MAINTAIN ORDER:** The new items you record should appear in the same order they appear in the session.
 10. **SKILL LOADS:** If a turn shows a skill being loaded (a `load_skill` tool call and its response), do NOT summarize or condense the skill's content. Note only that the skill was loaded and that its content was not preserved here (e.g., "* Loaded skill \"scratchpad-efficiency\" - content not preserved, reload via load_skill if still needed"). The full text is always available again on demand and isn't worth spending addendum space on.
 11. **NO TOOLS NEEDED:** This compaction process does not require you to use any tools.
+12. **STRUCTURED LESSONS:** When recording a durable lesson (something future turns should act on, not just a log of what happened), give it a shape that makes it checkable later rather than a bare assertion: the generalizable situation that should trigger it (**cue**), the specific action it implies (**lesson**), and what actually proved it (**evidence** - a command, a test, a measurement, a contrast, not just "it seemed to work"). If several changes landed together and you cannot isolate which one caused the result, tag the entry `(confounded)` rather than stating it as a verified causal rule - an unverified "fix" recorded with full confidence is worse than not recording it, since a later agent will trust it without re-checking.
 
 {{if .IsMajor}}
 ### PASS MODE: MAJOR - FULL CONSOLIDATION REWRITE
