@@ -433,6 +433,50 @@ func (s *AgentSDK) runTurnWithRuntimeFallback(
 	yield func(string, error) bool,
 ) {
 	var lastErr error
+	// Turn completion events fire exactly once, from this defer. This frame is the right
+	// place for it: the function returns before either caller reaches its own deferred
+	// session-lock release, so a consumer sees a session whose writes have all landed and
+	// which is still held exclusively, and no continuation can follow because the
+	// continuation loop lives inside the iterator consumed here. Firing from a generator
+	// defer instead would run after the turn context is cancelled and hand the chain a
+	// context that is already expired.
+	//
+	// attempted guards the pre-stream failures: a fallback backend that will not load, or a
+	// chain in which every backend was skipped as failed-until-reset, never ran a turn, so
+	// there is no terminal turn state to report. Aside turns are excluded by construction,
+	// because asideInternal drives no fallback walk.
+	turnStart := time.Now()
+	var (
+		attempted      bool
+		terminalErr    error
+		consumerStop   bool
+		sawBudgetLimit bool
+		servedLevel    *RuntimeConfig
+	)
+	defer func() {
+		if !attempted {
+			return
+		}
+		classify := terminalErr
+		if consumerStop {
+			classify = errTurnConsumerStopped
+		}
+		event, reason := turnCompletionReason(classify, ctx.Err(), sawBudgetLimit)
+		payload := TurnCompletionPayload{
+			AgentID:    agentID,
+			AgentDir:   primary.AgentDir,
+			Event:      event,
+			Reason:     reason,
+			DurationMs: time.Since(turnStart).Milliseconds(),
+		}
+		if servedLevel != nil {
+			payload.Backend = servedLevel.Endpoint + "/" + servedLevel.Model
+		}
+		if classify != nil {
+			payload.Error = classify.Error()
+		}
+		runTurnCompletionHook(ctx, primary.AgentDir, payload)
+	}()
 	for level, levelCfg := range chain {
 		// Skip a backend that a previous turn's 429 marked failed-until-reset: retrying it
 		// now would burn a whole turn on a quota that is provably still exhausted.
@@ -471,6 +515,8 @@ func (s *AgentSDK) runTurnWithRuntimeFallback(
 			chunk string
 			err   error
 		}
+		attempted = true
+		servedLevel = levelCfg
 		items := make(chan levelItem, 16)
 		go func() {
 			defer close(items)
@@ -493,6 +539,7 @@ func (s *AgentSDK) runTurnWithRuntimeFallback(
 				if !yieldedText && IsQualifyingFallbackError(lastErr) && level+1 < len(chain) {
 					descend = true
 				} else {
+					terminalErr = lastErr
 					yield("", lastErr)
 					return
 				}
@@ -536,6 +583,7 @@ func (s *AgentSDK) runTurnWithRuntimeFallback(
 								}
 							}
 						}
+						terminalErr = lastErr
 						yield("", lastErr)
 						return
 					}
@@ -544,7 +592,11 @@ func (s *AgentSDK) runTurnWithRuntimeFallback(
 					if it.chunk != "" {
 						yieldedText = true
 					}
+					if strings.Contains(it.chunk, autoContinuationBudgetExhaustedNotice) {
+						sawBudgetLimit = true
+					}
 					if !yield(it.chunk, nil) {
+						consumerStop = true
 						return
 					}
 				}

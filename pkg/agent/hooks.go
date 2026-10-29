@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -762,11 +763,18 @@ type TurnCompletionPayload struct {
 // testable without driving a whole turn: a client cancel outranks everything because the
 // operator asked for it, then a surfaced error, then the budget notice in the turn's own
 // text, then a clean completion.
+// errTurnConsumerStopped names a turn whose reader stopped taking chunks: the turn did not
+// fail on its own, but no consumer should read it as completed either.
+var errTurnConsumerStopped = errors.New("turn consumer stopped reading")
+
 func turnCompletionReason(turnErr error, ctxErr error, sawBudgetNotice bool) (event string, reason string) {
 	if ctxErr != nil {
 		return EventTurnFailed, TurnTerminalCancelled
 	}
 	if turnErr != nil {
+		if errors.Is(turnErr, errTurnConsumerStopped) {
+			return EventTurnFailed, TurnTerminalConsumerStopped
+		}
 		if strings.Contains(turnErr.Error(), "deadline exceeded") {
 			return EventTurnFailed, TurnTerminalWatchdog
 		}
