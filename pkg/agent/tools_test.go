@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -500,47 +501,140 @@ func TestExecuteTool_Timeout(t *testing.T) {
 	}
 }
 
-func TestExecuteTool_ProcessGroupKill(t *testing.T) {
-	agentDir := t.TempDir()
-	pidFile := filepath.Join(agentDir, "bg.pid")
-	toolPath := filepath.Join(agentDir, "bg_spawn.sh")
-
-	// Script spawns a background sleeper, writes its PID to bg.pid, and sleeps forever
-	script := fmt.Sprintf("#!/bin/sh\nsleep 30 &\necho $! > %s\nsleep 30\n", pidFile)
-	if err := os.WriteFile(toolPath, []byte(script), 0755); err != nil {
-		t.Fatalf("failed to write tool script: %v", err)
-	}
-
-	_, _, err := executeTool(context.Background(), agentDir, "bg_spawn.sh", toolPath, ExecToolArgs{}, nil, 1)
-	if err == nil {
-		t.Fatalf("expected timeout error, got nil")
-	}
-	if !strings.Contains(err.Error(), "tool bg_spawn.sh timed out after 1 seconds") {
-		t.Fatalf("unexpected error message: %v", err)
-	}
-
-	// Read background PID from pidFile
-	pidData, err := os.ReadFile(pidFile)
+// lockHeldElsewhere reports whether an exclusive flock on path is unavailable, which means
+// some other process still holds it. An exclusive flock is released by the kernel when the
+// holding process dies, whatever the reason, so this is a fact about that process rather
+// than a guess from its PID still being allocated.
+func lockHeldElsewhere(path string) bool {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		t.Fatalf("failed to read bg.pid: %v", err)
+		return false
 	}
-	bgPidStr := strings.TrimSpace(string(pidData))
-	bgPid, err := strconv.Atoi(bgPidStr)
-	if err != nil {
-		t.Fatalf("invalid PID in bg.pid: %q", bgPidStr)
+	defer func() { _ = f.Close() }()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return true
 	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return false
+}
 
-	// Give the OS a tiny slice to process the SIGKILL
-	time.Sleep(50 * time.Millisecond)
-
-	// Check if background process is alive via syscall.Kill(bgPid, 0)
-	if err := syscall.Kill(bgPid, 0); err == nil {
-		t.Errorf("background process %d is still alive, expected it to be killed with process group", bgPid)
-		// Clean up leaked process if test failed
-		_ = syscall.Kill(bgPid, syscall.SIGKILL)
+// awaitLockReleased blocks until the flock on path is free. The loop ends only when the kernel
+// hands the lock over, so there is no window in which it reports success while the holder
+// still runs; the deadline exists to turn a missing kill into a clear failure instead of a hang.
+func awaitLockReleased(t *testing.T, path, label string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for lockHeldElsewhere(path) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: its lock was still held 5s after the timeout kill, so the process survived it", label)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
+// TestExecuteTool_ProcessGroupKill proves the timeout kill takes the whole process group at
+// agent_folder.go:262, not just the tool's own shell: the tool backgrounds a holder, the
+// holder forks a descendant, and both must die together.
+//
+// Liveness is read through flock rather than through kill(pid, 0). The old check slept 50ms
+// and then asked whether the PID was still allocated, and an allocated PID is not the same
+// thing as a running process: a killed child stays in the table as a zombie until someone
+// reaps it, so kill(pid, 0) succeeds on a process the kill already got. Measured on colin-nuc
+// at 0176959: 17 of 20 runs failed with the box otherwise quiet, because the check overtook the
+// reaper, and 0 of 20 failed behind a CPU hog, where the check arrived late and the reaper had
+// already won - which is why the flake looks load-sensitive and is really a scheduling race in
+// either direction. Here the holder takes an exclusive lock for
+// the duration of its life, and the kernel drops it on death regardless of whether anyone
+// has reaped the corpse, so waiting for the lock is waiting for the real event.
+func TestExecuteTool_ProcessGroupKill(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("NOT COVERED IN THIS RUN: python3 is unavailable, so no process can hold a lock across its own death to prove the group kill")
+	}
+	agentDir := t.TempDir()
+	toolPath := filepath.Join(agentDir, "bg_spawn.sh")
+	holderScript := filepath.Join(agentDir, "holder.py")
+	pidFile := filepath.Join(agentDir, "bg.pid")
+	holderLock := filepath.Join(agentDir, "holder.lock")
+	descendantLock := filepath.Join(agentDir, "descendant.lock")
+
+	// The holder locks, forks a descendant that locks separately, records both PIDs for
+	// cleanup, then stays alive until the tool's timeout kills the group. fork keeps the
+	// child in the same process group, which is the property under test.
+	holder := []string{
+		"import fcntl, os, sys, time",
+		"holder_lock, descendant_lock, pidfile = sys.argv[1:4]",
+		"child = os.fork()",
+		"if child == 0:",
+		"    with open(descendant_lock, \"w\") as handle:",
+		"        fcntl.flock(handle, fcntl.LOCK_EX)",
+		"        time.sleep(600)",
+		"    os._exit(0)",
+		"with open(holder_lock, \"w\") as handle:",
+		"    fcntl.flock(handle, fcntl.LOCK_EX)",
+		"    with open(pidfile, \"w\") as out:",
+		"        out.write(\"%d %d\\n\" % (os.getpid(), child))",
+		"    time.sleep(600)",
+	}
+	if err := os.WriteFile(holderScript, []byte(strings.Join(holder, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("failed to write holder script: %v", err)
+	}
+	script := "#!/bin/sh\npython3 " + holderScript + " " + holderLock + " " + descendantLock + " " + pidFile + " >/dev/null 2>&1 &\nsleep 30\n"
+	if err := os.WriteFile(toolPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to write tool script: %v", err)
+	}
+	defer func() {
+		// Best-effort cleanup: by the end of a passing run both are already dead.
+		data, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		for _, field := range strings.Fields(string(data)) {
+			if pid, err := strconv.Atoi(field); err == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	}()
+
+	// Readiness first, and deliberately before the kill is allowed to happen: a holder that never
+	// started would leave both locks free and make the assertions below pass for the wrong
+	// reason, so the run must observe the locks actually held while the tool is still running.
+	type toolRun struct {
+		output string
+		err    error
+	}
+	done := make(chan toolRun, 1)
+	go func() {
+		out, _, err := executeTool(context.Background(), agentDir, "bg_spawn.sh", toolPath, ExecToolArgs{}, nil, 2)
+		done <- toolRun{output: out, err: err}
+	}()
+	ready := time.Now().Add(10 * time.Second)
+	for !lockHeldElsewhere(holderLock) || !lockHeldElsewhere(descendantLock) {
+		select {
+		case run := <-done:
+			t.Fatalf("the tool returned before its background tree took the locks, so nothing was ever running to kill. err=%v tool output=%q", run.err, run.output)
+		default:
+		}
+		if time.Now().After(ready) {
+			t.Fatal("the background holder and its descendant never both held their locks")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	run := <-done
+	err := run.err
+	if err == nil {
+		t.Fatalf("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "tool bg_spawn.sh timed out after 2 seconds") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+
+	// The tool's own shell is gone as soon as executeTool returns with a timeout, so anything still
+	// holding a lock here is a member of the group the kill was supposed to reach. holder is the
+	// direct background child; descendant is the grandchild that only a group kill can touch.
+	awaitLockReleased(t, holderLock, "the background holder")
+	awaitLockReleased(t, descendantLock, "the holder's forked descendant")
+}
 func TestExecuteTool_TimeoutDisabled(t *testing.T) {
 	agentDir := t.TempDir()
 	toolPath := filepath.Join(agentDir, "quick.sh")
