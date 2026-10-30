@@ -1,11 +1,20 @@
 ---
 name: wackypub-ws
-description: Guide for setting up, structuring, and managing WackyPub AI agent workspaces, including capability wiring (files-rw, A2A, wackyproc), git versioning, manifest snapshots, remote sync, symlink organization, and an AGENTS.md brace gotcha.
+description: Guide for setting up, structuring, and managing WackyPub AI agent workspaces, including capability wiring (files-rw, A2A, wackyproc, bashc sandboxing), git versioning, manifest snapshots, remote sync, symlink organization, and an AGENTS.md brace gotcha.
 always_load: false
 ---
 # WackyPub AI Workspace Setup & Management Guide
 
 `wackypub` operates on workspace directories containing folder-based AI agents. This guide details workspace creation, agent scaffolding, capability wiring (file access, cross-agent calling, background processes), git versioning management, remote synchronization, and recommended organizational patterns.
+
+## Repositories
+
+This skill references files, scripts, and binaries that live in these repos - clone whichever you need before following a setup step below. A workspace-managing agent using this skill will not necessarily have any of them checked out already:
+
+- **`wackypub`** (this project) - `https://github.com/colinrgodsey/wackypub` - the harness itself, plus the bundled skills (including this one), the `scripts/sandbox/` container-sandbox tooling (see "Setting Up a Sandboxed Shell" below), and `examples/` (hooks, compaction templates, runtime configs).
+- **`files-rw`** - `https://github.com/colinrgodsey/files-rw` - the allowlist-gated file access tool.
+- **`wackyproc`** - `https://github.com/colinrgodsey/wackyproc` - the zero-daemon background process manager.
+- **`wackyacp`** - `https://github.com/colinrgodsey/wackyacp` - the ACP bridge layer; ships both the `wackyacp` and `wackyagy` binaries (see "Bridging External Runtimes" below).
 
 ## Setting Up an Agent & Swarm From Scratch
 
@@ -99,6 +108,7 @@ Partial enablement is a common silent-failure trap:
 | **File Access** | `tools/files-rw` symlink | `<agent_id>/FILES_RW_ACCESS` grant file | `skills/files-rw` symlink |
 | **A2A Calling** | `tools/wackypub` symlink | `<agent_id>/WACKYPUB_ALLOWED_AGENTS` | `skills/wackypub-a2a` symlink |
 | **Process Manager** | `tools/wackyproc` symlink | Background supervisor environment | `skills/wackyproc` symlink |
+| **Sandboxed Shell** | `tools/bash` symlink to `scripts/sandbox/bashc` | A running `agent-sandbox.sh`-created container for this agent | `skills/bashc` symlink |
 
 ### Setting Up File Access (`files-rw`)
 
@@ -171,6 +181,48 @@ Why an agent needs it: fire-and-forget servers, multi-minute builds and test run
    ```
 2. The agent executes `wackyproc` commands via `run_command` (e.g. `wackyproc run <tool> [args]`, `wackyproc list`, `wackyproc peek <id>`, `wackyproc get <id>`).
 3. Install the `wackyproc` skill (`skills/wackyproc/SKILL.md`) to provide the agent with full command and lifecycle guidance.
+
+### Setting Up a Sandboxed Shell (`bashc`)
+
+`bashc` replaces an agent's `tools/bash` with a wrapper that runs every command inside an
+isolated, persistent Docker container instead of on the bare host - the agent gets a real,
+writable Linux environment with no visibility outside three deliberately bind-mounted
+directories (its own scratch space, plus the workspace's shared `projects/` and
+`worktrees/`, same-path, so worktree `.git` pointers keep resolving in-container). The
+scripts and skill both ship in the `wackypub` repo (see "Repositories" above):
+
+- **Scripts**: `scripts/sandbox/{Dockerfile,build.sh,agent-sandbox.sh,bashc}`, plus a
+  `scripts/sandbox/README.md` covering the full setup and mount model in more depth than
+  the summary below.
+- **Skill**: `skills/bashc/SKILL.md` - the agent-facing explanation (etiquette: own
+  worktree only, `projects/` read-mostly, pushes stay coordinator-side since the sandboxed
+  agent can commit locally but has no push credentials).
+
+Setup, run from a checkout of the `wackypub` repo:
+
+```bash
+# 1. Build the image once per host - run as the real user, not under sudo, so the
+#    image's "agent" user gets YOUR uid/gid (mounted files need matching ownership)
+cd wackypub/scripts/sandbox
+./build.sh
+
+# 2. Start one persistent, detached sandbox container per agent workspace
+./agent-sandbox.sh ws/<agent_id>
+#    -> container named from the flattened workspace path, --restart unless-stopped
+#    (survives host reboots); recreate by re-running this with the same path
+
+# 3. Point the agent's tools/bash at the wrapper instead of a real shell
+ln -s /path/to/wackypub/scripts/sandbox/bashc ws/<agent_id>/tools/bash
+
+# 4. Install the skill so the agent knows what it's running inside and the etiquette
+ln -s /path/to/wackypub/skills/bashc ws/<agent_id>/skills/bashc
+```
+
+From this point, every `run_command` call with `command: "bash"` for that agent executes
+inside its container. **Known gap, not solved by this setup**: a command deferred to an
+out-of-process background dispatcher (e.g. a `wackyproc`-style job runner) escapes the
+sandbox if the dispatcher re-execs it directly rather than re-entering through `tools/bash`
+- it runs on the bare host. There is no enforcement point here that catches that case.
 
 ### Bridging External Runtimes (`wackyacp` + `wackyagy`)
 
