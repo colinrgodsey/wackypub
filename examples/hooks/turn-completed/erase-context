@@ -8,10 +8,9 @@
 # runtime-fallback walker, after the final session write and after post-turn compaction, and
 # with no continuation possible. It is the first stage at which deleting session state is safe.
 #
-# Opt-in, deliberately not hook-presence. The agent's runtime.json must contain
-#     "eraseAfterTurn": true
-# Installing this file alone does nothing, because destroying history because a file appeared in
-# a directory is a footgun, and hook directories are shared, drop-in places.
+# Installing this hook is the whole opt-in. There is deliberately no config gate: this project
+# does not hand-hold, and an operator who drops this file into an agent's hook directory has
+# decided that agent starts every turn clean.
 #
 # What it erases: session.jsonl, truncated in place, and wackyacp's prompt-state file for the
 # agent. The prompt-state file matters: the Claude Agent SDK keeps its own session id, so
@@ -52,12 +51,6 @@ event = data.get("event") or ""
 reason = data.get("reason") or ""
 if event != "turn-completed" or reason not in ("completed", "budget_exhausted"):
     sys.exit(4)
-opt_in = False
-try:
-    with open(os.path.join(agent_dir, "runtime.json")) as handle:
-        opt_in = json.load(handle).get("eraseAfterTurn") is True
-except Exception:
-    opt_in = False
 dry = (os.environ.get("WACKYPUB_ERASE_DRY_RUN") or "").lower() in ("1", "true", "yes", "on")
 session = os.path.join(agent_dir, "session.jsonl")
 state = os.path.join(agent_dir, ".wackyacp-prompt-state.json")
@@ -71,7 +64,6 @@ except Exception:
     pass
 out = [
     "E_DIR=" + shlex.quote(agent_dir),
-    "E_OPTIN=" + ("1" if opt_in else "0"),
     "E_DRY=" + ("1" if dry else "0"),
     "E_REASON=" + shlex.quote(reason),
     "E_SESSION=" + shlex.quote(session),
@@ -87,10 +79,6 @@ if ! parsed=$(python3 -c "$PROG" "$payload" 2>/dev/null); then
 	exit 0
 fi
 eval "$parsed" || exit 0
-
-if [ "$E_OPTIN" != "1" ]; then
-	exit 0
-fi
 
 if [ "$E_DRY" = "1" ]; then
 	echo "erase-context (dry run): would truncate $E_SESSION ($E_LINES rows, $E_BYTES bytes) and remove $E_STATE (present: $E_STATE_PRESENT)" >&2

@@ -492,7 +492,7 @@ The post-everything turn events: they fire once a turn is terminal, which makes 
 - **`reason` values**: `turn-completed` carries `completed` or `budget_exhausted` (the turn stopped because the D88 auto-continuation budget was spent, which surfaces no error and is therefore not a failure); `turn-failed` carries `stream_error`, `watchdog`, `consumer_stopped` or `cancelled`.
 - **Observe-only**: the honored `action` set is empty. Any `text`, `env` or `action` a script returns is discarded and reported as a warning, and a broken script can only ever warn.
 - **Timeout and context**: runs synchronously on a context detached from the turn's with the normal hook timeout, so a slow script taxes teardown by at most that timeout and long work should detach inside the script. Because it runs inside the session lock, a hook here must not call `wackypub` CLI verbs that take that lock, which would wait on its own turn.
-- **Example**: `examples/hooks/turn-completed/erase-context` implements the always-fresh agent pattern, opt-in through `"eraseAfterTurn": true` in `runtime.json`.
+- **Example**: `examples/hooks/turn-completed/erase-context` implements the always-fresh agent pattern. Installing that hook is itself the opt-in: there is deliberately no config gate, because placing the file in an agent's hook directory already states the intent.
 
 ---
 

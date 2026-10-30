@@ -127,20 +127,26 @@ func TestEraseContextExampleTruncatesInPlaceAndPreservesTheLock(t *testing.T) {
 	}
 }
 
-func TestEraseContextExampleRequiresOptIn(t *testing.T) {
+// Installing the hook is the whole opt-in. There is deliberately no config gate, so this asserts
+// that the erase happens with no runtime.json present at all: this project does not hand-hold, and
+// dropping the script into an agent's hook directory is the decision.
+func TestEraseContextExampleNeedsNoConfigGate(t *testing.T) {
 	script := eraseScript(t)
 	dir, _, _ := eraseFixture(t, `{"provider":"openai"}`)
+	if err := os.Remove(filepath.Join(dir, "runtime.json")); err != nil {
+		t.Fatalf("remove runtime.json: %v", err)
+	}
 
 	out, err := runErase(t, script, dir, completedPayload(dir, "completed"))
 	if err != nil {
-		t.Fatalf("a no-op erase must exit 0: %v\n%s", err, out)
+		t.Fatalf("erase must run without any runtime config: %v\n%s", err, out)
 	}
 	body, err := os.ReadFile(filepath.Join(dir, "session.jsonl"))
-	if err != nil || !strings.Contains(string(body), "one") {
-		t.Fatalf("without the opt-in marker the session must be untouched: %q %v", body, err)
+	if err != nil {
+		t.Fatalf("session.jsonl should still exist: %v", err)
 	}
-	if strings.TrimSpace(out) != "" {
-		t.Fatalf("a disabled erase should stay quiet: %q", out)
+	if len(body) != 0 {
+		t.Fatalf("the erase should proceed with no config present, session size=%d", len(body))
 	}
 }
 
