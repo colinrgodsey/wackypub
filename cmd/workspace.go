@@ -413,6 +413,7 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 	}
 	issues = append(issues, insp.GetShadowedTools()...)
 	issues = append(issues, insp.GetShadowedSkills()...)
+	issues = append(issues, adkAgent.ValidateAgentHygiene(sdk.WorkspaceDir, agentID)...)
 
 	if len(issues) > 0 {
 		fmt.Println("\nIssues:")
