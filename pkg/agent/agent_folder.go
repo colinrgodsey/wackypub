@@ -1075,13 +1075,13 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 		if hasCompactedBail && !hasDeferredImages {
 			if *continuationCount >= maxContinuations {
 				fa.checkPostTurnCompaction(ctx, wsDir)
-				yield(fmt.Sprintf("\n\n[Auto-continuation budget exhausted: %d of %d used - stopping with incomplete status. Raise maxAutoContinuations in runtime.json to allow more.]", *continuationCount, maxContinuations), nil)
+				yield(fmt.Sprintf("\n\n"+autoContinuationBudgetExhaustedNotice+": %d of %d used - stopping with incomplete status. Raise maxAutoContinuations in runtime.json to allow more.]", *continuationCount, maxContinuations), nil)
 				fa.fireEndOfTurnHooks(ctx, stopReason, durationMs, *continuationCount, maxContinuations, false)
 				return false
 			}
 		} else if *imageContinuationCount >= maxImageContinuations {
 			fa.checkPostTurnCompaction(ctx, wsDir)
-			yield(fmt.Sprintf("\n\n[Auto-continuation budget exhausted (images): %d of %d used - stopping with incomplete status. Raise maxAutoContinuationsImages in runtime.json to allow more.]", *imageContinuationCount, maxImageContinuations), nil)
+			yield(fmt.Sprintf("\n\n"+autoContinuationBudgetExhaustedNotice+" (images): %d of %d used - stopping with incomplete status. Raise maxAutoContinuationsImages in runtime.json to allow more.]", *imageContinuationCount, maxImageContinuations), nil)
 			fa.fireEndOfTurnHooks(ctx, stopReason, durationMs, *continuationCount, maxContinuations, false)
 			return false
 		}
@@ -1162,7 +1162,7 @@ func (fa *FolderAgent) handleContinuationOrCompaction(
 			// the hard guarantee that a hook returning HookActionContinue on every turn
 			// cannot loop past MaxAutoContinuations.
 			if *continuationCount >= maxContinuations {
-				yield(fmt.Sprintf("\n\n[Auto-continuation budget exhausted: %d of %d used - stopping with incomplete status. Raise maxAutoContinuations in runtime.json to allow more.]", *continuationCount, maxContinuations), nil)
+				yield(fmt.Sprintf("\n\n"+autoContinuationBudgetExhaustedNotice+": %d of %d used - stopping with incomplete status. Raise maxAutoContinuations in runtime.json to allow more.]", *continuationCount, maxContinuations), nil)
 				return false
 			}
 

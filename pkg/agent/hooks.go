@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -107,6 +108,11 @@ func defaultAllowedActionsForEvent(event string) []string {
 		return []string{HookActionShortCircuit}
 	case EventEndOfTurn:
 		return []string{HookActionContinue}
+	case EventTurnCompleted, EventTurnFailed:
+		// Observe-only by design: a turn that has already ended cannot be altered, so no
+		// action is honored and a script that returns one gets a warning. This case is
+		// spelled out rather than left to default so the passivity is discoverable.
+		return nil
 	default:
 		return nil
 	}
@@ -701,4 +707,130 @@ func buildEndOfTurnContinuationSentinel(actions []HookAction) (string, bool) {
 		body = fmt.Sprintf("Continuation requested by end-of-turn hook (%s).", reason)
 	}
 	return fmt.Sprintf("<CONTINUATION reason=%q>%s</CONTINUATION>", reason, body), true
+}
+
+// Turn completion events fire once per attempted turn, from the single point in
+// runTurnWithRuntimeFallback where the turn has stopped for good: after the final session
+// write, after post-turn compaction, and while the session lock is still held, so a consumer
+// sees a settled session and cannot be interleaved with continuation turns. They are the
+// turn-level counterpart of the compaction family (post-compact, compact-failed):
+// observe-only, so defaultAllowedActionsForEvent returns nil for both and any action a script
+// returns is reported and discarded rather than honored.
+//
+// They do NOT fire for aside turns, which deliberately run without the session lock, nor for
+// turn-setup failures where no stream was ever attempted.
+const (
+	// EventTurnCompleted fires when a turn finishes without an error. A turn that stopped
+	// because the D88 auto-continuation budget ran out is delivered here, not to
+	// EventTurnFailed, with Reason budget_exhausted: no error was surfaced, and the long
+	// turns that hit the cap are exactly the ones an always-fresh consumer wants erased.
+	EventTurnCompleted = "turn-completed"
+	// EventTurnFailed fires when the turn ended by surfacing an error: a watchdog deadline,
+	// a stream error, a client cancel, or a consumer that stopped reading.
+	EventTurnFailed = "turn-failed"
+)
+
+// TurnTerminalReason values delivered in TurnCompletionPayload.Reason.
+const (
+	TurnTerminalCompleted       = "completed"
+	TurnTerminalBudgetExhausted = "budget_exhausted"
+	TurnTerminalStreamError     = "stream_error"
+	TurnTerminalWatchdog        = "watchdog"
+	TurnTerminalConsumerStopped = "consumer_stopped"
+	TurnTerminalCancelled       = "cancelled"
+)
+
+// autoContinuationBudgetExhaustedNotice is the prefix of the notices
+// handleContinuationOrCompaction emits when a D88 budget is spent. It is exported into the
+// turn's visible text, and turnCompletionReason classifies on it, so the three emission
+// sites in agent_folder.go are built from this constant rather than repeating the literal.
+const autoContinuationBudgetExhaustedNotice = "[Auto-continuation budget exhausted"
+
+// TurnCompletionPayload is the JSON handed to the turn-completed / turn-failed chain.
+type TurnCompletionPayload struct {
+	AgentID    string `json:"agent_id"`
+	AgentDir   string `json:"agent_dir"`
+	Event      string `json:"event"`
+	Reason     string `json:"reason"`
+	DurationMs int64  `json:"duration_ms"`
+	// Backend names the endpoint/model that served the turn, empty when the level is unknown.
+	Backend string `json:"backend,omitempty"`
+	// Error is the surfaced turn error, empty for turn-completed.
+	Error string `json:"error,omitempty"`
+}
+
+// turnCompletionReason classifies a finished turn. It is a pure function so the mapping is
+// testable without driving a whole turn: a client cancel outranks everything because the
+// operator asked for it, then a surfaced error, then the budget notice in the turn's own
+// text, then a clean completion.
+// errTurnConsumerStopped names a turn whose reader stopped taking chunks: the turn did not
+// fail on its own, but no consumer should read it as completed either.
+var errTurnConsumerStopped = errors.New("turn consumer stopped reading")
+
+func turnCompletionReason(turnErr error, ctxErr error, sawBudgetNotice bool) (event string, reason string) {
+	if ctxErr != nil {
+		return EventTurnFailed, TurnTerminalCancelled
+	}
+	if turnErr != nil {
+		if errors.Is(turnErr, errTurnConsumerStopped) {
+			return EventTurnFailed, TurnTerminalConsumerStopped
+		}
+		if strings.Contains(turnErr.Error(), "deadline exceeded") {
+			return EventTurnFailed, TurnTerminalWatchdog
+		}
+		return EventTurnFailed, TurnTerminalStreamError
+	}
+	if sawBudgetNotice {
+		return EventTurnCompleted, TurnTerminalBudgetExhausted
+	}
+	return EventTurnCompleted, TurnTerminalCompleted
+}
+
+// runTurnCompletionHook runs one turn-completion chain, observe-only: any Text, Env or
+// Action a script returns is discarded, so a broken hook can only ever produce a warning and
+// can never alter a turn that has already finished (the same contract as
+// runCompactionHookSync).
+//
+// The chain runs on a context detached from the turn's, because the turn context is on its
+// way out at this point and a hook would otherwise be born already expired; the detachment
+// keeps the context values (A2A metadata and the like) while dropping the cancellation that
+// no longer applies. Keep the caller's session lock in mind: this runs synchronously inside
+// it, so a slow script taxes teardown by at most the hook timeout, and a consumer that wants
+// long work should detach it inside the script.
+func runTurnCompletionHook(ctx context.Context, agentDir string, payload TurnCompletionPayload) {
+	if agentDir == "" || os.Getenv(EnvHooks) == "0" {
+		return
+	}
+	hookPaths, err := DiscoverHooks(agentDir, payload.Event)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %s hook: error discovering hooks in %s: %v\n", payload.Event, agentDir, err)
+		return
+	}
+	if len(hookPaths) == 0 {
+		return
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %s hook: failed to marshal payload: %v\n", payload.Event, err)
+		return
+	}
+
+	timeout := time.Duration(DefaultHookTimeoutSeconds) * time.Second
+	if envVal := os.Getenv(EnvHookTimeoutSeconds); envVal != "" {
+		if secs, err := strconv.Atoi(envVal); err == nil && secs > 0 {
+			timeout = time.Duration(secs) * time.Second
+		}
+	}
+	hookCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+
+	res, err := RunHookChain(hookCtx, agentDir, payload.Event, string(data))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %s hook: %v\n", payload.Event, err)
+		return
+	}
+	for _, w := range res.Warnings {
+		fmt.Fprintf(os.Stderr, "Warning: %s hook: %s\n", payload.Event, w)
+	}
 }

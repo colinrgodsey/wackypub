@@ -1,0 +1,109 @@
+#!/bin/sh
+# Always-fresh agent: drop the conversation context once a turn is finished, so every turn
+# starts clean.
+#
+# Why this lives on turn-completed and nowhere earlier. end-of-turn fires while the
+# continuation decision is still open, so erasing there can be followed by a continuation turn
+# that writes into what was just erased. turn-completed fires exactly once, from the
+# runtime-fallback walker, after the final session write and after post-turn compaction, and
+# with no continuation possible. It is the first stage at which deleting session state is safe.
+#
+# Installing this hook is the whole opt-in. There is deliberately no config gate: this project
+# does not hand-hold, and an operator who drops this file into an agent's hook directory has
+# decided that agent starts every turn clean.
+#
+# What it erases: session.jsonl, truncated in place, and wackyacp's prompt-state file for the
+# agent. The prompt-state file matters: the Claude Agent SDK keeps its own session id, so
+# clearing only session.jsonl lets the next turn resume the context that was just erased and the
+# agent is not fresh at all. wackyacp degrades gracefully when that id no longer resolves.
+#
+# What it never touches: session.lock (flock follows the inode, so unlinking the lock file would
+# leave the serving process holding a valid lock on an orphan while the next turn creates a new
+# one, and two processes would each believe they own exclusive access), MEMORY.md (compaction
+# output, not conversation state: an always-fresh agent should turn compaction off rather than
+# destroy summaries), scratchpad/ (other agents and get_scratchpad reference entries by id),
+# tool-journal.jsonl, agent notes, runtime.json, hooks, and any .proc/ records.
+#
+# Do not call the wackypub CLI from here. This hook runs inside the session lock held by the
+# process that dispatched it, so any CLI verb that takes that lock waits on its own turn. The
+# audit trail is therefore appended locally to context-erase.log in the agent folder, which is
+# what makes an erase distinguishable from a crash after the fact.
+#
+# Dry run: set WACKYPUB_ERASE_DRY_RUN=1 to print what would be erased and change nothing.
+# Any failure path exits 0 with the context left intact: a broken erase must never wedge a turn.
+set -u
+
+payload=$(cat)
+[ -n "$payload" ] || exit 0
+command -v python3 >/dev/null 2>&1 || {
+	echo "erase-context: python3 unavailable, leaving context intact" >&2
+	exit 0
+}
+
+PROG='
+import json, os, shlex, sys
+try:
+    data = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(3)
+agent_dir = data.get("agent_dir") or os.getcwd()
+event = data.get("event") or ""
+reason = data.get("reason") or ""
+if event != "turn-completed" or reason not in ("completed", "budget_exhausted"):
+    sys.exit(4)
+dry = (os.environ.get("WACKYPUB_ERASE_DRY_RUN") or "").lower() in ("1", "true", "yes", "on")
+session = os.path.join(agent_dir, "session.jsonl")
+state = os.path.join(agent_dir, ".wackyacp-prompt-state.json")
+lines = bytes_ = 0
+try:
+    with open(session, "rb") as handle:
+        blob = handle.read()
+    lines = len([row for row in blob.decode("utf-8", "replace").splitlines() if row.strip()])
+    bytes_ = len(blob)
+except Exception:
+    pass
+out = [
+    "E_DIR=" + shlex.quote(agent_dir),
+    "E_DRY=" + ("1" if dry else "0"),
+    "E_REASON=" + shlex.quote(reason),
+    "E_SESSION=" + shlex.quote(session),
+    "E_LINES=" + str(lines),
+    "E_BYTES=" + str(bytes_),
+    "E_STATE=" + shlex.quote(state),
+    "E_STATE_PRESENT=" + ("1" if os.path.exists(state) else "0"),
+]
+sys.stdout.write("\n".join(out) + "\n")
+'
+
+if ! parsed=$(python3 -c "$PROG" "$payload" 2>/dev/null); then
+	exit 0
+fi
+eval "$parsed" || exit 0
+
+if [ "$E_DRY" = "1" ]; then
+	echo "erase-context (dry run): would truncate $E_SESSION ($E_LINES rows, $E_BYTES bytes) and remove $E_STATE (present: $E_STATE_PRESENT)" >&2
+	exit 0
+fi
+
+if [ ! -f "$E_SESSION" ]; then
+	echo "erase-context: no session file at $E_SESSION, nothing to erase" >&2
+	exit 0
+fi
+
+# Truncate in place. A redirect on the existing path keeps the inode, which keeps every lock
+# and watcher handle coherent; an unlink here would not.
+if ! : > "$E_SESSION"; then
+	echo "erase-context: failed to truncate $E_SESSION, leaving context intact" >&2
+	exit 0
+fi
+rm -f "$E_STATE"
+
+stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
+printf '%s\terase-context\treason=%s\trows=%s\tbytes=%s\tprompt_state=%s\n' \
+	"$stamp" "$E_REASON" "$E_LINES" "$E_BYTES" \
+	"$([ "$E_STATE_PRESENT" = "1" ] && echo removed || echo absent)" \
+	>> "$E_DIR/context-erase.log" 2>/dev/null ||
+	echo "erase-context: session erased but the audit line could not be written to context-erase.log" >&2
+
+echo "erase-context: erased context after a $E_REASON turn ($E_LINES rows, $E_BYTES bytes dropped)" >&2
+exit 0
