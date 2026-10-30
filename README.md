@@ -132,7 +132,7 @@ All tools execute from the agent's own workspace directory as the CWD.
 
 ## Repository Architecture
 
-`cmd/` holds the CLI (Cobra subcommands, a thin wrapper), `pkg/agent/` holds the service implementation the CLI drives (satisfying the generated service interface, plus `FolderAgent`, the OpenAI-compatible model adapter, tools, skills, scratchpad, macros, compaction, git versioning), `pkg/config/` handles `wackypub.yaml`.
+`cmd/` holds the CLI (Cobra subcommands, a thin wrapper), `pkg/agent/` holds the service implementation the CLI drives (satisfying the generated service interface, plus `FolderAgent`, the OpenAI-compatible model adapter, tools, skills, scratchpad, macros, compaction, git versioning).
 
 For the full architecture reference (schemas, lifecycle, compaction mechanics, reasoning handling), see [`docs/agents.md`](docs/agents.md). For orientation when working in this repo, see [`.agents/AGENTS.md`](.agents/AGENTS.md) and the numbered design decisions in [`.agents/DECISIONS.md`](.agents/DECISIONS.md).
 

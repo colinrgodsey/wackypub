@@ -88,7 +88,7 @@ same implementation and documentation without duplicating either.
 | `google.golang.org/genai` | `genai.Content`/`genai.Part` - the wire format for `session.jsonl` |
 | `github.com/achetronic/adk-utils-go` | OpenAI-compatible `model.LLM` adapter (official `openai-go/v3` SDK underneath) - updated to upstream commit `1f0a646bcdfd07ad5f09363d6cbca3b5c58bd764` with Dialects support |
 | `github.com/spf13/cobra` | CLI command tree |
-| `gopkg.in/yaml.v3` | `wackypub.yaml` config (default model, API key) |
+| `gopkg.in/yaml.v3` | YAML frontmatter parsing (skill `SKILL.md` headers, compaction config) |
 
 ## Commands
 
@@ -132,7 +132,7 @@ go build -o bin/wackypub .
 ```
 WackyPub/
 ├── cmd/                    # Cobra CLI command tree
-│   ├── root.go             # RootCmd, global flags (--ws, --config, -m, --api-key)
+│   ├── root.go             # RootCmd, global flags (--ws, -m, --api-key, --max-tool-turns, --command-timeout-seconds)
 │   ├── agent.go             # `agent` subcommands: add, generate, prompt, strip-signatures,
 │   │                         # read-session, read-memory, render-prompt, compact
 │   ├── workspace.go         # `workspace` - read-only workspace/agent diagnostic (see below)
@@ -149,7 +149,6 @@ WackyPub/
 │   │   ├── lock.go            # SessionLock (flock on session.lock)
 │   │   ├── workspace.go       # ListAgentIDs, InspectAgentDir - read-only workspace/agent introspection
 │   │   └── sdk.go             # AgentSDK - the public programmatic API
-│   └── config/                # wackypub.yaml schema (default_model, api_key) - unrelated to runtime.json
 ├── docs/agents.md           # Deep architecture reference (see pointer above)
 ├── testws/                  # Gitignored scratch workspace for manual/live testing
 └── test_agents/             # Committed example agent workspace (bob: AGENTS.md, IDENTITY.md,
@@ -161,7 +160,6 @@ WackyPub/
 | Package | Description |
 |---|---|
 | `pkg/agent` | Everything about a single folder agent: config, session storage, generation, compaction, locking, reasoning handling |
-| `pkg/config` | `wackypub.yaml` schema (`default_model`, `api_key`) - a small global default-override file, unrelated to per-agent `runtime.json` |
 
 There is currently exactly one subsystem package (`pkg/agent`) and one matching CLI
 command group (`agent`) - see the naming convention below. A `roleplay`/`cluster`
