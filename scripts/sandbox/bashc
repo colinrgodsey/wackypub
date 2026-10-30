@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Agent identity = CWD (wackypub guarantees tools run from the agent folder)
+WS_PATH=$(pwd)
+CONTAINER_NAME=$(echo "$WS_PATH" | sed 's|^/||; s|/$||; s|/|_|g')
+
+# Workdir = the agent scratch dir at its real host path (same-path mount)
+exec docker exec -i \
+  --workdir "${WS_PATH}/container-ws" \
+  "agent-sandbox-$CONTAINER_NAME" \
+  /bin/bash "$@"
