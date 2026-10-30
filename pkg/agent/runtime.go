@@ -42,6 +42,21 @@ type RuntimeConfig struct {
 	// TimeoutSeconds sets the HTTP client timeout in seconds for API calls to the LLM backend.
 	// Defaults to DefaultHTTPTimeoutSeconds (900s / 15 minutes) when unset or <= 0.
 	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
+	// MaxRetries bounds the extra attempts a model client makes after a throttled
+	// or failing response. Unset keeps DefaultModelMaxRetries, the count the OpenAI SDK
+	// applied before this was operator-tunable; 0 disables retrying entirely.
+	MaxRetries *int `json:"maxRetries,omitempty"`
+	// MaxRetryDelaySeconds ceilings a single rate-limit wait. The OpenAI-compatible
+	// model dependency honors Retry-After with no ceiling at all, so a provider that
+	// answers 429 with Retry-After: 300 parks a turn for five minutes per retry. Unset
+	// keeps DefaultModelRetryDelayCeiling; 0 retries without sleeping.
+	MaxRetryDelaySeconds *int `json:"maxRetryDelaySeconds,omitempty"`
+	// RetryAfterFailoverSeconds is the server-requested wait above which a level gives
+	// up at once so the fallback chain takes over, rather than retrying an endpoint
+	// whose usage window has run out. Unset keeps DefaultRetryAfterFailover (60s). 0
+	// disables magnitude fail-over and leaves only the bounded retry budget; a negative
+	// value is read as the same intent and warns.
+	RetryAfterFailoverSeconds *int `json:"retryAfterFailoverSeconds,omitempty"`
 
 	// TurnDeadlineSeconds bounds a single fallback level's stream via the turn watchdog:
 	// if the level's stream does not terminate within the bound, the level fails with a
