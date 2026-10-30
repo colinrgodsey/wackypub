@@ -240,7 +240,7 @@ You are Ignis, an ancient wizard.
 
 ### `hooks/` Directory
 
-`<agent_id>/hooks/<event>/` contains optional executable lifecycle hook scripts (`NN-name`) discovered and executed in ascending numeric order for each lifecycle event (`on-user-message`, `pre-compact`, `post-compact`, `compact-failed`, `pre-run-command`, `end-of-turn`). For the complete event catalog, payload schemas, `HookOutput` / `HookAction` contract, and precedence rules, see [§6 Hooks](#6-hooks).
+`<agent_id>/hooks/<event>/` contains optional executable lifecycle hook scripts (`NN-name`) discovered and executed in ascending numeric order for each lifecycle event (`on-user-message`, `pre-compact`, `post-compact`, `compact-failed`, `pre-run-command`, `end-of-turn`, `turn-completed`, `turn-failed`). For the complete event catalog, payload schemas, `HookOutput` / `HookAction` contract, and precedence rules, see [§6 Hooks](#6-hooks).
 
 ---
 
@@ -391,6 +391,8 @@ Active lifecycle hooks (`pre-run-command` and `end-of-turn`) share a single cont
 | `compact-failed` | Synchronously when `CheckAndCompactSession` errors after reading session turns | `CompactFailedPayload` JSON (`agent_id`, `session_path`, `stage`, `error`) | Observe-only (none applied) | Synchronously runs all scripts in order. Honored `action` set: none |
 | `pre-run-command` | `executeTool`, after the pre-dispatch workspace commit and before `cmd.Run()` | `PreRunCommandPayload` JSON (`agent_id`, `command`, `command_path`, `args`, `cwd`, `env`) | `env` (merged into tool's `childEnv`), `action` (`type: "short_circuit"`) | **First honored `short_circuit` wins and terminates the chain** |
 | `end-of-turn` | `GenerateTurnStream` (and `GenerateTurn`, which drains it) when a turn iteration ends in `handleContinuationOrCompaction` | `EndOfTurnPayload` JSON (`agent_id`, `session_path`, `stop_reason`, `duration_ms`, `continuation_count`, `max_continuations`, `can_continue`) | `action` (`type: "continue"`, honored only when `can_continue: true`) | **All scripts run; any-wins** (multiple `continue` actions merge `reason` and `output`) |
+| `turn-completed` | Single defer at the top of `runTurnWithRuntimeFallback` (`pkg/agent/sdk.go`), once per attempted turn, after the final session write and while the session lock is still held | `TurnCompletionPayload` JSON (`agent_id`, `agent_dir`, `event`, `reason`, `duration_ms`, `backend`) | Observe-only (none applied) | All scripts run in ascending order; no `action` is honored, so the chain never truncates |
+| `turn-failed` | Same single defer, when the turn ended by surfacing an error | `TurnCompletionPayload` JSON (as above, plus `error`) | Observe-only (none applied) | Same; exactly one of `turn-completed` or `turn-failed` fires per turn |
 
 ### `pre-run-command`
 
@@ -479,6 +481,18 @@ Fires when a turn iteration reaches its end inside `handleContinuationOrCompacti
   - Non-empty `output` fields are joined in execution order with `"\n"` (defaulting to `"Continuation requested by end-of-turn hook (<reason>)."` when `reason` was provided, or `"Continuation requested by end-of-turn hook."`).
 - **Sentinel persistence**: The harness appends a user turn `<CONTINUATION reason="<reason>"><output></CONTINUATION>` to `session.jsonl` with workspace git commit label `user (end-of-turn continuation)` and starts the next turn iteration under the same session lock.
 - **Hard D88 `MaxAutoContinuations` bound**: Hook-requested continuations draw from D88's existing general `maxAutoContinuations` budget alongside compaction-bail continuations (never a separate or unbounded loop). Even if a broken hook ignores `can_continue: false` and emits `"continue"` on every invocation, `handleContinuationOrCompaction` enforces `continuationCount < maxContinuations` and terminates the stream once the budget is reached.
+
+### `turn-completed` and `turn-failed`
+
+The post-everything turn events: they fire once a turn is terminal, which makes them the only safe place to delete or archive session state. `end-of-turn` fires while the continuation decision is still open, so work done there can be followed by a continuation turn that writes into what it just removed.
+
+- **Fire point**: one `defer` at the top of `runTurnWithRuntimeFallback` (`pkg/agent/sdk.go`). That frame returns before either caller reaches its deferred session-lock release, so every write for the turn has landed (including post-turn compaction), the lock is still held exclusively, and no continuation can follow because the continuation loop lives inside the iterator that function consumes.
+- **Exactly once per turn, not per level**: a turn that descends the runtime fallback chain still reports one terminal state, and `backend` names the endpoint/model that served it.
+- **Not fired at all** for aside turns (`asideInternal` drives no fallback walk) or for turn-setup failures where no stream was attempted, such as a fallback backend that will not load or a chain in which every backend was skipped as failed-until-reset.
+- **`reason` values**: `turn-completed` carries `completed` or `budget_exhausted` (the turn stopped because the D88 auto-continuation budget was spent, which surfaces no error and is therefore not a failure); `turn-failed` carries `stream_error`, `watchdog`, `consumer_stopped` or `cancelled`.
+- **Observe-only**: the honored `action` set is empty. Any `text`, `env` or `action` a script returns is discarded and reported as a warning, and a broken script can only ever warn.
+- **Timeout and context**: runs synchronously on a context detached from the turn's with the normal hook timeout, so a slow script taxes teardown by at most that timeout and long work should detach inside the script. Because it runs inside the session lock, a hook here must not call `wackypub` CLI verbs that take that lock, which would wait on its own turn.
+- **Example**: `examples/hooks/turn-completed/erase-context` implements the always-fresh agent pattern, opt-in through `"eraseAfterTurn": true` in `runtime.json`.
 
 ---
 
