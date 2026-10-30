@@ -205,6 +205,33 @@ You are Ignis, an ancient wizard.
   - `stdin`: Optional stdin template string (supports inline `<SCRATCHPAD_DATA id="X" />` macro expansion).
 - Executed in a multi-turn tool loop within `GenerateTurn` up to `--max-tool-turns` (default `10`).
 
+#### Optional: Sandboxing `bash` in a Container
+
+`tools/bash` doesn't have to be the real host shell. `scripts/sandbox/` ships a reference
+setup that runs an agent's `bash` tool inside a persistent, per-agent Docker container
+instead: `agent-sandbox.sh <ws_dir>/<agent_id>` starts one detached container per agent
+workspace (`--restart unless-stopped`, survives host reboots), and `tools/bash` becomes a
+symlink to `scripts/sandbox/bashc` - a thin `docker exec` wrapper whose only job is deriving
+*which* container to exec into from its own CWD (wackypub always runs tools from the agent's
+own directory, so CWD is a reliable, env-free way to recover agent identity).
+
+Three host directories are bind-mounted into the container at **identical absolute paths**
+on both sides (no path translation): the agent's own `container-ws/` scratch space, and -
+same-path, so worktree `.git` pointers keep resolving - the workspace's shared `projects/`
+and `worktrees/` directories, if present. Everything else on the host, including other
+agents' folders, is invisible from inside the container. See `scripts/sandbox/README.md`
+for the full setup sequence and `skills/bashc/SKILL.md` for the agent-facing explanation
+(etiquette: own worktree only, `projects/` read-mostly, coordinator-side pushes - agents can
+make local commits in their own worktree since the same-path mount keeps the `.git` link
+intact, but credentials and `git push` stay host-side).
+
+**Known gap, not solved by this design**: a command that `run_command` defers to an
+out-of-process background dispatcher (e.g. a `wackyproc`-style job runner) runs on the bare
+host if the dispatcher re-execs the command directly rather than re-entering through
+`tools/bash` - it never passes through `bashc`, so it escapes the sandbox entirely. There is
+no enforcement point here that catches that case; it's a property of how a given background
+dispatcher is wired, not something `bashc`/`agent-sandbox.sh` can detect or prevent.
+
 ---
 
 ### `scratchpad/` Directory
