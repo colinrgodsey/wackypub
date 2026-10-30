@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"google.golang.org/genai"
 )
 
 // Regression coverage for the Sept-29 audit finding F1 (notes/sept-29-wackypub-code-audit):
@@ -93,58 +90,6 @@ const testScannerOverflowLine = MaxSessionLineBytes + 1024*1024
 // testOverBoundLine is the smallest text size whose marshaled turn line exceeds
 // tailMaxSeek, for the seq back-seek over-bound tests.
 const testOverBoundLine = MaxPersistTurnBytes + 512*1024
-
-func TestTailMaxSeq_OverBoundFinalLine(t *testing.T) {
-	t.Run("parseable over-bound line keeps its stamped seq", func(t *testing.T) {
-		agentDir := t.TempDir()
-		if s := appendTurns(t, agentDir, 2, "small"); s != 3 {
-			t.Fatalf("fixture: expected final seq 3, got %d", s)
-		}
-		big := genai.NewContentFromText(strings.Repeat("z", testOverBoundLine), "user")
-		line, err := json.Marshal(PersistedTurn{Content: *big, Seq: 3 + 1})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(line) <= tailMaxSeek {
-			t.Fatalf("fixture line %dB does not exceed the seek cap %dB", len(line), tailMaxSeek)
-		}
-		f, err := os.OpenFile(filepath.Join(agentDir, SessionFileName), os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			t.Fatal(err)
-		}
-		f.Write(append(line, '\n'))
-		f.Close()
-
-		got, err := tailMaxSeq(agentDir)
-		if err != nil {
-			t.Fatalf("tailMaxSeq: %v", err)
-		}
-		if got != 4 {
-			t.Errorf("want stamped seq 4 from scan, got %d", got)
-		}
-	})
-
-	t.Run("garbage over-bound line is skipped by the scan", func(t *testing.T) {
-		agentDir := t.TempDir()
-		if s := appendTurns(t, agentDir, 2, "small"); s != 3 {
-			t.Fatalf("fixture: expected final seq 3, got %d", s)
-		}
-		f, err := os.OpenFile(filepath.Join(agentDir, SessionFileName), os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			t.Fatal(err)
-		}
-		f.Write(append([]byte(strings.Repeat("g", testOverBoundLine)), '\n'))
-		f.Close()
-
-		got, err := tailMaxSeq(agentDir)
-		if err != nil {
-			t.Fatalf("tailMaxSeq: %v", err)
-		}
-		if got != 3 {
-			t.Errorf("want 3 (garbage line skipped), got %d", got)
-		}
-	})
-}
 
 // TestSeqTailWorker is invoked as a subprocess by TestNextSeq_AfterLargeFinalLine_CrossProcess:
 // a fresh process has an empty seqAllocBump, so the allocation must come entirely from the

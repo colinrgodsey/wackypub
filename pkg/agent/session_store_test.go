@@ -438,67 +438,6 @@ func TestAppendSessionContent_TruncationPreservesSmallParts(t *testing.T) {
 	}
 }
 
-func TestAppendSessionContent_WholeContentFallback(t *testing.T) {
-	agentDir := t.TempDir()
-
-	// The whole-turn fallback is exercised with an image part: text parts are capped
-	// individually at MaxPersistTextPartBytes (256KB), so a text-only turn can no longer
-	// exceed the 64MiB turn cap on its own - the fallback is the image path. 49MiB of
-	// InlineData marshals to ~65MiB of base64, past the 64MiB cap, so the fallback must
-	// keep only the first text part plus the drop banner.
-	image := make([]byte, 49*1024*1024)
-	part1 := "PART1_" + strings.Repeat("a", 200*1024-6)
-
-	content := &genai.Content{
-		Role: "user",
-		Parts: []*genai.Part{
-			{Text: part1},
-			{InlineData: &genai.Blob{MIMEType: "image/jpeg", Data: image}},
-		},
-	}
-
-	report, err := AppendSessionContent(agentDir, content)
-	if err != nil {
-		t.Fatalf("AppendSessionContent failed: %v", err)
-	}
-
-	rawFile, err := os.ReadFile(filepath.Join(agentDir, SessionFileName))
-	if err != nil {
-		t.Fatalf("os.ReadFile failed: %v", err)
-	}
-
-	// Marshaled turn on disk must not exceed MaxPersistTurnBytes + newline
-	if len(rawFile) > MaxPersistTurnBytes+1 {
-		t.Errorf("persisted turn size %d exceeds MaxPersistTurnBytes %d", len(rawFile), MaxPersistTurnBytes)
-	}
-
-	turns, err := ReadSessionTurns(agentDir)
-	if err != nil {
-		t.Fatalf("ReadSessionTurns failed: %v", err)
-	}
-	if len(turns) != 1 {
-		t.Fatalf("expected 1 turn, got %d", len(turns))
-	}
-	// Fallback should keep only the first text part plus the drop banner
-	if len(turns[0].Parts) != 2 {
-		t.Fatalf("expected 2 parts (first text part + banner), got %d", len(turns[0].Parts))
-	}
-	if !strings.HasPrefix(turns[0].Parts[0].Text, "PART1_") {
-		t.Errorf("expected first part to be preserved, got: %q", turns[0].Parts[0].Text[:50])
-	}
-	if !strings.Contains(turns[0].Parts[1].Text, "remaining content dropped") {
-		t.Errorf("expected second part to be drop banner, got: %q", turns[0].Parts[1].Text)
-	}
-
-	// The drop must be reported, not silent: one part (the image) of known size.
-	if report.DroppedParts != 1 {
-		t.Errorf("expected DroppedParts 1, got %d", report.DroppedParts)
-	}
-	if report.DroppedBytes != int64(len(image)) {
-		t.Errorf("expected DroppedBytes %d, got %d", len(image), report.DroppedBytes)
-	}
-}
-
 // TestPersistedTurnLoadsLegacySessionJSONL pins the reason genai.Content is embedded
 // rather than mirrored: a session file written before sequence numbers existed must
 // load unchanged, in both directions.

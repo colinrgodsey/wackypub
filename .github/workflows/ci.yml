@@ -41,3 +41,11 @@ jobs:
 
       - name: Test (race detector enabled)
         run: go test ./... -race -count=1
+
+      # The payload-scale persist fixtures are behind the heavy_payload build tag so a 4GB dev
+      # host can run the race suite at all (pkg/agent/persist_cap_heavy_test.go). This runner has
+      # the headroom, so the coverage still lands on every PR.
+      - name: Vet (payload-scale fixtures)
+        run: go vet -tags heavy_payload ./...
+      - name: Test (payload-scale fixtures)
+        run: go test ./pkg/agent/ -tags heavy_payload -race -count=1 -run 'TestPersistTurn_40MiBImageRoundTrip|TestScannerErrorPropagation|TestD101_ErrorTransparency_ReadSessionError|TestPersistTurn_OverCapDropIsReported|TestAppendSessionContent_WholeContentFallback|TestAppendDeferredImages_DropIsLoud|TestRecoverMaxSeqFromLog_ScannerErrorIsUnrecoverable|TestStreamHandler_RePanicsOnUnrecoverableError|TestTailMaxSeq_OverBoundFinalLine|TestSubscribeSession_CorruptSessionDoesNotHotPoll'
