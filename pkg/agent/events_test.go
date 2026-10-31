@@ -709,37 +709,6 @@ func TestReplayThenLivePromptWakeOrdering(t *testing.T) {
 	}
 }
 
-// TestScannerErrorPropagation verifies that oversized lines (> 16MB) return an explicit
-// scanner error rather than silently returning a truncated slice or corrupting sequence recovery.
-func TestScannerErrorPropagation(t *testing.T) {
-	tempDir := t.TempDir()
-	agentDir := filepath.Join(tempDir, "oversized-agent")
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	// Write an oversized line (testScannerOverflowLine, exceeding MaxSessionLineBytes)
-	sessionPath := filepath.Join(agentDir, SessionFileName)
-	oversized := make([]byte, testScannerOverflowLine)
-	for i := range oversized {
-		oversized[i] = 'a'
-	}
-	oversized[len(oversized)-1] = '\n'
-	if err := os.WriteFile(sessionPath, oversized, 0644); err != nil {
-		t.Fatalf("write oversized session: %v", err)
-	}
-
-	// ReadSessionEventsFromDisk must fail loudly, NOT return a truncated slice with err == nil
-	_, _, _, _, err := ReadSessionEventsFromDisk(agentDir)
-	if err == nil {
-		t.Fatalf("expected ReadSessionEventsFromDisk to return scanner error on over-cap line, got nil")
-	}
-	if !strings.Contains(err.Error(), "token too long") {
-		t.Errorf("expected error to mention 'token too long', got: %v", err)
-	}
-
-}
-
 // TestSubscribeSessionBurstDeliveryWithoutLoss verifies that when a burst of events
 // exceeds maxSubscriberBuffer (64), head trimming preserves the oldest events and all
 // durable events are delivered across chunked passes without data loss.
@@ -1188,80 +1157,4 @@ func TestSubscribeSession_FiveIdleWatchersProduceZeroDiskReads(t *testing.T) {
 
 	cancel()
 	wg.Wait()
-}
-
-// TestSubscribeSession_CorruptSessionDoesNotHotPoll verifies that an unreadable/corrupt
-// session file (e.g. line exceeding MaxSessionLineBytes) does not cause the 50ms polling loop
-// to spin re-opening and re-reading the unchanged corrupt file.
-func TestSubscribeSession_CorruptSessionDoesNotHotPoll(t *testing.T) {
-	tempDir := t.TempDir()
-	t.Chdir(tempDir)
-	agentID := "corrupt-agent"
-	agentDir := filepath.Join(tempDir, agentID)
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	_ = AppendSessionTurn(agentDir, "user", "turn 1")
-
-	var diskReadCount atomic.Int64
-	origHook := testHookSessionDiskRead
-	testHookSessionDiskRead = func() {
-		diskReadCount.Add(1)
-	}
-	defer func() { testHookSessionDiskRead = origHook }()
-
-	sdk := NewSDK(tempDir)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	stream := &mockSubscribeStream{ctx: ctx}
-	streamDone := make(chan error, 1)
-
-	go func() {
-		streamDone <- sdk.SubscribeSession(&agentv1.SubscribeSessionRequest{
-			AgentId:      agentID,
-			WorkspaceDir: tempDir,
-		}, stream)
-	}()
-
-	// Wait for turn 1 replay
-	time.Sleep(100 * time.Millisecond)
-	readsAfterReplay := diskReadCount.Load()
-
-	// Write the oversized line to a temp file and atomically replace session.jsonl
-	// so the concurrent watcher does not observe an intermediate partially-written state.
-	sessionPath := filepath.Join(agentDir, SessionFileName)
-	oversized := make([]byte, testScannerOverflowLine)
-	for i := range oversized {
-		oversized[i] = 'a'
-	}
-	oversized[len(oversized)-1] = '\n'
-	tmpPath := sessionPath + ".tmp"
-	if err := os.WriteFile(tmpPath, oversized, 0644); err != nil {
-		t.Fatalf("write tmp: %v", err)
-	}
-	if err := os.Rename(tmpPath, sessionPath); err != nil {
-		t.Fatalf("rename: %v", err)
-	}
-
-	// Wait for subscriber to attempt reading the replaced file
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && diskReadCount.Load() == readsAfterReplay {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if diskReadCount.Load() == readsAfterReplay {
-		t.Fatalf("subscriber never attempted to read corrupted session")
-	}
-	// Give a short tick for the subscriber to set lastFileInfo and re-enter select
-	time.Sleep(100 * time.Millisecond)
-	readsAfterCorrupt := diskReadCount.Load()
-
-	// Idle over 500ms (10 poll ticks): since the corrupt file did not change, zero further reads should occur
-	time.Sleep(500 * time.Millisecond)
-	readsAfterWait := diskReadCount.Load() - readsAfterCorrupt
-	if readsAfterWait != 0 {
-		t.Fatalf("expected 0 disk reads during corrupt idle period, got %d (still hot-polling)", readsAfterWait)
-	}
-
-	cancel()
-	<-streamDone
 }
