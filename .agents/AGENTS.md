@@ -132,7 +132,7 @@ go build -o bin/wackypub .
 ```
 WackyPub/
 ├── cmd/                    # Cobra CLI command tree
-│   ├── root.go             # RootCmd, global flags (--ws, -m, --api-key, --max-tool-turns, --command-timeout-seconds)
+│   ├── root.go             # RootCmd, global flags (--ws, --max-tool-turns, --command-timeout-seconds)
 │   ├── agent.go             # `agent` subcommands: add, generate, prompt, strip-signatures,
 │   │                         # read-session, read-memory, render-prompt, compact
 │   ├── workspace.go         # `workspace` - read-only workspace/agent diagnostic (see below)
@@ -375,14 +375,16 @@ Only enable `supportsReasoningDetails` with a pinned `model`. See
 
 ### Don't reuse a persistent flag's shorthand on a subcommand
 
-`RootCmd` binds `-m` to `--model` as a persistent flag (`cmd/root.go`). A
-subcommand that also defines a local `-m` shorthand doesn't just get
-shadowed - cobra panics as soon as the two flag sets get merged, which
-happens on `--help`, shell completion, or any invocation of that command.
-This exact bug existed on `agent add`/`agent prompt` (`-m` collided with a
-local `--message` flag) until it was fixed by dropping the local shorthand.
-Before adding `StringVarP`/`BoolVarP`/etc. with a shorthand on any command,
-check `cmd/root.go`'s persistent flags first.
+A subcommand that also defines a local shorthand for something a parent already
+binds persistently doesn't just get shadowed - cobra panics as soon as the two flag
+sets get merged, which happens on `--help`, shell completion, or any invocation of
+that command. This exact bug existed on `agent add`/`agent prompt`, where a local
+`-m` collided with `RootCmd`'s persistent `-m/--model`, until it was fixed by
+dropping the local shorthand. `--model` was itself removed as dead - per-agent
+`runtime.json` long ago superseded a global model/key default and the values stopped
+being read - so `RootCmd` currently binds no shorthands at all, which is a snapshot
+rather than a promise. Before adding `StringVarP`/`BoolVarP`/etc. with a shorthand on
+any command, check `cmd/root.go`'s persistent flags first.
 
 ## Adding New Components
 
