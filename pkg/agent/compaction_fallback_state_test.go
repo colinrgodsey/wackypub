@@ -125,7 +125,7 @@ func TestCompactionFallback_HookNamesServingLevel(t *testing.T) {
 		return ag, &d, nil
 	}
 
-	compacted, err := CheckAndCompactSessionWithFallback(t.Context(), tempDir, primaryCfg, loader, true, nil)
+	compacted, err := CheckAndCompactSessionWithFallback(t.Context(), tempDir, primaryCfg, loader, true, false, nil)
 	if err != nil {
 		t.Fatalf("compaction errored: %v", err)
 	}

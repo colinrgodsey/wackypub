@@ -1811,7 +1811,12 @@ type CompactSessionRequest struct {
 	RuntimePath string `protobuf:"bytes,4,opt,name=runtime_path,json=runtimePath,proto3" json:"runtime_path,omitempty"`
 	// workspace_dir is the filesystem path to the workspace root containing the agent.
 	// When empty, the SDK's configured default workspace directory is used.
-	WorkspaceDir  string `protobuf:"bytes,5,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	WorkspaceDir string `protobuf:"bytes,5,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
+	// force_major forces this pass to be a major (full-rewrite) pass regardless of where the
+	// cycle counter sits in its major-compact-every schedule. Operator escape hatch (compact
+	// CLI --force-major): the cycle counter still advances as usual - the forced pass stamps
+	// compact-cycle and last-major-cycle exactly like a scheduled major.
+	ForceMajor    bool `protobuf:"varint,6,opt,name=force_major,json=forceMajor,proto3" json:"force_major,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1879,6 +1884,13 @@ func (x *CompactSessionRequest) GetWorkspaceDir() string {
 		return x.WorkspaceDir
 	}
 	return ""
+}
+
+func (x *CompactSessionRequest) GetForceMajor() bool {
+	if x != nil {
+		return x.ForceMajor
+	}
+	return false
 }
 
 // CompactConfigOverride specifies in-memory parameter overrides for session compaction (D83).
@@ -5181,13 +5193,15 @@ const file_agent_proto_rawDesc = "" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
 	"\rworkspace_dir\x18\x02 \x01(\tR\fworkspaceDir\"@\n" +
 	"\x17StripSignaturesResponse\x12%\n" +
-	"\x0emodified_turns\x18\x01 \x01(\x05R\rmodifiedTurns\"\xe3\x01\n" +
+	"\x0emodified_turns\x18\x01 \x01(\x05R\rmodifiedTurns\"\x84\x02\n" +
 	"\x15CompactSessionRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x14\n" +
 	"\x05force\x18\x02 \x01(\bR\x05force\x12Q\n" +
 	"\x0fconfig_override\x18\x03 \x01(\v2(.wackypub.agent.v1.CompactConfigOverrideR\x0econfigOverride\x12!\n" +
 	"\fruntime_path\x18\x04 \x01(\tR\vruntimePath\x12#\n" +
-	"\rworkspace_dir\x18\x05 \x01(\tR\fworkspaceDir\"\xd0\x01\n" +
+	"\rworkspace_dir\x18\x05 \x01(\tR\fworkspaceDir\x12\x1f\n" +
+	"\vforce_major\x18\x06 \x01(\bR\n" +
+	"forceMajor\"\xd0\x01\n" +
 	"\x15CompactConfigOverride\x12\x1f\n" +
 	"\vappend_only\x18\x01 \x01(\bR\n" +
 	"appendOnly\x12\x1f\n" +

@@ -853,7 +853,7 @@ func (fa *FolderAgent) checkPostTurnCompaction(ctx context.Context, wsDir string
 		if fa.UsageTracker != nil {
 			fa.UsageTracker.Reset()
 		}
-		if _, err := CheckAndCompactSessionWithFallback(ctx, fa.AgentDir, fa.RuntimeConfig, fa.compactionAgentLoader(wsDir), true, nil); err != nil {
+		if _, err := CheckAndCompactSessionWithFallback(ctx, fa.AgentDir, fa.RuntimeConfig, fa.compactionAgentLoader(wsDir), true, false, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: post-turn session compaction error: %v\n", err)
 		}
 	}
@@ -867,7 +867,7 @@ func (fa *FolderAgent) checkColdStartCompaction(ctx context.Context, turns []*ge
 	budget := contextBudget(fa.RuntimeConfig.ContextWindow, fa.RuntimeConfig.MaxOutputReserve, resolveOverheadPct(fa.AgentDir))
 	used, _ := contextUsed(0, turns, fa.RuntimeConfig.PreserveThinking)
 	if exceedsBudget(used, budget) {
-		compacted, err := CheckAndCompactSessionWithFallback(ctx, fa.AgentDir, fa.RuntimeConfig, fa.compactionAgentLoader(filepath.Dir(fa.AgentDir)), true, nil)
+		compacted, err := CheckAndCompactSessionWithFallback(ctx, fa.AgentDir, fa.RuntimeConfig, fa.compactionAgentLoader(filepath.Dir(fa.AgentDir)), true, false, nil)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: cold-start session compaction error: %v\n", err)
 		} else if compacted {
@@ -906,7 +906,7 @@ func (fa *FolderAgent) compactForContinuation(ctx context.Context, yield func(st
 	if fa.UsageTracker != nil {
 		fa.UsageTracker.Reset()
 	}
-	compacted, err := CheckAndCompactSessionWithFallback(ctx, fa.AgentDir, fa.RuntimeConfig, fa.compactionAgentLoader(filepath.Dir(fa.AgentDir)), true, nil)
+	compacted, err := CheckAndCompactSessionWithFallback(ctx, fa.AgentDir, fa.RuntimeConfig, fa.compactionAgentLoader(filepath.Dir(fa.AgentDir)), true, false, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: auto-continuation compaction error: %v\n", err)
 		yield(fmt.Sprintf("\n\n[Auto-continuation aborted: session compaction error: %v - incomplete status.]", err), nil)

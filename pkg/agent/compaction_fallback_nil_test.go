@@ -41,7 +41,7 @@ func TestCompactionFallback_NilRuntimeConfig_NoPanicAndNoDeadlock(t *testing.T) 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = CheckAndCompactSessionWithFallback(context.Background(), tempDir, nil, loader, true, nil)
+		_, _ = CheckAndCompactSessionWithFallback(context.Background(), tempDir, nil, loader, true, false, nil)
 	}()
 
 	select {
