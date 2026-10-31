@@ -14,8 +14,6 @@ import (
 
 var (
 	workspaceDir          string
-	modelName             string
-	apiKey                string
 	maxToolTurns          int
 	commandTimeoutSeconds int
 
@@ -161,8 +159,6 @@ func Execute() {
 
 func init() {
 	RootCmd.PersistentFlags().StringVar(&workspaceDir, "ws", ".", "workspace directory path (defaults to current working directory)")
-	RootCmd.PersistentFlags().StringVarP(&modelName, "model", "m", "", "Gemini model override (e.g. gemini-2.5-flash)")
-	RootCmd.PersistentFlags().StringVar(&apiKey, "api-key", "", "Gemini API key override (or GEMINI_API_KEY env var)")
 	RootCmd.PersistentFlags().IntVar(&maxToolTurns, "max-tool-turns", adkAgent.DefaultMaxToolTurns, "Maximum consecutive tool-call turns allowed per generation")
 	RootCmd.PersistentFlags().IntVar(&commandTimeoutSeconds, "command-timeout-seconds", adkAgent.DefaultCommandTimeoutSeconds, "Maximum execution timeout in seconds for tool commands (-1 to disable)")
 	RootCmd.AddCommand(skillCmd)
