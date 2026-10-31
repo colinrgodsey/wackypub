@@ -24,7 +24,7 @@ wackypub workspace <agent_id>
 ### 2. Auto-Discovering Commands & Options
 Use `--help` at any level of the command hierarchy to explore usage:
 ```bash
-# Global flags (--ws <dir>, --config <file>, -m/--model <model>, --api-key <key>)
+# Global flags (--ws <dir>, -m/--model <model>, --api-key <key>, --max-tool-turns <n>, --command-timeout-seconds <n>)
 wackypub --help
 
 # List all agent management subcommands

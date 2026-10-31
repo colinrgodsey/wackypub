@@ -10,17 +10,14 @@ import (
 	"github.com/spf13/cobra"
 
 	adkAgent "github.com/colinrgodsey/wackypub/pkg/agent"
-	"github.com/colinrgodsey/wackypub/pkg/config"
 )
 
 var (
-	cfgFile               string
 	workspaceDir          string
 	modelName             string
 	apiKey                string
 	maxToolTurns          int
 	commandTimeoutSeconds int
-	cfg                   *config.Config
 
 	// BundledA2ASkill holds embedded skills/wackypub-a2a/SKILL.md text passed from main.go (D34).
 	BundledA2ASkill string
@@ -119,28 +116,6 @@ OpenAI-compatible model adapters, macro prompt inclusion (@<FILE_PATH>), and aut
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	},
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		var err error
-		cfgPath := cfgFile
-		if cfgPath == "" {
-			cfgPath = "wackypub.yaml"
-		}
-
-		cfg, err = config.LoadConfig(cfgPath)
-		if err != nil {
-			// Ignore if wackypub.yaml doesn't exist for agent CLI operations
-			cfg = config.DefaultConfig()
-		}
-
-		if modelName != "" {
-			cfg.DefaultModel = modelName
-		}
-		if apiKey != "" {
-			cfg.APIKey = apiKey
-		}
-
-		return nil
-	},
 }
 
 // GetWorkspaceDir returns the resolved workspace directory according to D15.
@@ -185,7 +160,6 @@ func Execute() {
 }
 
 func init() {
-	RootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "wackypub.yaml", "config file path")
 	RootCmd.PersistentFlags().StringVar(&workspaceDir, "ws", ".", "workspace directory path (defaults to current working directory)")
 	RootCmd.PersistentFlags().StringVarP(&modelName, "model", "m", "", "Gemini model override (e.g. gemini-2.5-flash)")
 	RootCmd.PersistentFlags().StringVar(&apiKey, "api-key", "", "Gemini API key override (or GEMINI_API_KEY env var)")
