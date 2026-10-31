@@ -2,8 +2,8 @@
 name: assistant-agent
 title: Long-Lived Personal Assistant
 confinement: safe-unconfined
-skills: [wackypub-ws, assistant-capabilities, memory-system, security-safety, execution-discipline, files-rw]
-tools: [files-rw]
+skills: [wackypub-ws, assistant-capabilities, memory-system, security-safety, execution-discipline, files-rw, wackyproc]
+tools: [files-rw, wackyproc]
 ---
 
 # Long-Lived Personal Assistant
@@ -18,6 +18,9 @@ agent's own directory. Safe to run unconfined on the host.
 > later add bash or any other scripting capability, reclassify as
 > `container-recommended` and move it into a container - see the
 > [coding-agent](coding-agent.md) recipe.
+>
+> Step 12's `wackyproc` is not a shell and does not trigger that reclassification: it
+> backgrounds only binaries discovered in `tools/`, with no `PATH` fallback.
 
 > Prerequisite: `wackypub` and `files-rw` on your PATH (each repo's README Install
 > section — `go install github.com/colinrgodsey/<tool>@latest`).
@@ -87,7 +90,8 @@ ln -s "$(command -v files-rw)" "$WS/assistant/tools/files-rw"
 ```
 
 No `bash`, no `wackyproc`, no `wackypub` - this agent's only external capability is
-scoped file access.
+scoped file access. [Step 12](#12-optional-background-long-commands-and-get-woken)
+adds `wackyproc` later if you want background tasks, and nothing before it needs it.
 
 ## 5. Install the skills
 
@@ -231,6 +235,98 @@ cd "$WS" && wackypub agent assistant prompt \
 
 The second turn's answer should quote the exact line the first turn wrote - if it
 does, the write path (tool -> grant -> file) and the read path both work.
+
+## 12. Optional: background long commands and get woken
+
+The core recipe has no `wackyproc` on purpose. Add it when this agent starts issuing
+commands that outlast a turn, and it becomes fire-and-forget: the command goes to a
+background job, the turn ends, and a hook wakes the agent when the job finishes so it
+reads the result on its own. Two example scripts from the wackyproc repo do the whole
+thing; nothing about the core recipe changes.
+
+```bash
+export WACKYPROC_REPO="$HOME/wackyproc"   # your wackyproc checkout
+ln -s "$(command -v wackyproc)" "$WS/assistant/tools/wackyproc"
+ln -s "$WACKYPROC_REPO/skills/wackyproc" "$WS/assistant/skills/wackyproc"
+
+mkdir -p "$WS/assistant/hooks/pre-run-command" "$WS/assistant/hooks/on-proc-complete"
+cp "$WACKYPROC_REPO/examples/hooks/pre-run-command/10-auto-defer" \
+   "$WS/assistant/hooks/pre-run-command/10-auto-defer"
+cp "$WACKYPROC_REPO/examples/hooks/on-proc-complete/10-wake-agent" \
+   "$WS/assistant/hooks/on-proc-complete/10-wake-agent"
+chmod +x "$WS/assistant/hooks/pre-run-command/10-auto-defer" \
+   "$WS/assistant/hooks/on-proc-complete/10-wake-agent"
+```
+
+The wake talks to the agent from the outside, so it needs the two `wackypub`
+requirements for an agent messaging itself:
+
+```bash
+echo assistant >> "$WS/assistant/WACKYPUB_ALLOWED_AGENTS"
+```
+
+Self-targeting is denied unless your own id is in that list, and the script strips
+both chain carriers (`AGENT2AGENT`, `WACKYPROC_CALL_CHAIN`) before dispatching - if
+either survives, the chain of the turn that started the job is still live, the wake
+reads as a cycle, and the notification is lost. Leaving `wackypub` off `tools/`
+keeps it out of the agent's own tool list: the wake calls it from `PATH`, host-side.
+
+**The marker, not a heuristic.** The default policy defers only calls the agent
+explicitly marks, so nothing about ordinary tool calls changes:
+
+```bash
+echo 'WACKYPROC_AUTODEFER_POLICY=marker' >> "$WS/assistant/.env"
+```
+
+`marker` is what an unset value means already; writing it down just makes the choice
+visible. Accepted values are `off` (kill switch), `marker`, `heuristic` (a stated
+list of build/test commands - `go test`, `cargo build`, `npm install`, and friends),
+and `always`. The marker itself is per call, in `run_command`'s `env`:
+
+```json
+{"WACKYPROC_BG": "1"}
+```
+
+`1`, `true`, `yes` and `on` all count. A deferred call never runs inline as well: the
+hook short-circuits it and the agent sees the job id plus the retrieval verbs
+(`wackyproc get`, `wait`, `peek`), which is why the recipe does not need the agent to
+have read a manual for this to be usable. Anything the hook cannot do - no python3,
+no `wackyproc` binary, spawn failure - exits silently and the command runs inline as
+if the hook were absent. `wackyproc` and `wackypub` calls are never deferred, so A2A
+semantics are untouched.
+
+**Verify both halves.** `wackypub agent hooks` lists only the files discovery would
+actually execute, so it catches the two usual mistakes (missing exec bit, wrong
+directory) rather than printing what you meant to install:
+
+```bash
+cd "$WS" && wackypub agent hooks assistant
+```
+
+Expect both scripts. Then prove the wake end to end from the host, where the job
+runs as this user:
+
+```bash
+cd "$WS/assistant" && wackyproc run files-rw access
+cd "$WS" && wackypub agent read-session assistant
+```
+
+The session should gain a turn whose opening message is the completion notice,
+followed by the agent's reply about the finished job. Nothing appearing means the
+self-dispatch grant above is missing; that is the failure this step is easy to get
+wrong.
+
+**What opt-in costs you, honestly.** Hooks are executed by `wackypub` on the host,
+not inside the agent's tool sandbox, so paths in them are host paths and a container
+added later does not confine them. `wackyproc` jobs are host processes too: they see
+the filesystem as the agent's user, not through the mounts the agent's own shell has,
+and they keep running after the turn ends. The wake fires only when the agent's
+session lock is free - a busy agent is skipped, not queued, and the job stays
+un-notified until a later `wackyproc get`/`wait` read or the
+`end-of-turn` piggyback example (`$WACKYPROC_REPO/examples/hooks/end-of-turn/`)
+surfaces it. See `docs/agents.md` section 6 for how hook discovery, the action
+contract, and the `pre-run-command` payload work; the [coding-agent](coding-agent.md)
+recipe shows the same `wackyproc` install without the wake.
 
 ## What you have
 
