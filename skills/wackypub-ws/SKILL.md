@@ -15,6 +15,7 @@ This skill references files, scripts, and binaries that live in these repos - cl
 - **`files-rw`** - `https://github.com/colinrgodsey/files-rw` - the allowlist-gated file access tool.
 - **`wackyproc`** - `https://github.com/colinrgodsey/wackyproc` - the zero-daemon background process manager.
 - **`wackyacp`** - `https://github.com/colinrgodsey/wackyacp` - the ACP bridge layer; ships both the `wackyacp` and `wackyagy` binaries (see "Bridging External Runtimes" below).
+- **`wackydiscord`** - `https://github.com/colinrgodsey/wackydiscord` - the Discord bridge; binds Discord channels to agents and streams sessions live (needs a Discord bot token - see "Discord Bot Token" below).
 
 ## Setting Up an Agent & Swarm From Scratch
 
@@ -223,6 +224,12 @@ inside its container. **Known gap, not solved by this setup**: a command deferre
 out-of-process background dispatcher (e.g. a `wackyproc`-style job runner) escapes the
 sandbox if the dispatcher re-execs it directly rather than re-entering through `tools/bash`
 - it runs on the bare host. There is no enforcement point here that catches that case.
+
+### Discord Bot Token (`wackydiscord`)
+
+Running a Discord-connected agent requires a Discord bot token. Create a Discord application, invite the bot to your server, and copy the token by following the [Discord setup guide](https://docs.openclaw.ai/channels/discord/setup). The token reaches wackydiscord as the `DISCORD_BOT_TOKEN` environment variable - set it in the workspace `.env` or the container environment (the getting-started `.env.example` includes an empty `DISCORD_BOT_TOKEN=` line; docker-compose passes it through automatically).
+
+Without a token set, `wackydiscord` exits with an explicit error naming the variable; the rest of the workspace (REPL, recipes, non-Discord agents) is unaffected.
 
 ### Bridging External Runtimes (`wackyacp` + `wackyagy`)
 

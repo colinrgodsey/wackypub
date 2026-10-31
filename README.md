@@ -43,6 +43,8 @@ That's it — this builds the multi-tool suite (`wackypub`, `files-rw`, `wackypr
 
 Describe what you want to build (a coding assistant, a Discord bot persona, a multi-agent research swarm), and the Director scaffolds your agents, configures backend runtimes, links tools/skills, and writes an operational entrypoint (`/ws/desired-entrypoint.sh`). When you type `exit` in the REPL, the container automatically hands off execution to your new service.
 
+**Building a Discord bot?** You will need a Discord bot token. Create a Discord application and grab the token by following the [Discord setup guide](https://docs.openclaw.ai/channels/discord/setup), then set `DISCORD_BOT_TOKEN` in your `.env` before launching the Director. The token is passed through to the container automatically and wackydiscord (or your Director-built Discord service) picks it up from there.
+
 If your service ever crashes or errors, the container's bootloader automatically falls back to the Director REPL for interactive inspection and recovery. And because `./workspace` is a standard host bind mount, you can inspect, edit, or reset files directly from your host at any time.
 
 ## Quick Start: Bring Your Own Agent
