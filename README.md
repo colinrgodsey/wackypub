@@ -39,11 +39,36 @@ This came up almost by accident in an actual working session building this proje
    docker compose up
    ```
 
-That's it — this builds the multi-tool suite (`wackypub`, `files-rw`, `wackyproc`, `wackydiscord`), seeds a host-mounted workspace (`./workspace`), and drops you straight into an interactive REPL talking to the **Director** agent.
+That's it — this builds the multi-tool suite (`wackypub`, `files-rw`, `wackyproc`, `wackydiscord`, `wackyacp`), seeds a host-mounted workspace (`./workspace`), and drops you straight into an interactive REPL talking to the **Director** agent.
 
 Describe what you want to build (a coding assistant, a Discord bot persona, a multi-agent research swarm), and the Director scaffolds your agents, configures backend runtimes, links tools/skills, and writes an operational entrypoint (`/ws/desired-entrypoint.sh`). When you type `exit` in the REPL, the container automatically hands off execution to your new service.
 
 If your service ever crashes or errors, the container's bootloader automatically falls back to the Director REPL for interactive inspection and recovery. And because `./workspace` is a standard host bind mount, you can inspect, edit, or reset files directly from your host at any time.
+
+### Choose your frontend
+
+The REPL you just talked to the Director in is honest, minimal, and not where you
+should live day to day - it's a terminal with no history scrollback worth keeping
+and no concurrent access. Once an agent exists, point a real frontend at it instead:
+
+- **[Zed](https://zed.dev/) (recommended for coding/editor work)** - Zed speaks the
+  Agent Client Protocol (ACP) natively, and `wackyacp serve` (bundled in the image)
+  is the ACP server side of that connection. With the container still running,
+  configure Zed's agent server to spawn:
+  ```bash
+  docker exec -i wackypub-director wackyacp serve --agent-folder /ws/<agent_id>
+  ```
+  `docker exec` reaches the container regardless of what its own entrypoint is doing
+  (REPL, wackydiscord, anything), so this works the moment the agent exists - no
+  extra setup. If you want that connection reachable from a different machine instead
+  of only `docker exec` on this host, ask the Director to write a
+  `desired-entrypoint.sh` that runs `wackyacp serve --host 0.0.0.0 --port <port>` as
+  the container's main process and expose that port in `docker-compose.yml`.
+- **Discord (recommended for a persistent, always-on persona)** - tell the Director
+  you want a Discord bot; it wires `wackydiscord` and writes the
+  `desired-entrypoint.sh` for you (see [Use cases](#use-cases) below).
+- **The bare REPL** - fine for setup, debugging, and the automatic crash-recovery
+  fallback above. Not something to run a real workflow through.
 
 ## Quick Start: Bring Your Own Agent
 
@@ -136,7 +161,7 @@ A few tools worth linking into `tools/` for a real workspace, not just the demo:
 - **[playwright-cli](https://github.com/microsoft/playwright-cli)** — a CLI-native wrapper around Playwright browser automation, built specifically for terminal coding agents.
 - **[mcporter](https://github.com/openclaw/mcporter)** — auto-discovers and invokes MCP tools directly from the command line. Since `tools/` will run anything that's an executable, this means the entire MCP ecosystem becomes usable here with zero wackypub-side integration work.
 - **[acpx](https://github.com/openclaw/acpx)** — runs headless ACP coding sessions from the CLI, so an agent can delegate whole coding tasks to another coding agent (Claude Code and friends) without a human in the loop.
-- **[wackyacp](https://github.com/colinrgodsey/wackyacp)** (recommended) — our own bridge that turns an ACP runtime (Claude Code, Codex, agy) into a full wackypub agent, with special support for the Claude Agent SDK. Deep docs live in that repo and in the [wackypub-ws skill](skills/wackypub-ws/SKILL.md).
+- **[wackyacp](https://github.com/colinrgodsey/wackyacp)** (recommended) — our own bridge, in both directions: `wackyacp` turns an ACP runtime (Claude Code, Codex, agy) into a full wackypub agent, with special support for the Claude Agent SDK; `wackyacp serve` does the reverse, exposing a wackypub agent as an ACP server an editor like [Zed](#choose-your-frontend) can connect to. Bundled (built from a pinned commit) in the getting-started container's image; outside the container, it's a separate install. Deep docs live in that repo and in the [wackypub-ws skill](skills/wackypub-ws/SKILL.md).
 - **[GitKB](https://gitkb.com/)** — git-backed knowledge base for decision records and task tracking, with CLI integrity checking (`git-kb fsck`). This repo's internal decision log runs on it; recommended for contributors whose agents can use it. If you don't have GitKB, document your decisions fully in the PR description instead.
 - **[roller](https://github.com/dice-roller/cli)** — dice-notation CLI. Good for RP use cases, but also just genuine random decision-making in general, which LLMs can be surprisingly bad at on their own.
 
