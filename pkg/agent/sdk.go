@@ -1795,7 +1795,7 @@ func (s *AgentSDK) CompactSession(ctx context.Context, req *agentv1.CompactSessi
 		if err != nil {
 			return nil, err
 		}
-		compacted, err = CheckAndCompactSessionWithFallback(ctx, fa.AgentDir, fa.RuntimeConfig, fa.compactionAgentLoader(wsDir), force, cfgOverride)
+		compacted, err = CheckAndCompactSessionWithFallback(ctx, fa.AgentDir, fa.RuntimeConfig, fa.compactionAgentLoader(wsDir), force, req.GetForceMajor(), cfgOverride)
 		if err != nil {
 			return nil, err
 		}
@@ -1847,7 +1847,7 @@ func (s *AgentSDK) CompactSession(ctx context.Context, req *agentv1.CompactSessi
 			}
 			return fallbackAgent, nil, nil
 		}
-		compacted, err = CheckAndCompactSessionWithFallback(ctx, agentDir, overrideRuntimeCfg, loadCompactionAgent, force, cfgOverride)
+		compacted, err = CheckAndCompactSessionWithFallback(ctx, agentDir, overrideRuntimeCfg, loadCompactionAgent, force, req.GetForceMajor(), cfgOverride)
 		if err != nil {
 			return nil, err
 		}

@@ -23,6 +23,7 @@ var (
 	messageFlag        string
 	compactMDFile      string
 	compactRuntimeFile string
+	compactForceMajor  bool
 	asyncFlag          bool
 )
 
@@ -661,6 +662,18 @@ token count against contextWindow. On a genuinely empty session, this is a clean
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
 
+Flags:
+  --force-major  Run a major (full-rewrite) pass regardless of where the cycle counter sits
+                 in its major-compact-every schedule. Normally a pass is major only when the
+                 next cycle lines up with major-compact-every, or MEMORY.md crosses
+                 major-compact-memory-pct - hand-editing compact-cycle to try to line a major
+                 up is how operators miss (a cycle like 38, with every: 5, never lands 39 on
+                 0), so this flag is the explicit escape hatch for "I want a full pass now".
+                 The cycle counter still increments as usual: the forced pass stamps
+                 compact-cycle and last-major-cycle in MEMORY.md exactly like a scheduled
+                 major, and the following pass obeys the normal rules. If MEMORY.md does not
+                 exist yet, the forced pass creates it as a full consolidation.
+
 Prints whether compaction actually ran. Acquires the session lock for the duration of the
 operation.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -721,6 +734,7 @@ operation.`,
 		resp, err := client.CompactSession(ctx, &agentv1.CompactSessionRequest{
 			AgentId:        agentID,
 			Force:          true,
+			ForceMajor:     compactForceMajor,
 			ConfigOverride: cfgOverride,
 			RuntimePath:    compactRuntimeFile,
 			WorkspaceDir:   wsDir,
@@ -1569,6 +1583,7 @@ func init() {
 	agentPromptCmd.Flags().BoolVar(&asyncFlag, "async", false, "Skip call-chain cycle detection for supervised async dispatch")
 	agentCompactCmd.Flags().StringVar(&compactMDFile, "md-file", "", "Path to alternate COMPACT.md file to use for compaction recipe")
 	agentCompactCmd.Flags().StringVar(&compactRuntimeFile, "runtime", "", "Path to alternate runtime.json file to use for compaction")
+	agentCompactCmd.Flags().BoolVar(&compactForceMajor, "force-major", false, "Force a major (full-rewrite) pass regardless of the cycle counters major-compact-every schedule")
 	scratchpadCreateCmd.Flags().StringVar(&messageFlag, "message", "", "Scratchpad text payload")
 
 	scratchpadReadCmd.Flags().IntVar(&scratchpadSkipLines, "skip-lines", 0, "Number of lines to skip from start of entry")

@@ -522,7 +522,7 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 	loadCompactionAgent := func(cfg *RuntimeConfig) (agent.Agent, *int64, error) {
 		return adkAgent, toolDenials, nil
 	}
-	return CheckAndCompactSessionWithFallback(ctx, agentDir, runtimeCfg, loadCompactionAgent, force, cfgOverride)
+	return CheckAndCompactSessionWithFallback(ctx, agentDir, runtimeCfg, loadCompactionAgent, force, false, cfgOverride)
 }
 
 func backendName(cfg *RuntimeConfig) string {
@@ -544,13 +544,19 @@ func backendName(cfg *RuntimeConfig) string {
 // built fa.CompactionAgent; fallback levels call loadFolderAgentFromRuntime (or the caller's
 // equivalent per-level loader) so the model constructor re-runs per provider.
 //
+// forceMajor (the CLI's --force-major) overrides the pass-mode decision outright: the pass
+// runs as a major full-rewrite regardless of the cycle counter, including over the post-major
+// minor guard. It changes nothing else - what is compacted, how the summary is validated, and
+// how the pass is booked (compact-cycle advances and last-major-cycle is stamped exactly like
+// a scheduled major).
+//
 // Hook lifecycle (pre-compact/post-compact/compact-failed): this is the single choke point
 // every compaction trigger - the natural token-threshold check, an explicit force from a
 // CLI/RPC call, and a mid-turn short-circuit - routes through, so hooking here once covers
 // all of them. pre-compact and compact-failed run synchronously and never alter or abort
 // compaction (hook failures are logged as warnings only); post-compact runs asynchronously
 // so a slow hook script never taxes the next turn.
-func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, runtimeCfg *RuntimeConfig, loadCompactionAgent func(cfg *RuntimeConfig) (agent.Agent, *int64, error), force bool, cfgOverride *CompactConfig) (bool, error) {
+func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, runtimeCfg *RuntimeConfig, loadCompactionAgent func(cfg *RuntimeConfig) (agent.Agent, *int64, error), force bool, forceMajor bool, cfgOverride *CompactConfig) (bool, error) {
 	agentID := filepath.Base(agentDir)
 	sessionPath := filepath.Join(agentDir, SessionFileName)
 	trigger := "forced"
@@ -599,8 +605,8 @@ func CheckAndCompactSessionWithFallback(ctx context.Context, agentDir string, ru
 		existingMemory, e = ReadMemoryFile(agentDir)
 		return e
 	}()
-	isMajor := false
-	if memErr == nil {
+	isMajor := forceMajor
+	if !isMajor && memErr == nil {
 		isMajor = decideMemoryPass(existingMemory, compactCfg, runtimeCfg)
 	}
 

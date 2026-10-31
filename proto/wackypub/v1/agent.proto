@@ -590,6 +590,12 @@ message CompactSessionRequest {
   // workspace_dir is the filesystem path to the workspace root containing the agent.
   // When empty, the SDK's configured default workspace directory is used.
   string workspace_dir = 5;
+
+  // force_major forces this pass to be a major (full-rewrite) pass regardless of where the
+  // cycle counter sits in its major-compact-every schedule. Operator escape hatch (compact
+  // CLI --force-major): the cycle counter still advances as usual - the forced pass stamps
+  // compact-cycle and last-major-cycle exactly like a scheduled major.
+  bool force_major = 6;
 }
 
 // CompactConfigOverride specifies in-memory parameter overrides for session compaction (D83).

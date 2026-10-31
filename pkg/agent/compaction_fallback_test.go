@@ -85,7 +85,7 @@ func compactionFallbackFixture(t *testing.T, primary, fallback *fallbackStubMode
 		return ag, &d, nil
 	}
 
-	compacted, err := CheckAndCompactSessionWithFallback(context.Background(), tempDir, primaryCfg, loader, true, nil)
+	compacted, err := CheckAndCompactSessionWithFallback(context.Background(), tempDir, primaryCfg, loader, true, false, nil)
 	mem, _ := ReadMemoryFile(tempDir)
 	return mem, compacted, atomic.LoadInt32(&primary.calls), atomic.LoadInt32(&fallback.calls), err
 }
@@ -166,7 +166,7 @@ func TestCompactionFallback_NoFallbackKeepsOldBehavior(t *testing.T) {
 	}
 	loader := func(cfg *RuntimeConfig) (adkAgent.Agent, *int64, error) { return ag, &denials, nil }
 
-	_, err = CheckAndCompactSessionWithFallback(context.Background(), tempDir, primaryCfg, loader, true, nil)
+	_, err = CheckAndCompactSessionWithFallback(context.Background(), tempDir, primaryCfg, loader, true, false, nil)
 	if err == nil {
 		t.Fatal("expected compaction to fail when the only backend qualifies-fails")
 	}
