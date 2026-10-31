@@ -1574,9 +1574,10 @@ func isRegisteredSubcommand(parent *cobra.Command, name string) bool {
 }
 
 func init() {
-	// -m is intentionally not used here: RootCmd already binds it to --model (see cmd/root.go).
-	// A local -m shorthand on this flagset would collide with that persistent flag and cobra
-	// panics on the collision as soon as --help (or completion) merges the two flag sets.
+	// --message stays long-only here, and check cmd/root.go before ever giving it -m: -m was the
+	// persistent --model shorthand, and a local -m on this flagset made cobra panic as soon as
+	// --help (or completion) merged the two flag sets. That persistent flag is now gone, but the
+	// panic was real and the shorthand stays free for whoever needs it first.
 	agentAddCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
 	agentPromptCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
 	agentAsideCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
