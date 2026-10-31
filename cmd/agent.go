@@ -20,11 +20,11 @@ import (
 )
 
 var (
-	messageFlag         string
-	compactMDFile       string
-	compactRuntimeFile  string
-	compactForceMajor   bool
-	asyncFlag           bool
+	messageFlag        string
+	compactMDFile      string
+	compactRuntimeFile string
+	compactForceMajor  bool
+	asyncFlag          bool
 )
 
 // stdinIsPipe reports whether stdin is connected to a pipe (not a TTY). Callers use it to
