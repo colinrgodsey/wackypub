@@ -18,7 +18,7 @@ setup detail.
 
 > **The containment tier is a security decision, and it belongs to the human.**
 >
-> Steps [2](#2-choose-the-containment-tier-human-decision), 13 and 14 decide how much
+> Steps [2](#2-choose-the-containment-tier-human-decision), 13, 14 and 15 decide how much
 > of the machine this agent can touch. That choice must be made by the person the
 > agent is being built for, not by whoever is following this recipe. Three
 > prohibitions: do not choose a tier on their behalf; do not default upward because a
@@ -32,7 +32,7 @@ setup detail.
 > that some earlier run recorded badly. Answer their questions, including the fine
 > grained ones, by reading this repository's source - `pkg/agent/` is where the
 > boundaries actually live and it is the authority on what a tool can and cannot do.
-> Then get an explicit answer before wiring anything from step 13 or 14, and write the
+> Then get an explicit answer before wiring anything from step 13, 14 or 15, and write the
 > chosen tier and who chose it into the agent's `AGENTS.md`, so the next person to
 > touch this agent does not quietly re-decide it.
 >
@@ -47,7 +47,12 @@ setup detail.
 > is host-trusted by definition. If you add bash outside these steps, reclassify and
 > containerize the same way.
 >
-> `wackyproc` (step 15) is not a shell and does not by itself trigger a
+> Tier 4 points the other way: rather than restricting what the agent may call, it puts
+> the `wackypub` process itself inside a container, so the host is protected
+> from everything the agent runs. Reach is still in scope, so treat it as execution
+> containment rather than exfil containment.
+>
+> `wackyproc` (step 16) is not a shell and does not by itself trigger a
 > reclassification: it backgrounds only binaries discovered in `tools/`, with no `PATH`
 > fallback.
 
@@ -74,7 +79,7 @@ Adjust `REPO`/`FILESRW_REPO` if your checkouts live elsewhere.
 
 **This step is not yours to make.** Per the disclaimer at the top of this recipe, the
 tier is chosen by the person this agent is for, in conversation with you, and
-confirmed explicitly before you wire anything from step 13 or 14. Your job is to
+confirmed explicitly before you wire anything from step 13, 14 or 15. Your job is to
 explain, to answer capability questions from the source rather than from guesswork,
 and to record the answer. If they are not present, build the base and leave the tier
 steps untouched.
@@ -89,6 +94,7 @@ nothing in the base depends on a higher tier existing.
 | 2 | `wackypub` binary + `WACKYPUB_ALLOWED_AGENTS` roster (step 13) | Dispatch to named peers (`agent prompt`, `agent add`), scratchpad verbs, self-compaction, `agent watch` | It still cannot execute a single program. It can only address ids present in its own roster file, which is deny-all when the file is absent, and that check runs inside `wackypub` rather than on the arguments it was handed. The real exposure is transitive: whatever a listed peer can do becomes reachable through that peer |
 | 3a | `bashc` instead of `bash` (step 14a) | Runs commands inside a Docker container | Arbitrary execution, bounded by mounts: the container exposes three host directories at identical paths (project worktrees, project source, its own `container-ws`) and no push credentials, and host paths outside those mounts do not exist inside it. Sibling worktrees inside a mount are another agent's territory by convention, not by enforcement |
 | 3b | `bash` (step 14b) | Runs commands as your user, across the whole host | Nothing. An injected Tier 3b agent executes arbitrary commands with your permissions, and `FILES_RW_ACCESS` stops mattering, because bash does not consult it. This is coordinator-grade trust and should be granted as such |
+| 4 | the whole `wackypub` process in a container (step 15) | nothing new the model can call - it moves the boundary around what it already can | Execution fully contained: the agent, its tools, its hooks and any `wackyproc` job it spawns are all inside, and the host sees only bind mounts, so there is no host-side path for a deferred command to escape through (the gap Tier 3a leaves open). Still not exfil-safe: the container keeps its network, mounted host paths stay readable and writable, and model API keys are passed in through `.env` |
 
 How to read the table: the last column is the one that survives an adversary, so it is
 the column to decide on rather than the second. Two things make Tier 2 look smaller
@@ -151,7 +157,7 @@ ln -s "$(command -v files-rw)" "$WS/assistant/tools/files-rw"
 ```
 
 No `bash`, no `wackypub`, no `wackyproc` - this agent's only
-external capability is scoped file access, and that IS Tier 1. Steps 13 and 14 add
+external capability is scoped file access, and that IS Tier 1. Steps 13, 14 and 15 add
 capabilities on top, each one gated behind the human decision in step 2, and nothing
 before them needs them.
 
@@ -335,7 +341,7 @@ can borrow, so add peers the way you would add someone to a permissions group, a
 so when you ask for the tier.
 
 Also link the `scratchpad-efficiency` skill from this checkout
-if you want it using the scratchpad verbs, and add `assistant` itself to the roster only when you wire step 15,
+if you want it using the scratchpad verbs, and add `assistant` itself to the roster only when you wire step 16,
 because the completion wake is the agent messaging itself.
 
 ## 14. Tier 3 wiring: code execution (optional)
@@ -380,7 +386,83 @@ directly into arbitrary command execution instead of into a bad note. Grant it t
 you would grant ssh access, and offer 3a first when what they are describing is a need
 to run builds rather than a need to own the machine.
 
-## 15. Cross-tier enhancement: defer long work and get woken (optional)
+## 15. Tier 4 wiring: the whole agent inside a container (optional)
+
+**Only wire this on the human's explicit Tier 4 choice from step 2.**
+
+Tier 4 is a different kind of boundary from 3a, and confusing them undercuts both.
+`bashc` is *per-command* containment: the agent process stays on the host and each
+`run_command` call is `docker exec`'d into a container. Tier 4 is *process* containment:
+`wackypub` itself runs inside the container, so the agent, its tools, its hooks, its
+scratchpad writes and any `wackyproc` job it spawns are all in there, and what the host
+sees is a bind mount and nothing else. That difference matters most for the case the
+sandbox README documents as unsolved at Tier 3a: a command deferred to a background job
+can bypass `bashc` entirely and run on the bare host. Under Tier 4 the supervisor is
+itself inside the container, so there is no host-side path for a deferred job to leak
+through.
+
+What it does not do is stop exfiltration, and it is worth saying why in plain terms.
+The container keeps its network, because the model API call needs it, so anything the
+agent can read it can still send somewhere. And every path bind-mounted from the host is
+still readable and writable through that mount, so secrets living inside the mounted
+workspace are inside the blast radius, and your model API keys are handed to the
+container through `.env`. The honest summary: Tier 4 fully contains *execution*, which
+protects the host from everything the agent runs; it does not contain *data reach*.
+
+Two implementations ship with the repo, and they differ in one way you need to know
+before choosing.
+
+**A. The getting-started container** (root `Dockerfile` + `docker-compose.yml`). This
+image builds `wackypub`, `files-rw`, `wackyproc` and `wackydiscord` into
+`/usr/local/bin`, runs as your host UID/GID, bind-mounts one host directory as `/ws`, and
+starts a Director REPL; the entrypoint seeds an empty workspace from a bundled template
+and links a workspace `toolsets/` directory. The README Quick Start covers launching it:
+
+```bash
+cp .env.example .env          # set your model API key here
+export WORKSPACE_DIR="$WS"    # host directory; it arrives in the container as /ws
+docker compose up --build -d
+```
+
+Then build this recipe as written, with one change of venue: steps 3-12 edit files in
+`$WS` exactly as before, from the host, because that directory is the bind mount, while
+the *process* runs in the container:
+
+```bash
+docker compose exec wackypub wackypub --ws /ws agent assistant prompt "hello"
+```
+
+**B. The per-workspace sandbox container** (`scripts/sandbox/`). One persistent
+container per agent folder, named after its path with slashes replaced by underscores,
+created by `agent-sandbox.sh`, with `--restart unless-stopped` so it comes back after a
+host reboot, and three same-path mounts: the agent's `container-ws`, the sibling
+`projects/` and the sibling `worktrees/`. Same-path is what makes git work in a worktree
+from inside: a worktree's `.git` file points at the canonical repo by absolute path.
+
+```bash
+./scripts/sandbox/build.sh                  # once per host, as your real user, NOT sudo
+./scripts/sandbox/agent-sandbox.sh "$WS/assistant"
+```
+
+Note the difference before you rely on it: this image ships the *toolchain* (git, Go,
+Node, Python, tini) under an `agent` user built with your UID/GID, not the `wackypub`
+binaries. That is deliberate, because it is the image `bashc` execs into for 3a, so to
+run the agent process in it you install or copy the binaries in yourself. If you only
+need per-command containment, you are already at 3a and this step is overkill.
+
+Two operational properties to set expectations on. State lives on the host mounts, so
+removing or rebuilding a container never loses the agent's workspace, identity or memory
+- the container is disposable and the workspace is not - and the restart policy means the
+container returns on boot without you. Pushing is still not something the agent can do:
+the container holds no git credentials, so `git push` from inside has nothing to auth
+with, which is by design and is handled with coordinator-side credentials.
+
+Lastly, containment and capability are separate dials. Tier 4 lowers the ceiling on
+where code can hurt, but if you never symlink a shell into `tools/`, the agent still
+cannot execute anything and you are at Tier 1 semantics with an extra wall around the
+process. Tier 4 earns its keep paired with 3b: give it the host shell, and the host that
+shell can damage is only the mounted workspace rather than the machine.
+## 16. Cross-tier enhancement: defer long work and get woken (optional)
 
 The base recipe has no `wackyproc` on purpose. Add it when this agent starts issuing
 commands that outlast a turn, and it becomes fire-and-forget: the command goes to a
@@ -476,11 +558,13 @@ followed by the agent's reply about the finished job. Nothing appearing means th
 self-dispatch grant above is missing; that is the failure this step is easy to get
 wrong.
 
-**What opt-in costs you, honestly.** Hooks are executed by `wackypub` on the host,
-not inside the agent's tool sandbox, so paths in them are host paths and a container
-added later does not confine them. `wackyproc` jobs are host processes too: they see
-the filesystem as the agent's user, not through the mounts the agent's own shell has,
-and they keep running after the turn ends. The wake fires only when the agent's
+**What opt-in costs you, honestly.** Hooks are executed by `wackypub` on
+whatever machine runs `wackypub`, not inside an agent's tool sandbox. At Tiers 1-3a
+that is the host, so the container in 3a does not confine them and their paths are
+host paths; at Tier 4 the hooks live in the container with the process. `wackyproc` jobs
+follow the same rule: they run where `wackypub` runs, which at Tiers 1-3a means the host
+filesystem as the agent's user and at Tier 4 means the container and its mounts, and
+they keep running after the turn ends. The wake fires only when the agent's
 session lock is free - a busy agent is skipped, not queued, and the job stays
 un-notified until a later `wackyproc get`/`wait` read or the
 `end-of-turn` piggyback example (`$WACKYPROC_REPO/examples/hooks/end-of-turn/`)
@@ -502,6 +586,8 @@ recipe shows the same `wackyproc` install without the wake.
   host directories and holding no push credentials.
 - **Tier 3b, if chosen:** execution as your user across the host, with no boundary
   left to describe.
+- **Tier 4, if chosen:** the agent process and everything it spawns inside a container, with
+  state on host mounts and no push credentials - execution contained, data reach not.
 - A reliable notion of "today" via the date hook, which the memory system's daily
   archive convention depends on.
 ## Next steps
