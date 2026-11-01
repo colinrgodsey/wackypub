@@ -2,7 +2,7 @@
 name: assistant-agent
 title: Long-Lived Personal Assistant
 confinement: safe-unconfined
-skills: [wackypub-ws, assistant-capabilities, memory-system, security-safety, execution-discipline, files-rw, wackypub-a2a, bashc, wackyproc]
+skills: [wackypub-ws, assistant-capabilities, memory-system, security-safety, execution-discipline, files-rw, wackypub-a2a, scratchpad-efficiency, bashc, wackyproc]
 tools: [files-rw, wackypub, bash, wackyproc]
 ---
 
@@ -108,6 +108,7 @@ And the reason Tier 1 is a reasonable default rather than a crippled one: an
 assistant's usual jobs - remember, reflect, write, summarise, talk - need files, not
 execution. Raise the tier for a specific capability the person named, one tier at a
 time, and treat each raise as its own decision.
+
 ## 3. Runtime + API key
 
 Same pattern as [single-agent-chat](single-agent-chat.md): write
@@ -224,11 +225,16 @@ EOF
 ## 8. Write the AGENTS.md linkage file
 
 `AGENTS.md` is infrastructure, not content - it only links the four files above.
-`memory-system` tells the agent never to edit it; lessons go in `BRAIN.md` instead:
+`memory-system` tells the agent never to edit it; lessons go in `BRAIN.md` instead.
+Fill the containment line in from step 2 before you move on: it is where the human's
+decision gets recorded, and an agent that does not know its own tier cannot police it:
 
 ```bash
 cat > "$WS/assistant/AGENTS.md" <<'EOF'
 # AGENTS.md - Your Workspace
+
+# Containment Tier: Tier <N> (agreed with <User/Role> on <YYYY-MM-DD>)
+# Wiring must match this line. Raising the tier means asking again, not editing it.
 
 This folder is home. Treat it that way. Never update AGENTS.md.
 
@@ -315,6 +321,7 @@ than your judgement that it would be handy.
 ```bash
 ln -s "$(command -v wackypub)" "$WS/assistant/tools/wackypub"
 ln -s "$REPO/skills/wackypub-a2a" "$WS/assistant/skills/wackypub-a2a"
+ln -s "$REPO/skills/scratchpad-efficiency" "$WS/assistant/skills/scratchpad-efficiency"
 
 cat > "$WS/assistant/WACKYPUB_ALLOWED_AGENTS" <<'EOF'
 coder
@@ -340,8 +347,8 @@ transitive rather than local: every id in that file is a set of capabilities thi
 can borrow, so add peers the way you would add someone to a permissions group, and say
 so when you ask for the tier.
 
-Also link the `scratchpad-efficiency` skill from this checkout
-if you want it using the scratchpad verbs, and add `assistant` itself to the roster only when you wire step 16,
+Drop the `scratchpad-efficiency` link above if this agent will never touch a
+scratchpad. Add `assistant` itself to the roster only when you wire step 16,
 because the completion wake is the agent messaging itself.
 
 ## 14. Tier 3 wiring: code execution (optional)
@@ -380,7 +387,7 @@ ln -s "$(command -v bash)" "$WS/assistant/tools/bash"
 
 This is full execution as the user running `wackypub`, across every path that user can
 reach, with no mount boundary and no credential filter. Two consequences belong in
-front of the person explicitly: the `FILES_RW_ACCESS` grant from step 3 no longer
+front of the person explicitly: the `FILES_RW_ACCESS` grant from step 4 no longer
 constrains anything, because bash does not consult it, and prompt injection converts
 directly into arbitrary command execution instead of into a bad note. Grant it the way
 you would grant ssh access, and offer 3a first when what they are describing is a need
@@ -460,8 +467,10 @@ with, which is by design and is handled with coordinator-side credentials.
 Lastly, containment and capability are separate dials. Tier 4 lowers the ceiling on
 where code can hurt, but if you never symlink a shell into `tools/`, the agent still
 cannot execute anything and you are at Tier 1 semantics with an extra wall around the
-process. Tier 4 earns its keep paired with 3b: give it the host shell, and the host that
-shell can damage is only the mounted workspace rather than the machine.
+process. Tier 4 earns its keep paired with 3b: give it an unconstrained shell (`bash`),
+and the environment that shell can damage is only the mounted workspace rather than
+your host machine.
+
 ## 16. Cross-tier enhancement: defer long work and get woken (optional)
 
 The base recipe has no `wackyproc` on purpose. Add it when this agent starts issuing
@@ -590,6 +599,7 @@ recipe shows the same `wackyproc` install without the wake.
   state on host mounts and no push credentials - execution contained, data reach not.
 - A reliable notion of "today" via the date hook, which the memory system's daily
   archive convention depends on.
+
 ## Next steps
 
 - Raise the tier deliberately, or not at all: step 2 is a standing decision rather
