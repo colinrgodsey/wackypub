@@ -47,7 +47,7 @@ type RuntimeConfig struct {
 	// TurnDeadlineSeconds bounds a single fallback level's stream via the turn watchdog:
 	// if the level's stream does not terminate within the bound, the level fails with a
 	// named terminal error naming the backend (zero-text wedges descend to the fallback
-	// like any other qualifying failure). Defaults to DefaultTurnDeadlineSeconds (3600s)
+	// like any other qualifying failure). Defaults to DefaultTurnDeadlineSeconds (21600s)
 	// when unset or <= 0.
 	TurnDeadlineSeconds int `json:"turnDeadlineSeconds,omitempty"`
 
