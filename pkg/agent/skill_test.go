@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"iter"
 	"os"
 	"path/filepath"
@@ -326,6 +327,116 @@ Body B
 	}
 	if !strings.Contains(shadowed[0], "skill \"my-skill\"") || !strings.Contains(shadowed[0], "is shadowed by") {
 		t.Errorf("unexpected shadowed warning message: %s", shadowed[0])
+	}
+}
+
+// writeTestSkill writes a minimal SKILL.md under skillsRoot/<name>/SKILL.md.
+func writeTestSkill(t *testing.T, skillsRoot, name, description, body string) {
+	t.Helper()
+	dir := filepath.Join(skillsRoot, name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("failed to create skill dir %s: %v", dir, err)
+	}
+	content := fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n%s\n", name, description, body)
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write SKILL.md for %s: %v", name, err)
+	}
+}
+
+// TestDiscoverAgentSkills_WorkspaceAgentsSkills verifies that a skill living only
+// under <workspace_root>/.agents/skills/ - the cross-client convention this agent's
+// own skills/ directory does not cover - is discovered too.
+func TestDiscoverAgentSkills_WorkspaceAgentsSkills(t *testing.T) {
+	wsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), nil, 0644); err != nil {
+		t.Fatalf("failed to write %s marker: %v", RootMarkerFile, err)
+	}
+	agentDir := filepath.Join(wsDir, "bob")
+	if err := os.MkdirAll(filepath.Join(agentDir, SkillsDirName), 0755); err != nil {
+		t.Fatalf("failed to create agent skills dir: %v", err)
+	}
+	writeTestSkill(t, filepath.Join(agentDir, SkillsDirName), "agent-only", "Agent-level skill", "agent body")
+
+	workspaceSkillsDir := filepath.Join(wsDir, filepath.FromSlash(AgentsSkillsDirName))
+	if err := os.MkdirAll(workspaceSkillsDir, 0755); err != nil {
+		t.Fatalf("failed to create workspace .agents/skills dir: %v", err)
+	}
+	writeTestSkill(t, workspaceSkillsDir, "workspace-only", "Workspace-level skill", "workspace body")
+
+	skillsMap, _, _, shadowed, err := DiscoverAgentSkillsMap(agentDir)
+	if err != nil {
+		t.Fatalf("DiscoverAgentSkillsMap failed: %v", err)
+	}
+	if len(shadowed) != 0 {
+		t.Errorf("expected no shadowing, got %v", shadowed)
+	}
+	if _, ok := skillsMap["agent-only"]; !ok {
+		t.Errorf("expected agent-level skill 'agent-only' to be discovered, got %v", skillsMap)
+	}
+	if _, ok := skillsMap["workspace-only"]; !ok {
+		t.Errorf("expected workspace-level skill 'workspace-only' to be discovered, got %v", skillsMap)
+	}
+	if len(skillsMap) != 2 {
+		t.Fatalf("expected 2 total skills, got %d: %v", len(skillsMap), skillsMap)
+	}
+}
+
+// TestDiscoverAgentSkills_AgentOverridesWorkspace verifies the precedence rule: a
+// same-named skill at the agent level shadows the workspace-level one, mirroring
+// LoadAgentDotEnv's "agent overwrites workspace" direction.
+func TestDiscoverAgentSkills_AgentOverridesWorkspace(t *testing.T) {
+	wsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), nil, 0644); err != nil {
+		t.Fatalf("failed to write %s marker: %v", RootMarkerFile, err)
+	}
+	agentDir := filepath.Join(wsDir, "bob")
+	if err := os.MkdirAll(filepath.Join(agentDir, SkillsDirName), 0755); err != nil {
+		t.Fatalf("failed to create agent skills dir: %v", err)
+	}
+	writeTestSkill(t, filepath.Join(agentDir, SkillsDirName), "shared", "Agent version", "agent body")
+
+	workspaceSkillsDir := filepath.Join(wsDir, filepath.FromSlash(AgentsSkillsDirName))
+	if err := os.MkdirAll(workspaceSkillsDir, 0755); err != nil {
+		t.Fatalf("failed to create workspace .agents/skills dir: %v", err)
+	}
+	writeTestSkill(t, workspaceSkillsDir, "shared", "Workspace version", "workspace body")
+
+	skillsMap, _, _, shadowed, err := DiscoverAgentSkillsMap(agentDir)
+	if err != nil {
+		t.Fatalf("DiscoverAgentSkillsMap failed: %v", err)
+	}
+	sk, ok := skillsMap["shared"]
+	if !ok {
+		t.Fatalf("expected 'shared' skill to be discovered, got %v", skillsMap)
+	}
+	if sk.Description != "Agent version" {
+		t.Errorf("expected agent-level skill to win the collision, got description %q", sk.Description)
+	}
+	if len(shadowed) != 1 {
+		t.Fatalf("expected 1 shadowed warning (workspace-level copy shadowed by agent-level), got %d: %v", len(shadowed), shadowed)
+	}
+}
+
+// TestDiscoverAgentSkills_NoAgentsSkillsDirUnchanged verifies that a workspace with
+// no .agents/skills directory anywhere discovers identically to before that second
+// root existed: same skills, same shadow warnings.
+func TestDiscoverAgentSkills_NoAgentsSkillsDirUnchanged(t *testing.T) {
+	wsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), nil, 0644); err != nil {
+		t.Fatalf("failed to write %s marker: %v", RootMarkerFile, err)
+	}
+	agentDir := filepath.Join(wsDir, "bob")
+	if err := os.MkdirAll(filepath.Join(agentDir, SkillsDirName), 0755); err != nil {
+		t.Fatalf("failed to create agent skills dir: %v", err)
+	}
+	writeTestSkill(t, filepath.Join(agentDir, SkillsDirName), "only-skill", "Only skill", "body")
+
+	skillsMap, onDemand, _, shadowed, err := DiscoverAgentSkillsMap(agentDir)
+	if err != nil {
+		t.Fatalf("DiscoverAgentSkillsMap failed: %v", err)
+	}
+	if len(skillsMap) != 1 || len(onDemand) != 1 || len(shadowed) != 0 {
+		t.Fatalf("expected unchanged single-root discovery, got skillsMap=%v onDemand=%v shadowed=%v", skillsMap, onDemand, shadowed)
 	}
 }
 
