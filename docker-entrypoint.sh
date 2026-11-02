@@ -16,7 +16,7 @@ fi
 
 # Ensure workspace toolsets directory exists and has standard symlinks
 mkdir -p "$WS_DIR/toolsets"
-for bin in wackypub files-rw wackyproc wackydiscord; do
+for bin in wackypub files-rw wackyproc wackydiscord wackyacp; do
     BIN_PATH=$(command -v "$bin" || true)
     if [ -n "$BIN_PATH" ] && [ ! -e "$WS_DIR/toolsets/$bin" ]; then
         ln -sf "$BIN_PATH" "$WS_DIR/toolsets/$bin"
