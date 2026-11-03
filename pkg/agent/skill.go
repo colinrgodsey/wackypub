@@ -18,6 +18,14 @@ const (
 	SkillFileName = "SKILL.md"
 )
 
+// AgentsSkillsDirName is a second, agent-level skill source resolved as
+// <agentDir>/.agents/skills - the cross-client convention Copilot, VS Code, Cursor,
+// Codex, and Gemini CLI already read. It is additional to, not a replacement for, the
+// legacy <agentDir>/skills/ walk: see DiscoverAgentSkillsMap. A skill placed here wins
+// a same-name collision against skills/ - explicit placement in the convention path is
+// a deliberate override.
+const AgentsSkillsDirName = ".agents/skills"
+
 type SkillFrontmatter struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
@@ -130,7 +138,17 @@ func normalizeStability(raw any) (*float64, error) {
 	}
 }
 
-// DiscoverAgentSkillsMap walks <agentDir>/skills/ recursively looking for SKILL.md files according to D20.
+// DiscoverAgentSkillsMap discovers skills from two per-agent roots, merged into one map:
+//
+//  1. <agentDir>/.agents/skills/ (AgentsSkillsDirName) - walked first.
+//  2. <agentDir>/skills/ (D20) - walked second.
+//
+// Both roots use the same first-wins rule into the same name->path map, so a skill
+// name placed under .agents/skills/ wins a collision against the same name under the
+// legacy skills/ - explicit placement in the convention path is a deliberate override,
+// not an accident. An agent with no .agents/skills directory discovers identically to
+// before this second root existed.
+//
 // Resolves directory and file symlinks and follows them, preventing infinite symlink cycles.
 // Returns:
 //   - skillsMap: map of skillName -> *Skill
@@ -139,11 +157,6 @@ func normalizeStability(raw any) (*float64, error) {
 //   - shadowed: shadowing warning messages
 //   - error
 func DiscoverAgentSkillsMap(agentDir string) (map[string]*Skill, []*Skill, []*Skill, []string, error) {
-	skillsDir := filepath.Join(agentDir, SkillsDirName)
-	if !pathExists(skillsDir) {
-		return make(map[string]*Skill), nil, nil, nil, nil
-	}
-
 	skillsMap := make(map[string]*Skill)
 	skillPaths := make(map[string]string)
 	var shadowed []string
@@ -192,8 +205,18 @@ func DiscoverAgentSkillsMap(agentDir string) (map[string]*Skill, []*Skill, []*Sk
 		return nil
 	}
 
-	if err := walk(skillsDir); err != nil {
-		return nil, nil, nil, nil, err
+	agentsSkillsDir := filepath.Join(agentDir, filepath.FromSlash(AgentsSkillsDirName))
+	if pathExists(agentsSkillsDir) {
+		if err := walk(agentsSkillsDir); err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
+
+	agentSkillsDir := filepath.Join(agentDir, SkillsDirName)
+	if pathExists(agentSkillsDir) {
+		if err := walk(agentSkillsDir); err != nil {
+			return nil, nil, nil, nil, err
+		}
 	}
 
 	var onDemand []*Skill
