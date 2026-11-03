@@ -343,25 +343,21 @@ func writeTestSkill(t *testing.T, skillsRoot, name, description, body string) {
 	}
 }
 
-// TestDiscoverAgentSkills_WorkspaceAgentsSkills verifies that a skill living only
-// under <workspace_root>/.agents/skills/ - the cross-client convention this agent's
-// own skills/ directory does not cover - is discovered too.
-func TestDiscoverAgentSkills_WorkspaceAgentsSkills(t *testing.T) {
-	wsDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), nil, 0644); err != nil {
-		t.Fatalf("failed to write %s marker: %v", RootMarkerFile, err)
-	}
-	agentDir := filepath.Join(wsDir, "bob")
+// TestDiscoverAgentSkills_AgentsSkillsDir verifies that a skill living only under
+// <agentDir>/.agents/skills/ - the cross-client convention this agent's own legacy
+// skills/ directory does not cover - is discovered too.
+func TestDiscoverAgentSkills_AgentsSkillsDir(t *testing.T) {
+	agentDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(agentDir, SkillsDirName), 0755); err != nil {
 		t.Fatalf("failed to create agent skills dir: %v", err)
 	}
-	writeTestSkill(t, filepath.Join(agentDir, SkillsDirName), "agent-only", "Agent-level skill", "agent body")
+	writeTestSkill(t, filepath.Join(agentDir, SkillsDirName), "legacy-only", "Legacy-path skill", "legacy body")
 
-	workspaceSkillsDir := filepath.Join(wsDir, filepath.FromSlash(AgentsSkillsDirName))
-	if err := os.MkdirAll(workspaceSkillsDir, 0755); err != nil {
-		t.Fatalf("failed to create workspace .agents/skills dir: %v", err)
+	agentsSkillsDir := filepath.Join(agentDir, filepath.FromSlash(AgentsSkillsDirName))
+	if err := os.MkdirAll(agentsSkillsDir, 0755); err != nil {
+		t.Fatalf("failed to create .agents/skills dir: %v", err)
 	}
-	writeTestSkill(t, workspaceSkillsDir, "workspace-only", "Workspace-level skill", "workspace body")
+	writeTestSkill(t, agentsSkillsDir, "convention-only", "Convention-path skill", "convention body")
 
 	skillsMap, _, _, shadowed, err := DiscoverAgentSkillsMap(agentDir)
 	if err != nil {
@@ -370,36 +366,33 @@ func TestDiscoverAgentSkills_WorkspaceAgentsSkills(t *testing.T) {
 	if len(shadowed) != 0 {
 		t.Errorf("expected no shadowing, got %v", shadowed)
 	}
-	if _, ok := skillsMap["agent-only"]; !ok {
-		t.Errorf("expected agent-level skill 'agent-only' to be discovered, got %v", skillsMap)
+	if _, ok := skillsMap["legacy-only"]; !ok {
+		t.Errorf("expected legacy-path skill 'legacy-only' to be discovered, got %v", skillsMap)
 	}
-	if _, ok := skillsMap["workspace-only"]; !ok {
-		t.Errorf("expected workspace-level skill 'workspace-only' to be discovered, got %v", skillsMap)
+	if _, ok := skillsMap["convention-only"]; !ok {
+		t.Errorf("expected convention-path skill 'convention-only' to be discovered, got %v", skillsMap)
 	}
 	if len(skillsMap) != 2 {
 		t.Fatalf("expected 2 total skills, got %d: %v", len(skillsMap), skillsMap)
 	}
 }
 
-// TestDiscoverAgentSkills_AgentOverridesWorkspace verifies the precedence rule: a
-// same-named skill at the agent level shadows the workspace-level one, mirroring
-// LoadAgentDotEnv's "agent overwrites workspace" direction.
-func TestDiscoverAgentSkills_AgentOverridesWorkspace(t *testing.T) {
-	wsDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), nil, 0644); err != nil {
-		t.Fatalf("failed to write %s marker: %v", RootMarkerFile, err)
-	}
-	agentDir := filepath.Join(wsDir, "bob")
+// TestDiscoverAgentSkills_AgentsSkillsOverridesLegacy verifies the precedence rule: a
+// same-named skill under <agentDir>/.agents/skills/ wins over the same name under the
+// legacy <agentDir>/skills/ - explicit placement in the convention path is a
+// deliberate override.
+func TestDiscoverAgentSkills_AgentsSkillsOverridesLegacy(t *testing.T) {
+	agentDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(agentDir, SkillsDirName), 0755); err != nil {
 		t.Fatalf("failed to create agent skills dir: %v", err)
 	}
-	writeTestSkill(t, filepath.Join(agentDir, SkillsDirName), "shared", "Agent version", "agent body")
+	writeTestSkill(t, filepath.Join(agentDir, SkillsDirName), "shared", "Legacy version", "legacy body")
 
-	workspaceSkillsDir := filepath.Join(wsDir, filepath.FromSlash(AgentsSkillsDirName))
-	if err := os.MkdirAll(workspaceSkillsDir, 0755); err != nil {
-		t.Fatalf("failed to create workspace .agents/skills dir: %v", err)
+	agentsSkillsDir := filepath.Join(agentDir, filepath.FromSlash(AgentsSkillsDirName))
+	if err := os.MkdirAll(agentsSkillsDir, 0755); err != nil {
+		t.Fatalf("failed to create .agents/skills dir: %v", err)
 	}
-	writeTestSkill(t, workspaceSkillsDir, "shared", "Workspace version", "workspace body")
+	writeTestSkill(t, agentsSkillsDir, "shared", "Convention version", "convention body")
 
 	skillsMap, _, _, shadowed, err := DiscoverAgentSkillsMap(agentDir)
 	if err != nil {
@@ -409,23 +402,19 @@ func TestDiscoverAgentSkills_AgentOverridesWorkspace(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected 'shared' skill to be discovered, got %v", skillsMap)
 	}
-	if sk.Description != "Agent version" {
-		t.Errorf("expected agent-level skill to win the collision, got description %q", sk.Description)
+	if sk.Description != "Convention version" {
+		t.Errorf("expected .agents/skills to win the collision, got description %q", sk.Description)
 	}
 	if len(shadowed) != 1 {
-		t.Fatalf("expected 1 shadowed warning (workspace-level copy shadowed by agent-level), got %d: %v", len(shadowed), shadowed)
+		t.Fatalf("expected 1 shadowed warning (legacy copy shadowed by the convention-path copy), got %d: %v", len(shadowed), shadowed)
 	}
 }
 
-// TestDiscoverAgentSkills_NoAgentsSkillsDirUnchanged verifies that a workspace with
-// no .agents/skills directory anywhere discovers identically to before that second
-// root existed: same skills, same shadow warnings.
+// TestDiscoverAgentSkills_NoAgentsSkillsDirUnchanged verifies that an agent with no
+// .agents/skills directory discovers identically to before that second root existed:
+// same skills, same shadow warnings.
 func TestDiscoverAgentSkills_NoAgentsSkillsDirUnchanged(t *testing.T) {
-	wsDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), nil, 0644); err != nil {
-		t.Fatalf("failed to write %s marker: %v", RootMarkerFile, err)
-	}
-	agentDir := filepath.Join(wsDir, "bob")
+	agentDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(agentDir, SkillsDirName), 0755); err != nil {
 		t.Fatalf("failed to create agent skills dir: %v", err)
 	}

@@ -263,16 +263,16 @@ dispatcher is wired, not something `bashc`/`agent-sandbox.sh` can detect or prev
 - **On-demand Skills** (`always_load: false`): Registered with the `load_skill(name: string)` tool. Available skill names and descriptions are embedded in `load_skill`'s dynamically built description (alphabetically sorted). Invoking `load_skill` returns the skill body as a `FunctionResponse` turn.
 - **Always-loaded Skills** (`always_load: true`): Excluded from `load_skill`. Concatenated onto the rendered system prompt (`Instruction`), sorted alphabetically by skill name, wrapped in `<AUTOLOADED_SKILLS><SKILL name="...">...</SKILL>...</AUTOLOADED_SKILLS>`.
 
-#### Second Source: `<workspace_root>/.agents/skills/`
+#### Second Source: `<agent_id>/.agents/skills/`
 
-`DiscoverAgentSkillsMap` (`pkg/agent/skill.go`) discovers skills from **two** roots into one merged map, not just `<agent_id>/skills/`:
+`DiscoverAgentSkillsMap` (`pkg/agent/skill.go`) discovers skills from **two** roots into one merged map, both scoped to the agent itself:
 
-1. `<agent_id>/skills/` — walked first.
-2. `<workspace_root>/.agents/skills/` — walked second, where `workspace_root` is `FindWorkspaceRootDir(agentDir)` (the same `WACKYPUB_ROOT`-marker walk-up `LoadAgentDotEnv` uses for `.env`).
+1. `<agent_id>/.agents/skills/` — walked first.
+2. `<agent_id>/skills/` — walked second (the original, legacy location).
 
-`.agents/skills/` is the converging cross-client convention for a workspace-level canonical skill source (Copilot, VS Code, Cursor, Codex, and Gemini CLI all read it). It exists so a skill shared by every agent in a workspace can live in one place instead of being symlinked into every agent's own `skills/` directory.
+`.agents/skills/` is the converging cross-client convention for an agent-level skill source (Copilot, VS Code, Cursor, Codex, and Gemini CLI all read it).
 
-**Precedence**: both roots feed the same name→path map using the same first-wins rule, so a skill name already claimed by the agent-level walk shadows a same-named skill found later at the workspace level — **the agent explicitly overrides the workspace**, mirroring `LoadAgentDotEnv`'s "agent `.env` overwrites workspace `.env`" direction. A collision is recorded as a shadow warning (surfaced via `workspace <agent_id>` diagnostics), never a silent drop. A workspace with no `.agents/skills/` directory discovers identically to a workspace that predates this second root.
+**Precedence**: both roots feed the same name→path map using the same first-wins rule, so a skill name placed under `.agents/skills/` wins a collision against the same name under the legacy `skills/` — **explicit placement in the convention path is a deliberate override**. A collision is recorded as a shadow warning (surfaced via `workspace <agent_id>` diagnostics), never a silent drop. An agent with no `.agents/skills/` directory discovers identically to an agent that predates this second root.
 
 ---
 

@@ -18,10 +18,12 @@ const (
 	SkillFileName = "SKILL.md"
 )
 
-// AgentsSkillsDirName is the workspace-level canonical skill source, resolved as
-// <workspace_root>/.agents/skills - the cross-client convention Copilot, VS Code,
-// Cursor, Codex, and Gemini CLI already read. It is additional to, not a replacement
-// for, the per-agent <agentDir>/skills/ walk: see DiscoverAgentSkillsMap.
+// AgentsSkillsDirName is a second, agent-level skill source resolved as
+// <agentDir>/.agents/skills - the cross-client convention Copilot, VS Code, Cursor,
+// Codex, and Gemini CLI already read. It is additional to, not a replacement for, the
+// legacy <agentDir>/skills/ walk: see DiscoverAgentSkillsMap. A skill placed here wins
+// a same-name collision against skills/ - explicit placement in the convention path is
+// a deliberate override.
 const AgentsSkillsDirName = ".agents/skills"
 
 type SkillFrontmatter struct {
@@ -136,18 +138,16 @@ func normalizeStability(raw any) (*float64, error) {
 	}
 }
 
-// DiscoverAgentSkillsMap discovers skills from two roots, merged into one map:
+// DiscoverAgentSkillsMap discovers skills from two per-agent roots, merged into one map:
 //
-//  1. <agentDir>/skills/ (D20) - walked first.
-//  2. <workspace_root>/.agents/skills/ (AgentsSkillsDirName) - walked second, where
-//     workspace_root is FindWorkspaceRootDir(agentDir).
+//  1. <agentDir>/.agents/skills/ (AgentsSkillsDirName) - walked first.
+//  2. <agentDir>/skills/ (D20) - walked second.
 //
 // Both roots use the same first-wins rule into the same name->path map, so a skill
-// name claimed by the agent-level walk shadows a same-named skill found later at the
-// workspace level - the agent explicitly overrides the workspace, mirroring the
-// existing LoadAgentDotEnv precedent (agent .env overwrites workspace .env). A
-// workspace with no .agents/skills directory discovers identically to before this
-// second root existed.
+// name placed under .agents/skills/ wins a collision against the same name under the
+// legacy skills/ - explicit placement in the convention path is a deliberate override,
+// not an accident. An agent with no .agents/skills directory discovers identically to
+// before this second root existed.
 //
 // Resolves directory and file symlinks and follows them, preventing infinite symlink cycles.
 // Returns:
@@ -205,19 +205,17 @@ func DiscoverAgentSkillsMap(agentDir string) (map[string]*Skill, []*Skill, []*Sk
 		return nil
 	}
 
-	agentSkillsDir := filepath.Join(agentDir, SkillsDirName)
-	if pathExists(agentSkillsDir) {
-		if err := walk(agentSkillsDir); err != nil {
+	agentsSkillsDir := filepath.Join(agentDir, filepath.FromSlash(AgentsSkillsDirName))
+	if pathExists(agentsSkillsDir) {
+		if err := walk(agentsSkillsDir); err != nil {
 			return nil, nil, nil, nil, err
 		}
 	}
 
-	if wsDir := FindWorkspaceRootDir(agentDir); wsDir != "" && wsDir != agentDir {
-		workspaceSkillsDir := filepath.Join(wsDir, filepath.FromSlash(AgentsSkillsDirName))
-		if pathExists(workspaceSkillsDir) {
-			if err := walk(workspaceSkillsDir); err != nil {
-				return nil, nil, nil, nil, err
-			}
+	agentSkillsDir := filepath.Join(agentDir, SkillsDirName)
+	if pathExists(agentSkillsDir) {
+		if err := walk(agentSkillsDir); err != nil {
+			return nil, nil, nil, nil, err
 		}
 	}
 
