@@ -16,12 +16,13 @@ import (
 // DefaultHTTPTimeoutSeconds is the default timeout (15 minutes) for HTTP client calls to LLM backends.
 const DefaultHTTPTimeoutSeconds = 900
 
-// DefaultTurnDeadlineSeconds bounds a single fallback-level stream (the turn watchdog). One
-// hour sits well above the longest legitimate single iteration (a 900s model call plus a
-// 900s tool) while still converting an infinite wedge - a stream that never terminates, which
-// would otherwise hold the session lock for the whole turn - into a named, terminal, backend-
-// named error.
-const DefaultTurnDeadlineSeconds = 3600
+// DefaultTurnDeadlineSeconds bounds a single fallback-level stream (the turn watchdog).
+// Six hours: long research/implementation turns are normal agent work, and the watchdog
+// exists to convert an infinite wedge - a stream that never terminates, which would
+// otherwise hold the session lock for the whole turn - into a named, terminal, backend-named
+// error, not to bound legitimate work. Per-agent turnDeadlineSeconds remains the tuning knob
+// for tighter bounds.
+const DefaultTurnDeadlineSeconds = 21600
 
 // RuntimeConfig represents the agent's runtime.json configuration.
 type RuntimeConfig struct {
@@ -46,7 +47,7 @@ type RuntimeConfig struct {
 	// TurnDeadlineSeconds bounds a single fallback level's stream via the turn watchdog:
 	// if the level's stream does not terminate within the bound, the level fails with a
 	// named terminal error naming the backend (zero-text wedges descend to the fallback
-	// like any other qualifying failure). Defaults to DefaultTurnDeadlineSeconds (3600s)
+	// like any other qualifying failure). Defaults to DefaultTurnDeadlineSeconds (21600s)
 	// when unset or <= 0.
 	TurnDeadlineSeconds int `json:"turnDeadlineSeconds,omitempty"`
 
