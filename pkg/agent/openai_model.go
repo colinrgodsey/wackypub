@@ -106,12 +106,19 @@ func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
 		dialect = adkopenai.NewTextDialect()
 	}
 
+	// The adapter exposes no retry knob, so the client is the only place wackypub can
+	// decide how a rate limit is absorbed. See retry_transport.go for the policy.
+	client := &http.Client{
+		Timeout:   time.Duration(timeoutSec) * time.Second,
+		Transport: newRetryTransport(http.DefaultTransport, retryPolicyFromConfig(runtimeCfg.MaxRetries, runtimeCfg.MaxRetryDelaySeconds, runtimeCfg.RetryAfterFailoverSeconds)),
+	}
+
 	return adkopenai.New(adkopenai.Config{
 		APIKey:    runtimeCfg.APIKey,
 		BaseURL:   strings.TrimSuffix(runtimeCfg.Endpoint, "/"),
 		ModelName: runtimeCfg.Model,
 		HTTPOptions: adkopenai.HTTPOptions{
-			Client:  &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+			Client:  client,
 			Headers: headers,
 		},
 		Dialect:         dialect,

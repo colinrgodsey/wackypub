@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // --- Load-time: nested parsing + depth cap ---
@@ -355,4 +356,52 @@ func mustFallbackRuntime(t *testing.T, primaryURL, fallbackURL string) string {
 			"apiKey": "test-key"
 		}
 	}`, primaryURL, fallbackURL)
+}
+
+// TestRuntimeFallback_HugeRetryAfterFailsOverWithoutSpendingTheLevel is the
+// subscription-usage scenario end to end. The primary asks to be called back in five
+// hours, so the turn belongs on the fallback at once: the fallback must answer, and the
+// primary must see exactly one request instead of a retry sequence that burns the turn
+// before conceding.
+func TestRuntimeFallback_HugeRetryAfterFailsOverWithoutSpendingTheLevel(t *testing.T) {
+	var mu sync.Mutex
+	primaryHits := 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		primaryHits++
+		mu.Unlock()
+		w.Header().Set("Retry-After", "18000")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, `{"error":{"message":"Rate limit exceeded"}}`)
+	}))
+	defer primary.Close()
+	fallback := okBackendServer(t, "fallback answered")
+	defer fallback.Close()
+
+	sdk, _ := setupFallbackAgent(t, mustFallbackRuntime(t, primary.URL, fallback.URL))
+
+	start := time.Now()
+	var chunks []string
+	for chunk, err := range sdk.addAndGenerateTurnStreamImpl(context.Background(), "fbagent", "question", nil) {
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		chunks = append(chunks, chunk)
+	}
+	elapsed := time.Since(start)
+
+	if joined := strings.Join(chunks, ""); !strings.Contains(joined, "fallback answered") {
+		t.Fatalf("expected the fallback to take the turn, got %q", joined)
+	}
+
+	mu.Lock()
+	hits := primaryHits
+	mu.Unlock()
+	if hits != 1 {
+		t.Errorf("a five-hour wait must not be retried at the primary, got %d requests", hits)
+	}
+	if elapsed > 30*time.Second {
+		t.Errorf("fail-over should be prompt, the turn took %v", elapsed)
+	}
 }
