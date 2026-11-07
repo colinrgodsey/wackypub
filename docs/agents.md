@@ -670,9 +670,13 @@ wackypub agent <agent_id> render-prompt
 
 ### Compact (`compact`)
 ```bash
-wackypub agent <agent_id> compact
+wackypub agent <agent_id> compact [--compact-pct N] [--force-major] [--md-file PATH] [--runtime PATH]
 ```
 - Unconditionally performs session compaction on the agent's session history (summarizes oldest turns into MEMORY.md and prunes session.jsonl).
+- `--compact-pct N` archives N percent of the estimated session tokens on this pass, overriding `compact-pct` in COMPACT.md for one invocation only - the file is never written. N is a percentage, so 100 archives the whole session and 10 only the oldest slice. It must be greater than 0 and at most 100; anything else is an error rather than a quiet fall back to the stored percentage. Use it for a one-off deep archival when editing COMPACT.md would change every later automatic pass too.
+- `--force-major` runs a major (full-rewrite) pass regardless of where the cycle counter sits. The two knobs are orthogonal: the flag chooses which pass runs, `--compact-pct` chooses how much history that pass consumes, so `--force-major --compact-pct 100` is the full consolidation - archive everything and rewrite MEMORY.md from it.
+- `--md-file PATH` supplies a whole replacement COMPACT.md for this pass. Combined with `--compact-pct`, the document governs everything it can and the flag replaces only the percentage inside it.
+- The major-pass schedule (`major-compact-every`, `major-compact-memory-pct`, `major-compact-overhead-pct`) is not overridable from the command line: an override always inherits it from the agent's own COMPACT.md, so a one-off percentage can never silently turn a scheduled major into a minor.
 
 ### Cancel In-Flight Turn (`cancel`)
 ```bash
