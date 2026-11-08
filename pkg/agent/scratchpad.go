@@ -719,10 +719,7 @@ func SearchScratchpad(agentDir string, id string, query string, caseSensitive *b
 		if matched {
 			totalMatches++
 			if len(matches) < maxResults {
-				truncatedText := lineText
-				if len(truncatedText) > 200 {
-					truncatedText = truncatedText[:200]
-				}
+				truncatedText := truncateRunesSafe(lineText, 200)
 				matches = append(matches, ScratchpadMatch{
 					Line:      i + 1,
 					SkipLines: i,
