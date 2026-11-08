@@ -9,6 +9,7 @@ import (
 	"iter"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -24,6 +25,7 @@ var (
 	compactMDFile      string
 	compactRuntimeFile string
 	compactForceMajor  bool
+	compactPct         float64
 	asyncFlag          bool
 )
 
@@ -651,11 +653,60 @@ each session has been quiet.`,
 	},
 }
 
+// buildCompactOverride assembles the per-invocation compaction config the CLI sends, or
+// returns nil when the invocation overrides nothing. The two knobs differ deliberately:
+// --md-file supplies a whole document and replaces the agent's COMPACT.md outright, while
+// --compact-pct replaces one field, so it must resolve the agent's own configuration first.
+// That ordering is required rather than tidy - the engine treats a config_override as a
+// replacement, not a merge - so a sparse override would silently drop the append-only mode
+// and the compaction prompt along with it.
+func buildCompactOverride(wsDir, agentID, mdFile string, pct float64, pctSet bool) (*agentv1.CompactConfigOverride, error) {
+	if pctSet && (pct <= 0 || pct > 100) {
+		return nil, fmt.Errorf("--compact-pct is a percentage of the session to archive and must be greater than 0 and at most 100, got %v (use 100 to archive the whole session)", pct)
+	}
+
+	var cfg *adkAgent.CompactConfig
+	if mdFile != "" {
+		data, err := os.ReadFile(mdFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read compact md file: %w", err)
+		}
+		parsed, err := adkAgent.ParseCompactConfig(string(data))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse compact md file: %w", err)
+		}
+		cfg = parsed
+	}
+
+	if pctSet {
+		if cfg == nil {
+			resolved, err := adkAgent.LoadCompactConfig(filepath.Join(wsDir, agentID))
+			if err != nil {
+				return nil, fmt.Errorf("failed to load COMPACT.md for agent %q: %w", agentID, err)
+			}
+			cfg = resolved
+		}
+		cfg.CompactPct = pct
+	}
+
+	if cfg == nil {
+		return nil, nil
+	}
+	return &agentv1.CompactConfigOverride{
+		AppendOnly:         cfg.AppendOnly,
+		CompactPct:         cfg.CompactPct,
+		CompactOverheadPct: cfg.CompactOverheadPct,
+		CompactionNotice:   cfg.CompactionNotice,
+		Prompt:             cfg.Prompt,
+	}, nil
+}
+
 var agentCompactCmd = &cobra.Command{
 	Use:   "compact [agent_id]",
 	Short: "Perform session compaction on an agent's history",
 	Long: `Performs session compaction on <ws_dir>/<agent_id>/session.jsonl:
-summarizes the oldest turns (default 50%, or compact-pct in COMPACT.md) into MEMORY.md and removes them
+summarizes the oldest turns (default 50%, or compact-pct in COMPACT.md, or --compact-pct for
+this one invocation) into MEMORY.md and removes them
 from session.jsonl. Explicitly invoking this command always performs compaction regardless of current
 token count against contextWindow. On a genuinely empty session, this is a clean no-op.
 
@@ -673,6 +724,25 @@ Flags:
                  compact-cycle and last-major-cycle in MEMORY.md exactly like a scheduled
                  major, and the following pass obeys the normal rules. If MEMORY.md does not
                  exist yet, the forced pass creates it as a full consolidation.
+
+  --compact-pct N  Archive N percent of the session on this one pass, overriding compact-pct
+                   in COMPACT.md without editing it. The value is a percentage of estimated
+                   session tokens, oldest turns first, so 100 archives the entire session into
+                   MEMORY.md and 10 archives only the oldest slice. Use it for a one-off deep
+                   archival - a milestone, a context reset you want fully booked, an agent whose
+                   stored 50 percent leaves too much history in place - when editing COMPACT.md
+                   to do the same thing would silently change every later automatic pass too.
+                   The value must be greater than 0 and at most 100; the CLI rejects anything
+                   else rather than falling back to the stored percentage. It applies to this
+                   invocation only and is never written to disk.
+
+                   With --force-major: the two knobs are orthogonal, and the pair reads as
+                   "which pass" plus "how much history". --force-major decides the pass type
+                   (a major full rewrite of MEMORY.md instead of an incremental minor pass);
+                   --compact-pct decides how much of session.jsonl that pass archives either
+                   way. --force-major --compact-pct 100 is therefore the full consolidation:
+                   archive everything and rewrite MEMORY.md from it. Neither flag changes the
+                   other, and the cycle counter books the pass exactly as it would any other.
 
 Prints whether compaction actually ran. Acquires the session lock for the duration of the
 operation.`,
@@ -698,31 +768,13 @@ operation.`,
 			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> compact")
 		}
 
-		var compactCfg *adkAgent.CompactConfig
-		if compactMDFile != "" {
-			data, err := os.ReadFile(compactMDFile)
-			if err != nil {
-				return fmt.Errorf("failed to read compact md file: %w", err)
-			}
-			cfg, err := adkAgent.ParseCompactConfig(string(data))
-			if err != nil {
-				return fmt.Errorf("failed to parse compact md file: %w", err)
-			}
-			compactCfg = cfg
-		}
-
 		ctx, stop := signalCtx()
 		defer stop()
 
-		var cfgOverride *agentv1.CompactConfigOverride
-		if compactCfg != nil {
-			cfgOverride = &agentv1.CompactConfigOverride{
-				AppendOnly:         compactCfg.AppendOnly,
-				CompactPct:         compactCfg.CompactPct,
-				CompactOverheadPct: compactCfg.CompactOverheadPct,
-				CompactionNotice:   compactCfg.CompactionNotice,
-				Prompt:             compactCfg.Prompt,
-			}
+		cfgOverride, err := buildCompactOverride(wsDir, agentID, compactMDFile, compactPct,
+			cmd.Flags().Changed("compact-pct"))
+		if err != nil {
+			return err
 		}
 
 		client, cleanup, err := adkAgent.ResolveAgentClient(ctx, sdk, agentID)
@@ -1585,6 +1637,7 @@ func init() {
 	agentCompactCmd.Flags().StringVar(&compactMDFile, "md-file", "", "Path to alternate COMPACT.md file to use for compaction recipe")
 	agentCompactCmd.Flags().StringVar(&compactRuntimeFile, "runtime", "", "Path to alternate runtime.json file to use for compaction")
 	agentCompactCmd.Flags().BoolVar(&compactForceMajor, "force-major", false, "Force a major (full-rewrite) pass regardless of the cycle counters major-compact-every schedule")
+	agentCompactCmd.Flags().Float64Var(&compactPct, "compact-pct", 0, "Override compact-pct from COMPACT.md for this invocation only: percent of session tokens to archive, 1-100")
 	scratchpadCreateCmd.Flags().StringVar(&messageFlag, "message", "", "Scratchpad text payload")
 
 	scratchpadReadCmd.Flags().IntVar(&scratchpadSkipLines, "skip-lines", 0, "Number of lines to skip from start of entry")

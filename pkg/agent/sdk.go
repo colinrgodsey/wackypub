@@ -1751,6 +1751,33 @@ type CompactSessionOptions struct {
 }
 
 // CompactSession implements the behavior defined in proto/wackypub/v1/agent.proto.
+// compactConfigFromWire translates a CompactConfigOverride (D83) into the engine's
+// CompactConfig. The message carries five fields; the major-pass schedule
+// (major-compact-every, major-compact-memory-pct, major-compact-overhead-pct) has no
+// wire field at all, so it is taken from the agent's own COMPACT.md here rather than
+// arriving as zero. Zeroing it would silently disable an agent's scheduled major passes
+// for the duration of any one-off override, and every agent has a schedule because the
+// embedded default sets major-compact-every. A stored document that cannot be read
+// leaves the schedule off, matching what an agent with no COMPACT.md and no embedded
+// default would get anyway.
+func compactConfigFromWire(cov *agentv1.CompactConfigOverride, agentDir string) *CompactConfig {
+	cfg := &CompactConfig{
+		AppendOnly:         cov.GetAppendOnly(),
+		CompactPct:         cov.GetCompactPct(),
+		CompactOverheadPct: cov.GetCompactOverheadPct(),
+		CompactionNotice:   cov.GetCompactionNotice(),
+		Prompt:             cov.GetPrompt(),
+	}
+	stored, err := LoadCompactConfig(agentDir)
+	if err != nil {
+		return cfg
+	}
+	cfg.MajorCompactEvery = stored.MajorCompactEvery
+	cfg.MajorCompactMemoryPct = stored.MajorCompactMemoryPct
+	cfg.MajorCompactOverheadPct = stored.MajorCompactOverheadPct
+	return cfg
+}
+
 func (s *AgentSDK) CompactSession(ctx context.Context, req *agentv1.CompactSessionRequest) (*agentv1.CompactSessionResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("request cannot be nil")
@@ -1778,13 +1805,7 @@ func (s *AgentSDK) CompactSession(ctx context.Context, req *agentv1.CompactSessi
 
 	var cfgOverride *CompactConfig
 	if cov := req.GetConfigOverride(); cov != nil {
-		cfgOverride = &CompactConfig{
-			AppendOnly:         cov.GetAppendOnly(),
-			CompactPct:         cov.GetCompactPct(),
-			CompactOverheadPct: cov.GetCompactOverheadPct(),
-			CompactionNotice:   cov.GetCompactionNotice(),
-			Prompt:             cov.GetPrompt(),
-		}
+		cfgOverride = compactConfigFromWire(cov, agentDir)
 	}
 
 	force := req.GetForce()

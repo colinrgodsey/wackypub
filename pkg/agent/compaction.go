@@ -550,6 +550,12 @@ func backendName(cfg *RuntimeConfig) string {
 // how the pass is booked (compact-cycle advances and last-major-cycle is stamped exactly like
 // a scheduled major).
 //
+// cfgOverride governs this pass outright - every field it sets, including the
+// major-pass schedule, wins over the agent's COMPACT.md. Callers that get their
+// configuration over the wire must seed the schedule themselves first, because the
+// CompactConfigOverride message has no field for it: CompactSession does exactly that,
+// so a one-off CLI override never silently turns a scheduled major into a minor.
+//
 // Hook lifecycle (pre-compact/post-compact/compact-failed): this is the single choke point
 // every compaction trigger - the natural token-threshold check, an explicit force from a
 // CLI/RPC call, and a mid-turn short-circuit - routes through, so hooking here once covers
