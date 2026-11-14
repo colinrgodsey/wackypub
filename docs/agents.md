@@ -187,6 +187,9 @@ You are Ignis, an ancient wizard.
 - Each non-empty line (ignoring `#` comments) specifies one allowed target agent ID.
 - **Default Deny-All**: If `WACKYPUB_ALLOWED_AGENTS` is absent from an agent's directory, all cross-agent target invocations and private content reads (`read-session`, `read-memory`, `render-prompt`, scratchpads) from that agent directory are denied (D16, D60). Diagnostic inspection (`wackypub workspace` / `InspectAgent`) remains exempt as it only exposes structural metadata.
 - **Deadlock Safety & A2A Metadata (`AGENT2AGENT` / `WACKYPUB_CALL_CHAIN`)**: Cross-agent calls propagate Agent2Agent (A2A) protocol context via the `AGENT2AGENT` environment variable (carrying `caller_id`, `call_chain`, `trace_id`, and `metadata` as dense JSON - D33), falling back to `WACKYPUB_CALL_CHAIN` CSV strings for legacy callers. Re-targeting an agent already in `call_chain` is rejected immediately on mutating operations to prevent deadlock cycles (D16, D59, D60).
+- **A `WACKYPUB_ROOT` marker grants nothing.** Identity comes from the first `WACKYPUB_ALLOWED_AGENTS` found walking outward from the working directory. It used to be that hitting a workspace root marker ended that walk with a grant, so a marker planted anywhere - inside another agent's subtree, or in a scratch workspace aimed at the real one with `--ws` - skipped every roster in the tree. A root marker that is not the workspace the process operates on is now a denial.
+- **Known limit of the working-directory model** (tracked in `security-cwd-derived-agent-authorization-bypass-nested-workspace-roots`): with no roster anywhere on the path and no workspace recorded from `--ws`, the caller is still treated as a local operator, and a caller that can change its working directory can still resolve as the agent directory it is standing in. Closing that needs a caller identity supplied by the harness rather than by the caller.
+
 
 ---
 
