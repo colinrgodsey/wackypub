@@ -117,9 +117,15 @@ OpenAI-compatible model adapters, macro prompt inclusion (@<FILE_PATH>), and aut
 }
 
 // GetWorkspaceDir returns the resolved workspace directory according to D15.
+// Recording the result is what lets cross-agent authorization distinguish the
+// workspace being operated on from a workspace root the caller walked into.
 func GetWorkspaceDir() (string, error) {
 	isExplicit := RootCmd.PersistentFlags().Changed("ws")
-	return adkAgent.ResolveWorkspaceDir(workspaceDir, isExplicit)
+	ws, err := adkAgent.ResolveWorkspaceDir(workspaceDir, isExplicit)
+	if err == nil {
+		adkAgent.SetActiveWorkspaceDir(ws)
+	}
+	return ws, err
 }
 
 // GetMaxToolTurns returns the configured max tool turns limit.
