@@ -204,8 +204,18 @@ func nestedWorkspaceMarker(markers []string, active string) string {
 	if active == "" {
 		return ""
 	}
+	activeInfo, err := os.Stat(active)
+	if err != nil {
+		// The recorded workspace cannot be inspected, so nothing proves a marker is
+		// it. Resolve against access rather than handing out an unproven grant.
+		if len(markers) > 0 {
+			return markers[0]
+		}
+		return ""
+	}
 	for _, m := range markers {
-		if m != active {
+		info, err := os.Stat(m)
+		if err != nil || !os.SameFile(activeInfo, info) {
 			return m
 		}
 	}
@@ -230,7 +240,8 @@ func nestedWorkspaceMarker(markers []string, active string) string {
 //     no-roster denial on its way out.
 //
 // When no roster is found, nesting is judged against the workspace this process
-// recorded: a root marker that is not that workspace is a planted root and the call
+// recorded: a root marker that is not that workspace (compared by os.SameFile, so a
+// relative --ws value or a symlinked alias of the same directory is the same workspace)
 // is denied. With no recorded workspace the question cannot be answered, and
 // behavior is unchanged from D16: the caller is treated as a local operator. That
 // remaining case is still trust in the working directory - closing it needs a

@@ -202,3 +202,65 @@ func TestPhoebeWalkContinuesPastAPlantedRootToTheRealRoster(t *testing.T) {
 		t.Errorf("expected the governing roster to be the reason, got: %v", err)
 	}
 }
+
+// A relative --ws value names the same workspace as the absolute path the marker
+// walk produces. Comparing the two as strings denies legitimate operators.
+func TestPhoebeRelativeWorkspaceValueIsTheSameWorkspace(t *testing.T) {
+	wsDir, victimDir, nestedDir := writeNestedFixture(t)
+	_ = nestedDir
+
+	clearActiveWorkspace(t)
+	t.Chdir(wsDir)
+	SetActiveWorkspaceDir(".")
+
+	if err := AuthorizeAgentTarget(filepath.Base(victimDir)); err != nil {
+		t.Errorf("--ws . names the workspace the caller is standing in and must stay authorized, got: %v", err)
+	}
+}
+
+// A symlink to the workspace is the same workspace: cd through the alias and the
+// marker found there must not be read as a planted root.
+func TestPhoebeSymlinkAliasedWorkspaceStaysAuthorized(t *testing.T) {
+	wsDir, victimDir, _ := writeNestedFixture(t)
+
+	house := t.TempDir()
+	alias := filepath.Join(house, "alias")
+	if err := os.Symlink(wsDir, alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+
+	clearActiveWorkspace(t)
+	t.Chdir(alias)
+	SetActiveWorkspaceDir(wsDir)
+
+	if err := AuthorizeAgentTarget(filepath.Base(victimDir)); err != nil {
+		t.Errorf("walking in through a symlink to the recorded workspace must stay authorized, got: %v", err)
+	}
+}
+
+// The same alias mechanism aimed at a *different* workspace must still be denied:
+// os.SameFile has to keep saying no, not just yes more often.
+func TestPhoebeSymlinkToAnotherWorkspaceIsStillDenied(t *testing.T) {
+	realWs, victimDir, _ := writeNestedFixture(t)
+
+	house := t.TempDir()
+	other := filepath.Join(house, "other")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatalf("mkdir other: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(other, RootMarkerFile), nil, 0o644); err != nil {
+		t.Fatalf("write other root: %v", err)
+	}
+	alias := filepath.Join(house, "alias-to-other")
+	if err := os.Symlink(other, alias); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	clearActiveWorkspace(t)
+	t.Chdir(alias)
+	SetActiveWorkspaceDir(realWs)
+
+	if err := AuthorizeAgentTarget(filepath.Base(victimDir)); err == nil {
+		t.Fatal("standing in an aliased root of another workspace must not authorize the target")
+	}
+}
