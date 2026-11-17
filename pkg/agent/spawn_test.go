@@ -274,3 +274,43 @@ func TestLoadRuntimePresetRequiresUsableConfig(t *testing.T) {
 		t.Errorf("expected a refusal mentioning the preset, got: %v", err)
 	}
 }
+
+// MANIFEST.md is the generated view; SPAWN_META stays the source of truth. A reviewer
+// reading the manifest must be able to see who owns a child without opening directories.
+func TestWorkspaceSnapshotRendersSpawnLineage(t *testing.T) {
+	wsDir := spawnFixture(t)
+	resetActiveWorkspaceForSpawn(t)
+	SetActiveWorkspaceDir(wsDir)
+	if _, err := SpawnAgent(SpawnOptions{WorkspaceDir: wsDir, ChildID: "helper", ParentID: "parent", Preset: spawnTestPreset, Tier: "2"}); err != nil {
+		t.Fatalf("SpawnAgent: %v\n", err)
+	}
+	manifestPath, err := CreateWorkspaceSnapshot(wsDir)
+	if err != nil {
+		t.Fatalf("CreateWorkspaceSnapshot: %v\n", err)
+	}
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v\n", err)
+	}
+	manifest := string(raw)
+	if !strings.Contains(manifest, "SPAWN_META") {
+		t.Errorf("manifest should say which file lineage is generated from\n")
+	}
+	var childRow, peerRow string
+	for _, line := range strings.Split(manifest, "\n") {
+		switch {
+		case strings.Contains(line, "| helper |"):
+			childRow = line
+		case strings.HasPrefix(line, "| parent |"):
+			peerRow = line
+		}
+	}
+	for _, want := range []string{"parent", spawnTestPreset, "2", SpawnStatusActive} {
+		if !strings.Contains(childRow, want) {
+			t.Errorf("child row %q missing lineage value %q\n", childRow, want)
+		}
+	}
+	if !strings.Contains(peerRow, "- | - | - | - |") {
+		t.Errorf("a peer should render with empty lineage columns, got %q\n", peerRow)
+	}
+}

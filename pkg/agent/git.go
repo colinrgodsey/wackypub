@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -340,8 +341,9 @@ func CreateWorkspaceSnapshot(wsDir string) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("# Workspace Manifest Snapshot\n\n")
 	sb.WriteString(fmt.Sprintf("Generated: %s\n\n", time.Now().Format(time.RFC3339)))
-	sb.WriteString("| Agent ID | Commit SHA |\n")
-	sb.WriteString("|---|---|\n")
+	sb.WriteString("Lineage columns are generated from each child directory's " + SpawnMetaFile + "; that file is the source of truth and this table is never edited by hand.\n\n")
+	sb.WriteString("| Agent ID | Commit SHA | Parent | Runtime preset | Tier | Depth | Status |\n")
+	sb.WriteString("|---|---|---|---|---|---|---|\n")
 
 	for _, agentID := range agentIDs {
 		repoDir := ResolveGitRepoDir(wsDir, agentID)
@@ -352,7 +354,27 @@ func CreateWorkspaceSnapshot(wsDir string) (string, error) {
 				sha = headSHA
 			}
 		}
-		sb.WriteString(fmt.Sprintf("| %s | %s |\n", agentID, sha))
+		parent, preset, tier, depth, status := "-", "-", "-", "-", "-"
+		// A missing SPAWN_META is the normal case: this is a peer, not a spawned child.
+		if meta, err := LoadSpawnMeta(filepath.Join(wsDir, agentID)); err == nil && meta != nil {
+			if meta.Parent != "" {
+				parent = meta.Parent
+				if meta.Orphaned {
+					parent += " (orphaned)"
+				}
+			}
+			if meta.Runtime != "" {
+				preset = meta.Runtime
+			}
+			if meta.Tier != "" {
+				tier = meta.Tier
+			}
+			depth = strconv.Itoa(meta.Depth)
+			if meta.Status != "" {
+				status = meta.Status
+			}
+		}
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |\n", agentID, sha, parent, preset, tier, depth, status))
 	}
 
 	manifestPath := filepath.Join(wsDir, "MANIFEST.md")

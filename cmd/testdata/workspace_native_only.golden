@@ -2,10 +2,10 @@ Workspace: <WS> (git: disabled)
 
 Agents found: 3
 
-AGENT_ID         RUNTIME.JSON   SESSION TURNS   MEMORY.MD   TOOLS       SKILLS       ALLOWED_AGENTS
-native-broken    invalid        0 (1 corrupt)   no          -           -            deny-all
-native-full      ok             2               yes         1 tool(s)   1 skill(s)   1 allowed
-native-minimal   missing        -               no          -           -            deny-all
+AGENT_ID         RUNTIME.JSON   SESSION TURNS   MEMORY.MD   TOOLS       SKILLS       ALLOWED_AGENTS   PARENT
+native-broken    invalid        0 (1 corrupt)   no          -           -            deny-all         -
+native-full      ok             2               yes         1 tool(s)   1 skill(s)   1 allowed        -
+native-minimal   missing        -               no          -           -            deny-all         -
 ===== inspect native-broken =====
 Agent: native-broken
 Directory: <WS>/native-broken

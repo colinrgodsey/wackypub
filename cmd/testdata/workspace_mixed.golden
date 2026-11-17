@@ -2,10 +2,10 @@ Workspace: <WS> (git: disabled)
 
 Agents found: 3
 
-AGENT_ID      RUNTIME.JSON   SESSION TURNS   MEMORY.MD   TOOLS   SKILLS   ALLOWED_AGENTS
-agy           wackyacp       -               no          -       -        deny-all
-ghost         acpx-bridge    -               no          -       -        deny-all
-native-peer   ok             -               no          -       -        deny-all
+AGENT_ID      RUNTIME.JSON   SESSION TURNS   MEMORY.MD   TOOLS   SKILLS   ALLOWED_AGENTS   PARENT
+agy           wackyacp       -               no          -       -        deny-all         -
+ghost         acpx-bridge    -               no          -       -        deny-all         -
+native-peer   ok             -               no          -       -        deny-all         -
 ===== inspect agy =====
 Agent: agy
 Directory: <WS>/agy
