@@ -1,0 +1,6 @@
+{
+  "provider": "openai",
+  "endpoint": "https://openrouter.ai/api/v1",
+  "model": "anthropic/claude-haiku",
+  "apiKey": "${OPENROUTER_API_KEY}"
+}
