@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -166,32 +167,109 @@ func ResolveWorkspaceDir(wsFlag string, isExplicit bool) (string, error) {
 	}
 }
 
-// AuthorizeAgentTarget checks cross-agent authorization (AllowedAgentsFile against CWD)
-// according to D16, D60. It verifies whether the current working directory's agent
-// allowlist permits accessing targetAgentID. Read-only content methods use this check
-// without enforcing deadlock cycle checks (reads cannot deadlock).
+var (
+	activeWorkspaceMu  sync.RWMutex
+	activeWorkspaceDir string
+)
+
+// SetActiveWorkspaceDir records the workspace root this process operates on, so
+// authorization can tell the workspace being operated on apart from a workspace
+// marker the caller happened to walk into. Callers set it once, right after
+// resolving --ws; an unset value leaves the nesting heuristic (count the markers
+// on the path) as the only signal.
+func SetActiveWorkspaceDir(dir string) {
+	clean := ""
+	if dir != "" {
+		clean = filepath.Clean(dir)
+	}
+	activeWorkspaceMu.Lock()
+	activeWorkspaceDir = clean
+	activeWorkspaceMu.Unlock()
+}
+
+// ActiveWorkspaceDir returns the workspace root recorded by SetActiveWorkspaceDir,
+// or "" when nothing was recorded.
+func ActiveWorkspaceDir() string {
+	activeWorkspaceMu.RLock()
+	defer activeWorkspaceMu.RUnlock()
+	return activeWorkspaceDir
+}
+
+// nestedWorkspaceMarker reports a directory on markers that is a workspace root
+// other than the workspace this process operates on - a workspace root planted
+// inside another tree, which is the shape the authorization bypass used. When no
+// active workspace was recorded, more than one marker on the path is itself the
+// evidence: the caller entered through a root nested inside an outer root.
+func nestedWorkspaceMarker(markers []string, active string) string {
+	if active == "" {
+		return ""
+	}
+	activeInfo, err := os.Stat(active)
+	if err != nil {
+		// The recorded workspace cannot be inspected, so nothing proves a marker is
+		// it. Resolve against access rather than handing out an unproven grant.
+		if len(markers) > 0 {
+			return markers[0]
+		}
+		return ""
+	}
+	for _, m := range markers {
+		info, err := os.Stat(m)
+		if err != nil || !os.SameFile(activeInfo, info) {
+			return m
+		}
+	}
+	return ""
+}
+
+// AuthorizeAgentTarget checks cross-agent authorization according to D16, D60:
+// the caller's identity comes from the first WACKYPUB_ALLOWED_AGENTS found
+// walking from the working directory outward, and that roster decides.
+//
+// Two restrictions exist because the working directory is chosen by the caller
+// and is not an attestation:
+//
+//  1. A WACKYPUB_ROOT marker grants nothing. It used to end the walk with a
+//     grant, so any process able to cd into a directory holding a marker - a
+//     nested "workspace" created inside another agent's subtree, or a scratch
+//     workspace pointed at the real one with --ws - skipped every roster in the
+//     tree. The marker is still recorded, because it is what identifies a
+//     planted root later.
+//  2. A directory holding a root marker is never treated as an agent directory
+//     that merely lacks a roster, so a workspace root does not trip the
+//     no-roster denial on its way out.
+//
+// When no roster is found, nesting is judged against the workspace this process
+// recorded: a root marker that is not that workspace (compared by os.SameFile, so a
+// relative --ws value or a symlinked alias of the same directory is the same workspace)
+// is denied. With no recorded workspace the question cannot be answered, and
+// behavior is unchanged from D16: the caller is treated as a local operator. That
+// remaining case is still trust in the working directory - closing it needs a
+// caller identity supplied by the harness rather than by the caller, tracked in
+// security-cwd-derived-agent-authorization-bypass-nested-workspace-roots.
 func AuthorizeAgentTarget(targetAgentID string) error {
 	if targetAgentID == "" {
 		return nil
 	}
 
-	// Authorization check: AllowedAgentsFile against CWD (before resolving workspace root)
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("failed to get current working directory: %w", err)
 	}
 
+	var markers []string
 	dir := cwd
 	for {
-		if pathExists(filepath.Join(dir, RootMarkerFile)) {
-			break
+		isRoot := pathExists(filepath.Join(dir, RootMarkerFile))
+		if isRoot {
+			markers = append(markers, dir)
 		}
 
 		allowedPath := filepath.Join(dir, AllowedAgentsFile)
 		if pathExists(allowedPath) {
 			allowed, err := readAllowedAgents(allowedPath)
 			if err != nil {
-				return fmt.Errorf("failed to read %s: %w", allowedPath, err)
+				return fmt.Errorf("failed to read %s: %w", AllowedAgentsFile, err)
 			}
 			authorized := false
 			for _, id := range allowed {
@@ -203,10 +281,10 @@ func AuthorizeAgentTarget(targetAgentID string) error {
 			if !authorized {
 				return fmt.Errorf("agent %q is not in %s allowlist for current agent directory %q", targetAgentID, AllowedAgentsFile, dir)
 			}
-			break
+			return nil
 		}
 
-		if looksLikeAgentDir(dir) {
+		if !isRoot && looksLikeAgentDir(dir) {
 			return fmt.Errorf("access to agent %q denied: current agent directory %q has no %s allowlist", targetAgentID, dir, AllowedAgentsFile)
 		}
 
@@ -215,6 +293,10 @@ func AuthorizeAgentTarget(targetAgentID string) error {
 			break
 		}
 		dir = parent
+	}
+
+	if nested := nestedWorkspaceMarker(markers, ActiveWorkspaceDir()); nested != "" {
+		return fmt.Errorf("access to agent %q denied: working directory %q is inside workspace root %q, which is nested rather than the workspace being operated on; a workspace root marker does not grant cross-agent access (no %s found for %q)", targetAgentID, cwd, nested, AllowedAgentsFile, cwd)
 	}
 
 	return nil
