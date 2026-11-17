@@ -186,3 +186,74 @@ func TestLifecycleCommandsRefusePeerAgents(t *testing.T) {
 		t.Errorf("pausing a peer should explain that it has no lineage, got: %v", err)
 	}
 }
+
+// F1 (#152 review): archive names must not be matched by loose prefix. Agent ids may
+// contain hyphens, so `delete foo` used to consider `foo-bar` one of foo's archives and,
+// taking the newest entry, could destroy a hyphenated sibling's archived history.
+func TestDeleteNeverTouchesAHyphenatedSiblingsArchive(t *testing.T) {
+	wsDir := spawnFixture(t)
+	root := filepath.Join(wsDir, SpawnArchiveDirName, "spawned")
+
+	stamp := "20261116T120000Z"
+	fooOwn := []string{
+		filepath.Join(root, "foo"),
+		filepath.Join(root, "foo-"+stamp),
+	}
+	sibling := filepath.Join(root, "foo-bar")
+	siblingStamped := filepath.Join(root, "foo-bar-20261116T130000Z")
+
+	for _, dir := range append(append([]string{}, fooOwn...), sibling, siblingStamped, filepath.Join(root, "foo-notastamp")) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		marker := "belongs-to-" + filepath.Base(dir)
+		if err := os.WriteFile(filepath.Join(dir, SpawnMetaFile), []byte(marker+"\n"), 0o644); err != nil {
+			t.Fatalf("write marker: %v", err)
+		}
+	}
+
+	found, err := listSpawnArchives(wsDir, "foo")
+	if err != nil {
+		t.Fatalf("listSpawnArchives: %v", err)
+	}
+	if len(found) != 2 {
+		t.Fatalf("foo archives = %v, want exactly foo and foo-%s", found, stamp)
+	}
+	for _, f := range found {
+		base := filepath.Base(f)
+		if base != "foo" && base != "foo-"+stamp {
+			t.Errorf("foo claimed an archive that is not its own: %q", base)
+		}
+	}
+
+	if _, err := DeleteSpawnedChild(wsDir, "foo", true); err != nil {
+		t.Fatalf("DeleteSpawnedChild: %v", err)
+	}
+
+	for _, untouched := range []string{sibling, siblingStamped} {
+		raw, err := os.ReadFile(filepath.Join(untouched, SpawnMetaFile))
+		if err != nil || !strings.Contains(string(raw), "belongs-to-") {
+			t.Errorf("a delete of foo disturbed %s: %v %q", filepath.Base(untouched), err, string(raw))
+		}
+	}
+
+	// The hyphenated agent still owns its own archives, stamped and bare.
+	ownArchives, err := listSpawnArchives(wsDir, "foo-bar")
+	if err != nil {
+		t.Fatalf("listSpawnArchives foo-bar: %v", err)
+	}
+	if len(ownArchives) != 2 {
+		t.Errorf("foo-bar archives = %v, want foo-bar and foo-bar-<stamp>", ownArchives)
+	}
+
+	// A second delete takes the remaining owned archive, then foo has nothing left.
+	if _, err := DeleteSpawnedChild(wsDir, "foo", true); err != nil {
+		t.Fatalf("second DeleteSpawnedChild: %v", err)
+	}
+	if _, err := DeleteSpawnedChild(wsDir, "foo", true); err == nil {
+		t.Error("foo should have no archives left, and refusing to delete something never preserved is the point")
+	}
+	if _, err := os.Stat(sibling); err != nil {
+		t.Errorf("the hyphenated sibling archive must survive every delete of foo: %v", err)
+	}
+}

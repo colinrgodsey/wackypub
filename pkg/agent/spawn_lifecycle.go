@@ -18,6 +18,12 @@ import (
 // It carries no agent directory signals, so it is not itself listed as an agent.
 const SpawnArchiveDirName = "archive"
 
+// spawnArchiveStampLayout is the timestamp RetireSpawnedChild puts in an archive name.
+// Archive membership is decided by parsing that segment rather than by prefix matching,
+// because agent ids may contain hyphens: a loose prefix made "foo-bar" look like an
+// archive of "foo", so a delete of foo could destroy a differently named sibling.
+const spawnArchiveStampLayout = "20060102T150405Z"
+
 func childMetaOrError(wsDir, childID string) (*SpawnMeta, string, error) {
 	if err := validateNewAgentID(childID); err != nil {
 		return nil, "", err
@@ -124,7 +130,7 @@ func RetireSpawnedChild(wsDir, childID string) (string, *SpawnMeta, error) {
 		return "", nil, fmt.Errorf("%s is already retired", childID)
 	}
 
-	stamp := time.Now().UTC().Format("20060102T150405Z")
+	stamp := time.Now().UTC().Format(spawnArchiveStampLayout)
 	archiveRoot := filepath.Join(wsDir, SpawnArchiveDirName, "spawned")
 	archivePath := filepath.Join(archiveRoot, childID+"-"+stamp)
 	if err := os.MkdirAll(archiveRoot, 0o755); err != nil {
@@ -181,6 +187,20 @@ func DeleteSpawnedChild(wsDir, childID string, confirm bool) (string, error) {
 	return target, nil
 }
 
+// isSpawnArchiveOf reports whether archiveName is this child itself or one of its
+// timestamped archives. A suffix that is not a retirement stamp belongs to somebody
+// else, however similar the name looks.
+func isSpawnArchiveOf(childID, archiveName string) bool {
+	if archiveName == childID {
+		return true
+	}
+	stamp, ok := strings.CutPrefix(archiveName, childID+"-")
+	if !ok {
+		return false
+	}
+	_, err := time.Parse(spawnArchiveStampLayout, stamp)
+	return err == nil
+}
 func listSpawnArchives(wsDir, childID string) ([]string, error) {
 	root := filepath.Join(wsDir, SpawnArchiveDirName, "spawned")
 	entries, err := os.ReadDir(root)
@@ -192,7 +212,7 @@ func listSpawnArchives(wsDir, childID string) ([]string, error) {
 	}
 	var found []string
 	for _, e := range entries {
-		if e.IsDir() && (e.Name() == childID || strings.HasPrefix(e.Name(), childID+"-")) {
+		if e.IsDir() && isSpawnArchiveOf(childID, e.Name()) {
 			found = append(found, filepath.Join(root, e.Name()))
 		}
 	}
