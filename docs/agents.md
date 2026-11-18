@@ -731,6 +731,23 @@ wackypub workspace locks
 - **Remote Push (`wackypub workspace push <remote>`)**: Pushes each agent repository to `<remote>` under a remote branch matching its `agent_id`, and pushes all workspace and agent tags. Requires `--i-understand` flag confirmation to guard against accidental API key exfiltration.
 - **Session Locks (`wackypub workspace locks`)**: Read-only table (backed by the `adkAgent.InspectAgentLocks` SDK function, which owns the lock, `/proc`, and session mtime reads) of every agent directory showing whether its `session.lock` is HELD, FREE, or STALE (recorded PID gone), the holder PID and shortened command line (credential flag values redacted), the lock file mtime, and the age of the last `session.jsonl` write with a verdict: OK, WEDGED (lock held, session quiet over 10 minutes), IDLE (no lock, quiet over 30 minutes), or STALE. Holder liveness uses `kill(pid,0)` and `/proc/<pid>/cmdline`, so holder details are Linux-specific. Never creates, truncates, locks, or deletes a lock file.
 
+### Spawning Helper Agents (`spawn`, `pause`, `retire`, `delete`, `orphans`)
+
+A spawned child is an ordinary workspace-level agent created from an approved runtime preset
+with recorded lineage. All five commands are **coordinator-grade**: creating, pausing or
+archiving an identity is capability multiplication, so it is not agent self-service. An agent
+that wants a helper asks for one - see the `agent-spawn-request` skill.
+
+- `wackypub agent runtimes` lists the presets in `<workspace>/runtimes/`. `wackypub agent spawn <child> --runtime <preset> --parent <id> [--tier N] [--grant]` creates the child. The runtime must be a preset name: a name that looks like a path or URL is refused, because the endpoint is the spend decision and the preset folder is where an operator records which endpoints are allowed. See `examples/runtimes/spawn-*.json`.
+- The scaffold is thin: `AGENTS.md`, `IDENTITY.md`, `MEMORY.md`, `WORKBOOK.md`, `runtime.json` copied from the preset, and `WACKYPUB_ALLOWED_AGENTS` containing only the parent. Before spawn reports success it validates the result - every `@MACRO` in the child `AGENTS.md` must resolve, `runtime.json` must load through the same path the runtime uses, and the directory must inspect. That check exists because a hand-made scaffold with a dangling macro renders as literal text and nothing notices.
+- Tools and skills are inherited by reference (a `toolsets/<child>` link), never copied.
+- **Nested workspace roots are refused.** The target workspace must be the one the process operates on, and a child directory carrying a `WACKYPUB_ROOT` marker is rejected: a nested root outranks every roster in the tree.
+- **Recursion is capped at depth 1 by force.** A helper cannot spawn a helper. The depth is still recorded.
+- Lineage lives in `SPAWN_META` inside the child directory and is the source of truth. `MANIFEST.md` renders it (Parent, Runtime preset, Tier, Depth, Status) and `wackypub workspace` shows a PARENT column; both are generated views, never hand-edited. There is no `<parent>--<child>` name prefixing, because a name can be changed while the file is what the coordinator wrote.
+- `--tier` is recorded only. Nothing in this version enforces tiers.
+- `pause` removes the parent roster entry and marks the lineage paused, leaving files, memory and session untouched; `resume` restores the pair. `retire` moves the subtree to `<workspace>/archive/spawned/` and refreshes the manifest. `delete` refuses while the child directory exists and refuses without `--confirm-delete`, so destruction always passes through an archive that exists. `orphans` lists children whose parent is gone; `--mark` records them. A child outlives its parent on purpose and belongs to the workspace, not to the parent that asked.
+- Run default: parent-driven turns only (`wackypub agent <child> prompt ...`). No heartbeat, and no background wake unless someone wires one up deliberately.
+
 ### Causal Swarm Tracing (`trace`)
 ```bash
 wackypub trace <agent_id> <commit> [-n <steps>] [-v <0..4>]

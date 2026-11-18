@@ -241,11 +241,11 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 	fmt.Printf("\nAgents found: %d\n\n", len(ids))
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "AGENT_ID\tRUNTIME.JSON\tSESSION TURNS\tMEMORY.MD\tTOOLS\tSKILLS\tALLOWED_AGENTS")
+	fmt.Fprintln(w, "AGENT_ID\tRUNTIME.JSON\tSESSION TURNS\tMEMORY.MD\tTOOLS\tSKILLS\tALLOWED_AGENTS\tPARENT")
 	for _, id := range ids {
 		insp, err := sdk.InspectAgent(context.Background(), &agentv1.InspectAgentRequest{AgentId: id})
 		if err != nil {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, "error", "-", "-", "-", "-", "-")
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, "error", "-", "-", "-", "-", "-", "-")
 			continue
 		}
 
@@ -298,9 +298,37 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 			allowedStatus = fmt.Sprintf("%d allowed", len(insp.GetAllowedAgents()))
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, runtimeStatus, turns, memory, toolsStatus, skillsStatus, allowedStatus)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, runtimeStatus, turns, memory, toolsStatus, skillsStatus, allowedStatus, spawnLineageLabel(wsDir, id))
 	}
 	return w.Flush()
+}
+
+// spawnLineageLabel renders one listing cell. A peer shows a dash; a spawned child
+// shows who asked for it, with orphan and non-active status visible because those are
+// the cases someone has to act on.
+func spawnLineageLabel(wsDir, agentID string) string {
+	meta, err := adkAgent.LoadSpawnMeta(filepath.Join(wsDir, agentID))
+	if err != nil {
+		return "unreadable"
+	}
+	if meta == nil {
+		return "-"
+	}
+	return spawnLineageText(meta)
+}
+
+func spawnLineageText(meta *adkAgent.SpawnMeta) string {
+	label := meta.Parent
+	if label == "" {
+		label = "unknown"
+	}
+	if meta.Orphaned {
+		label += " (orphaned)"
+	}
+	if meta.Status != "" && meta.Status != adkAgent.SpawnStatusActive {
+		label += " [" + meta.Status + "]"
+	}
+	return label
 }
 
 func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
@@ -333,6 +361,23 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 
 	fmt.Printf("Agent: %s\n", insp.GetAgentId())
 	fmt.Printf("Directory: %s\n\n", insp.GetAgentDir())
+	// Lineage comes from the child file itself, not from an id convention, so a renamed or
+	// prefixed agent cannot claim a parentage the file does not record.
+	if meta, err := adkAgent.LoadSpawnMeta(insp.GetAgentDir()); err != nil {
+		fmt.Printf("Lineage:                     could not read %s: %v\n", adkAgent.SpawnMetaFile, err)
+		fmt.Println()
+	} else if meta != nil {
+		fmt.Println("Lineage (" + adkAgent.SpawnMetaFile + "):")
+		fmt.Printf("  parent                     %s\n", spawnLineageText(meta))
+		fmt.Printf("  runtime preset             %s\n", meta.Runtime)
+		fmt.Printf("  depth                      %d\n", meta.Depth)
+		fmt.Printf("  status                     %s\n", meta.Status)
+		if meta.Tier != "" {
+			fmt.Printf("  tier (recorded only)       %s\n", meta.Tier)
+		}
+		fmt.Printf("  created                    %s\n", meta.CreatedAt)
+		fmt.Println()
+	}
 
 	if bridged {
 		printBridgeRoute(sdk.WorkspaceDir, agentID, route)

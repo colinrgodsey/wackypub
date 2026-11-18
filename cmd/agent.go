@@ -1533,6 +1533,34 @@ type AgentFirstClassification struct {
 // TestAgentFirstDispatch_CoverageAgainstCobraTable enforces that this table
 // stays in sync with agentCmd.Commands(), eliminating silent two-sources-of-truth drift.
 var agentFirstClassifications = map[string]AgentFirstClassification{
+	"pause": {
+		Status:    AgentFirstExcluded,
+		Rationale: "Coordinator-grade: it changes the lifetime of another identity, so the agent-first form must not reach it.",
+	},
+	"resume": {
+		Status:    AgentFirstExcluded,
+		Rationale: "Coordinator-grade: it rewrites a parent allowlist entry, which the agent-first form would aim at the wrong target.",
+	},
+	"retire": {
+		Status:    AgentFirstExcluded,
+		Rationale: "Coordinator-grade: it archives a whole agent directory rather than addressing one.",
+	},
+	"delete": {
+		Status:    AgentFirstExcluded,
+		Rationale: "Coordinator-grade and destructive: it removes an archived child subtree and must never be reachable by hoisting an id.",
+	},
+	"orphans": {
+		Status:    AgentFirstExcluded,
+		Rationale: "Takes no agent id: it scans the workspace for children whose parent is gone.",
+	},
+	"spawn": {
+		Status:    AgentFirstExcluded,
+		Rationale: "Coordinator-grade: it creates a new identity rather than addressing an existing one, so the agent-first form would misread the child id as a target agent.",
+	},
+	"runtimes": {
+		Status:    AgentFirstExcluded,
+		Rationale: "Lists workspace runtime presets and takes no agent id, so there is no target to hoist.",
+	},
 	"add": {
 		Status:    AgentFirstHandled,
 		Rationale: "Appends a user turn to <ws>/<agent_id>/session.jsonl via agentAddCmd.RunE",
